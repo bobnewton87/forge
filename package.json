@@ -1,0 +1,1 @@
+{ "type": "module", "private": true, "scripts": { "test": "node --test test/", "serve": "python3 -m http.server 8642" } }
