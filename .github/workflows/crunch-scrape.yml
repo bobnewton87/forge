@@ -1,0 +1,50 @@
+name: Scrape Crunch Allen class schedule
+
+on:
+  schedule:
+    # Daily at 10:00 UTC = 5:00 AM CDT / 4:00 AM CST, before Crunch opens at 5am.
+    # One request to crunch.com's public occurrences endpoint returns the next ~7 days.
+    - cron: '0 10 * * *'
+  workflow_dispatch: {}
+  push:
+    branches: [master, main]
+    paths:
+      - 'scripts/scrape-crunch.mjs'
+      - 'js/classes/classify.js'
+      - '.github/workflows/crunch-scrape.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: crunch-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run scraper
+        run: node scripts/scrape-crunch.mjs
+
+      - name: Commit if changed
+        run: |
+          git config user.name "forge-bot"
+          git config user.email "forge-bot@users.noreply.github.com"
+          # Ignore the fetchedAt timestamp when deciding whether anything changed.
+          if git diff --quiet -I '"fetchedAt"' -- data/crunch-schedule.json; then
+            echo "No schedule changes, skipping commit."
+          else
+            git add data/crunch-schedule.json
+            git commit -m "chore: refresh Crunch Allen class schedule ($(date -u +%Y-%m-%d))"
+            git pull --rebase --autostash || true
+            git push
+          fi

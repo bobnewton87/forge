@@ -32,8 +32,9 @@ export function defaultProfile() {
     bodyweight: null,
     goal: 'recomp',                 // 'recomp' | 'lean_bulk' | 'cut'
     sculptGoals: [...DEFAULT_SCULPT_GOALS],
-    // Per-group multipliers on weekly targets (1 = default). Legs are maintenance for Bob.
-    groupPriority: { triceps: 1.3, shoulders: 1.3, core: 1.2, back: 1.15, chest: 1.1, quads: 0.6, hamstrings: 0.6, glutes: 0.7, calves: 0.6 },
+    // User-adjustable multipliers on weekly targets (missing = 1). Bob's baseline priorities
+    // (triceps, side delts, abs up; legs maintenance) already live in REGIONS[r].priority/weeklySets.
+    groupPriority: {},
     locations: DEFAULT_LOCATIONS.map(l => ({ ...l, equipment: [...l.equipment] })),
     currentLocation: 'home',
     defaultMinutes: 45,
