@@ -6,6 +6,8 @@ import { SCULPT_GOALS } from '../data/sculpt.js';
 import { getEx } from '../data/exercises.js';
 import { esc, readinessColor, muscleBar } from './components.js';
 import { ds, fmtShort, addDays, daysBetween } from '../util.js';
+import * as bodycomp from '../engine/bodycomp.js';
+import { silhouetteSVG } from './silhouette.js';
 
 const safe = (fn, fb) => { try { const v = fn(); return v == null ? fb : v; } catch (e) { console.error(e); return fb; } };
 const f1 = n => { n = Number(n) || 0; return Math.round(n) === n ? String(n) : n.toFixed(1); };
@@ -104,6 +106,22 @@ function ring(pct, color, label) {
   return `<div class="ring"><svg viewBox="0 0 64 64" width="64" height="64"><circle cx="32" cy="32" r="${r}" fill="none" stroke="#2a2a33" stroke-width="7"/><circle cx="32" cy="32" r="${r}" fill="none" stroke="${color}" stroke-width="7" stroke-linecap="round" stroke-dasharray="${c * p} ${c}"/></svg><div class="rv">${label}</div></div>`;
 }
 
+// ---------------- "Your body" card (UI-BODY) ----------------
+function yourBodyCard(store, profile, log) {
+  const meas = safe(() => store.getMeasurements(), []);
+  const b = safe(() => bodycomp.baseline({ profile, bodyLog: log, measurements: meas, now: new Date() }), null);
+  const m = b?.measurements || {};
+  const has = b && b.weightLb;
+  const stat = (v, u, l) => `<div><b>${v ?? '—'}${v != null ? `<small>${u}</small>` : ''}</b><span>${l}</span></div>`;
+  return `<div class="card bd-card">
+    <div class="bd-card-sil">${silhouetteSVG(m, { bodyFatPct: b?.bodyFatPct, heightIn: b?.heightIn || 69 })}</div>
+    <div class="grow"><div class="row between"><div class="card-title">Your body</div>${has && b.bodyFatSource ? `<span class="tiny muted">${b.bodyFatSource === 'navy' ? 'tape BF' : b.bodyFatSource === 'manual' ? 'measured BF' : 'est. BF'}</span>` : ''}</div>
+      ${has ? `<div class="bd-stats">${stat(f1(b.weightLb), 'lb', 'weight')}${stat(b.bodyFatPct != null ? f1(b.bodyFatPct) : null, '%', 'body fat')}${stat(m.waist != null ? f1(m.waist) : null, '″', 'waist')}</div>`
+        : `<p class="small muted" style="margin-top:4px">Add weight, height and a few tape measurements to see body fat and a projection of where your training is taking you.</p>`}
+      <div class="btn-row"><button class="btn" data-bdnav="measure">📏 ${has ? 'Log' : 'Measure'}</button><button class="btn ${has ? 'btn-primary' : ''}" data-bdnav="projection">🔮 Projection</button></div>
+    </div></div>`;
+}
+
 // ---------------- render ----------------
 export function render(ctx) {
   const store = ctx.store;
@@ -181,6 +199,7 @@ export function render(ctx) {
   </div>`;
 
   return `<div class="page-head"><h1>Body</h1><p class="sub">Volume, recovery and progress across every muscle.</p></div>
+    ${yourBodyCard(store, profile, log)}
     ${hero}
     <div class="section-title">Muscle map</div>${map}
     <div class="section-title">Weekly sets vs target <span class="tiny muted" style="text-transform:none;letter-spacing:0">★ = goal / priority</span></div>${gcards}
@@ -241,6 +260,7 @@ function weightsSheet(ctx) {
 }
 
 export function bind(root, ctx) {
+  root.querySelectorAll('[data-bdnav]').forEach(b => b.onclick = () => ctx.nav(b.dataset.bdnav));
   root.querySelectorAll('[data-group]').forEach(b => b.onclick = () => groupSheet(ctx, b.dataset.group));
   root.querySelectorAll('.bodymap [data-region]').forEach(g => g.addEventListener('click', () => {
     const r = g.dataset.region; groupSheet(ctx, REGIONS[r]?.group, r);

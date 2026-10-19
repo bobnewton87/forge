@@ -1,3 +1,235 @@
-// STUB — replaced by its builder.
-export function render(ctx, params) { return '<div class="card"><h2>measure</h2><p>Coming soon</p></div>'; }
-export function bind(root, ctx, params) {}
+// Measurements screen (route 'measure', UI-BODY): body profile, tape-measure log, current
+// body-comp snapshot and history.
+// CONTRACT-NOTE: params.edit === true opens the body-profile editor even when it is complete.
+// CONTRACT-NOTE: deleting a history row removes that date's tape entry AND its weigh-in.
+import { esc } from './components.js';
+import { ds, fmtShort } from '../util.js';
+import { baseline } from '../engine/bodycomp.js';
+import { silhouetteSVG } from './silhouette.js';
+import { lineChart, bindCharts, f1, safe } from './projection.js';
+
+export function title() { return 'Measurements'; }
+
+const SITES = [
+  { k: 'neck', label: 'Neck', tip: 'Just below the Adam\'s apple, tape level and snug. Look straight ahead, don\'t flare your neck.', req: true },
+  { k: 'shoulders', label: 'Shoulders', tip: 'Around the widest point of the delts, arms relaxed at your sides. A partner makes this much easier.' },
+  { k: 'chest', label: 'Chest', tip: 'Around the nipple line, under the armpits, after a normal exhale. Don\'t puff up.' },
+  { k: 'waist', label: 'Waist', tip: 'At the navel, belly relaxed (don\'t suck in), after a normal exhale. Best first thing after waking.', req: true },
+  { k: 'hips', label: 'Hips', tip: 'Around the widest part of the glutes, feet together.' },
+  { k: 'armL', label: 'Arm L (flexed)', tip: 'Flex the biceps hard, arm out level with the shoulder. Tape around the peak, which is the biggest point.' },
+  { k: 'armR', label: 'Arm R (flexed)', tip: 'Same as the left: flexed, arm level, around the peak.' },
+  { k: 'forearm', label: 'Forearm', tip: 'Widest point just below the elbow, fist clenched, arm straight.' },
+  { k: 'thigh', label: 'Thigh', tip: 'Standing relaxed, just below the glute fold (the top of the thigh), weight on both feet.' },
+  { k: 'calf', label: 'Calf', tip: 'Widest point of the calf, standing with weight on both feet.' },
+];
+const LABEL = Object.fromEntries(SITES.map(s => [s.k, s.label]));
+const ACT = [['desk', 'Desk', 'Mostly sitting'], ['light', 'Light', 'On your feet some'], ['active', 'Active', 'On your feet most of the day']];
+const SRC = { manual: 'scale / DEXA', navy: 'Navy tape formula', estimate: 'BMI estimate (rough)' };
+let editProfile = false;
+
+export function ffmiScale(v) {
+  if (v == null) return null;
+  return v < 18 ? ['Below average', 'muted'] : v < 20 ? ['Average', 'muted'] : v < 22 ? ['Above average, athletic', 'good'] : v < 23.5 ? ['Very muscular', 'good'] : v < 25 ? ['Elite natural range', 'accent'] : ['Rare without drugs', 'warn'];
+}
+
+function profileCard(p, open) {
+  const b = p.body || {};
+  const ft = b.heightIn ? Math.floor(b.heightIn / 12) : '', inch = b.heightIn ? +(b.heightIn - ft * 12).toFixed(1) : '';
+  const missing = !b.heightIn || !b.birthYear;
+  if (!open && !missing) {
+    return `<div class="card tight bd-profrow"><div class="grow"><div class="label">Body profile</div>
+      <div class="small">${ft}′${inch}″ · born ${b.birthYear} · ${esc(b.sex || 'male')} · ${b.trainingMonths ?? 0} mo lifting · ${esc(b.activity || 'desk')}</div></div>
+      <button class="btn btn-sm btn-ghost" data-editprof>Edit</button></div>`;
+  }
+  return `<div class="card ${missing ? 'bd-attn' : ''}" id="bd-prof">
+    <div class="card-title">Body profile ${missing ? '<span class="badge warn">needed</span>' : ''}</div>
+    <p class="small muted" style="margin-top:4px">Height and age feed BMI, FFMI, the Navy body-fat formula and your calorie burn.</p>
+    <div class="grid2 mt">
+      <div class="field"><label>Height (ft)</label><input type="number" inputmode="numeric" id="pFt" value="${ft}" placeholder="5"></div>
+      <div class="field"><label>Height (in)</label><input type="number" inputmode="decimal" step="0.5" id="pIn" value="${inch}" placeholder="9"></div>
+      <div class="field"><label>Birth year</label><input type="number" inputmode="numeric" id="pBy" value="${b.birthYear ?? ''}" placeholder="1987"></div>
+      <div class="field"><label>Months lifting</label><input type="number" inputmode="numeric" id="pTm" value="${b.trainingMonths ?? ''}" placeholder="7"></div>
+    </div>
+    <div class="label">Sex</div>
+    <div class="tabs mt" style="margin-top:6px" data-pseg="sex">${[['male', 'Male'], ['female', 'Female']].map(([v, l]) => `<button class="${(b.sex || 'male') === v ? 'active' : ''}" data-v="${v}">${l}</button>`).join('')}</div>
+    <div class="label mt">Daily activity (outside workouts)</div>
+    <div class="tabs" style="margin-top:6px" data-pseg="activity">${ACT.map(([v, l]) => `<button class="${(b.activity || 'desk') === v ? 'active' : ''}" data-v="${v}">${l}</button>`).join('')}</div>
+    <p class="tiny muted" style="margin-top:6px" id="pActHint">${esc(ACT.find(a => a[0] === (b.activity || 'desk'))[2])}</p>
+    <button class="btn btn-primary btn-block mt" data-saveprof>Save profile</button>
+  </div>`;
+}
+
+function formCard(meas, log) {
+  const last = {};
+  for (const e of meas) for (const s of SITES) if (e[s.k] != null) last[s.k] = e[s.k];
+  for (const e of meas) if (e.bodyFat != null) last.bodyFat = e.bodyFat;
+  const lastW = log.length ? log[log.length - 1].w : null;
+  const field = (k, label, tip, ph, req, unit = 'in') => `<div class="field bd-field">
+      <label for="m-${k}">${esc(label)}${req ? ' <span class="bd-req" title="Needed for the body-fat estimate">•</span>' : ''}
+        <button type="button" class="bd-i" data-tip="${k}" aria-label="How to measure ${esc(label)}">ⓘ</button></label>
+      <div class="bd-inp"><input type="number" inputmode="decimal" step="0.1" id="m-${k}" data-m="${k}" placeholder="${ph != null ? esc(f1(ph)) : '—'}"><span>${unit}</span></div>
+      <div class="bd-tip tiny" data-tipbox="${k}" hidden>${esc(tip)}</div></div>`;
+  return `<div class="card" id="bd-log">
+    <div class="row between"><div class="card-title">New entry</div><input type="date" id="mDate" value="${ds()}" max="${ds()}" class="bd-date"></div>
+    <p class="small muted" style="margin-top:6px">Fill in what you have. <span class="bd-req">•</span> Weight, waist and neck are enough for a body-fat estimate. Placeholders show your last values.</p>
+    <div class="grid2 mt">
+      ${field('weight', 'Weight', 'Morning, after the bathroom, before eating or drinking. Same scale each time.', lastW, true, 'lb')}
+      ${SITES.map(s => field(s.k, s.label, s.tip, last[s.k], s.req)).join('')}
+      ${field('bodyFat', 'Body fat (optional)', 'Only if you have a reading from a smart scale, calipers or a DEXA scan. DEXA is the most accurate; smart scales swing with hydration. Leave blank to use the tape formula.', last.bodyFat, false, '%')}
+    </div>
+    <button class="btn btn-primary btn-block" data-savem>Save measurements</button>
+  </div>`;
+}
+
+function snapshot(b) {
+  if (!b || !b.weightLb) return `<div class="card"><div class="empty" style="padding:16px"><div class="big">📏</div><h3>No snapshot yet</h3><p>Log your weight (plus waist and neck) above to see body fat, lean mass and your ratios.</p></div></div>`;
+  const c = b.comp || {}, m = b.measurements || {}, r = b.ratios || {};
+  const ff = ffmiScale(c.ffmiNormalized ?? c.ffmi);
+  const sw = r.shoulderToWaist;
+  const swPct = sw ? Math.min(100, ((sw - 1.2) / (1.75 - 1.2)) * 100) : 0;
+  const goldPct = ((1.618 - 1.2) / (1.75 - 1.2)) * 100;
+  const wh = r.waistToHeight;
+  const tile = (v, unit, l, sub = '') => `<div class="stat"><div class="v">${v ?? '—'}${v != null && unit ? `<small>${unit}</small>` : ''}</div><div class="l">${l}</div>${sub ? `<div class="tiny muted" style="margin-top:2px">${sub}</div>` : ''}</div>`;
+  const miss = (b.missingInfo || []).filter(x => x.field !== 'weight');
+  return `<div class="card hero bd-snap">
+    <div class="row" style="align-items:flex-start;gap:12px">
+      <div class="bd-snap-sil">${silhouetteSVG(m, { bodyFatPct: b.bodyFatPct, heightIn: b.heightIn || 69 })}</div>
+      <div class="grow">
+        <div class="label">Current · ${fmtShort(b.weightDate || b.date)}</div>
+        <div class="bd-big num">${f1(b.weightLb)}<small> lb</small></div>
+        <div class="bd-big num" style="color:var(--accent2)">${b.bodyFatPct != null ? f1(b.bodyFatPct) + '<small>% fat</small>' : '<small>body fat ?</small>'}</div>
+        <div class="tiny muted">${b.bodyFatSource ? 'from ' + esc(SRC[b.bodyFatSource] || b.bodyFatSource) : 'add waist + neck + height'}${b.bodyFatSource === 'manual' && b.navyBodyFatPct ? ` · tape says ${f1(b.navyBodyFatPct)}%` : ''}</div>
+        <div class="grid2 mt" style="gap:8px">
+          ${tile(c.leanLb != null ? f1(c.leanLb) : null, 'lb', 'Lean mass')}
+          ${tile(c.fatLb != null ? f1(c.fatLb) : null, 'lb', 'Fat mass')}
+        </div>
+      </div>
+    </div>
+    <div class="grid2 mt">
+      ${tile(c.ffmiNormalized != null ? f1(c.ffmiNormalized) : c.ffmi != null ? f1(c.ffmi) : null, '', 'FFMI', ff ? `<span style="color:var(--${ff[1] === 'muted' ? 'muted' : ff[1]})">${ff[0]}</span>` : 'needs height + BF')}
+      ${tile(c.bmi != null ? f1(c.bmi) : null, '', 'BMI', c.bmi != null ? 'Overstates fat in muscular people' : 'needs height')}
+    </div>
+    <div class="bd-ratio mt">
+      <div class="row between"><div class="label">Shoulder : waist</div><div class="num bold">${sw ? sw.toFixed(2) : '—'} <span class="muted small" style="font-weight:600">/ 1.618 ideal</span></div></div>
+      <div class="bar mt" style="margin-top:8px"><i style="width:${swPct}%;background:linear-gradient(90deg,var(--accent2),var(--accent))"></i><span class="tick" style="left:${goldPct}%"></span></div>
+      <div class="tiny muted" style="margin-top:6px">${sw ? (sw >= 1.618 ? 'At the "Adonis" golden ratio. 👑' : sw >= 1.5 ? 'Clear V-taper. Wider delts + a smaller waist close the gap.' : 'Side delts and lats widen the top; dropping fat shrinks the waist.') : 'Measure shoulders and waist to see your V-taper.'}</div>
+    </div>
+    <div class="row between mt"><div class="label">Waist : height</div><div class="num bold">${wh ? wh.toFixed(2) : '—'} <span class="small" style="font-weight:600;color:${wh == null ? 'var(--muted)' : wh < 0.45 ? 'var(--good)' : wh < 0.5 ? 'var(--accent2)' : 'var(--warn)'}">${wh == null ? '' : wh < 0.45 ? 'lean' : wh < 0.5 ? 'healthy' : 'above 0.5'}</span></div></div>
+    ${miss.length ? `<div class="bd-miss mt"><div class="label">Missing for better accuracy</div><ul>${miss.map(x => `<li><b>${esc(x.label)}</b> <span class="muted">${esc(x.why)}</span></li>`).join('')}</ul></div>` : ''}
+  </div>`;
+}
+
+function history(meas, log) {
+  const series = [['weight', 'Weight', 'lb', log.map(e => ({ d: e.d, v: e.w }))],
+    ...['waist', 'neck', 'shoulders', 'chest', 'arm', 'thigh', 'hips', 'forearm', 'calf', 'bodyFat'].map(k => [k, k === 'arm' ? 'Arms (avg)' : k === 'bodyFat' ? 'Body fat' : LABEL[k], k === 'bodyFat' ? '%' : 'in',
+      meas.map(e => ({ d: e.d, v: k === 'arm' ? (e.armL && e.armR ? (e.armL + e.armR) / 2 : e.armL || e.armR || e.arm) : e[k] })).filter(x => x.v != null)])];
+  const has = series.filter(s => s[3].length);
+  if (!has.length) return '<p class="small muted">Nothing logged yet. Measure every 2-4 weeks, same time of day, same conditions.</p>';
+  const charts = has.map(([k, label, unit, pts]) => {
+    const first = pts[0].v, lastv = pts[pts.length - 1].v, d = +(lastv - first).toFixed(1);
+    const goodDown = k === 'waist' || k === 'bodyFat' || k === 'hips';
+    const col = !d ? 'var(--muted)' : k === 'weight' ? 'var(--muted)' : (d < 0) === goodDown ? 'var(--good)' : 'var(--warn)';
+    return `<div class="bd-sparkcard"><div class="row between"><div class="tiny muted bold">${esc(label)}</div><div class="tiny num" style="color:${col}">${pts.length > 1 ? (d > 0 ? '+' : '') + f1(d) : ''}</div></div>
+      <div class="num bold">${f1(lastv)}<small class="muted"> ${unit}</small></div>
+      ${pts.length > 1 ? lineChart({ id: 'h-' + k, data: pts.map(p => ({ d: p.d, v: p.v })), W: 160, H: 50, mini: true, unit }) : '<div class="tiny muted" style="height:34px;padding-top:10px">1 entry</div>'}</div>`;
+  }).join('');
+  const dates = [...new Set([...meas.map(e => e.d), ...log.map(e => e.d)])].sort().reverse();
+  const wBy = Object.fromEntries(log.map(e => [e.d, e.w]));
+  const mBy = Object.fromEntries(meas.map(e => [e.d, e]));
+  const cols = ['neck', 'shoulders', 'chest', 'waist', 'hips', 'armL', 'armR', 'forearm', 'thigh', 'calf', 'bodyFat'];
+  const used = cols.filter(c => meas.some(e => e[c] != null));
+  const head = ['Wt', ...used.map(c => ({ armL: 'Arm L', armR: 'Arm R', bodyFat: 'BF%' }[c] || LABEL[c]))];
+  const rows = dates.map(d => `<tr><th>${fmtShort(d)}<div class="tiny muted">${d.slice(0, 4)}</div></th><td>${wBy[d] != null ? f1(wBy[d]) : ''}</td>${used.map(c => `<td>${mBy[d]?.[c] != null ? f1(mBy[d][c]) : ''}</td>`).join('')}<td><button class="bd-del" data-del="${d}" aria-label="Delete ${d}">✕</button></td></tr>`).join('');
+  return `<div class="bd-sparks">${charts}</div>
+    <div class="section-title">All entries</div>
+    <div class="card bd-tablewrap" style="padding:0"><table class="bd-table num"><thead><tr><th>Date</th>${head.map(h => `<th>${esc(h)}</th>`).join('')}<th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+export function render(ctx, params = {}) {
+  const store = ctx.store;
+  const p = store.getProfile();
+  const meas = safe(() => store.getMeasurements(), []);
+  const log = safe(() => store.getBodyLog(), []);
+  const b = safe(() => baseline({ profile: p, bodyLog: log, measurements: meas, now: new Date() }), null);
+  const open = editProfile || params.edit === true;
+  return `<div class="page-head"><p class="sub">Where you're starting, measured properly.</p></div>
+    ${profileCard(p, open)}
+    <div class="section-title">Snapshot <button class="link" data-nav="projection">Projection ›</button></div>
+    ${snapshot(b)}
+    <div class="section-title">Log measurements</div>
+    ${formCard(meas, log)}
+    <div class="section-title">History</div>
+    ${history(meas, log)}`;
+}
+
+export function bind(root, ctx) {
+  const store = ctx.store;
+  root.querySelectorAll('[data-nav]').forEach(b => b.onclick = () => ctx.nav(b.dataset.nav));
+  root.querySelector('[data-editprof]')?.addEventListener('click', () => { editProfile = true; ctx.rerender(); });
+
+  // profile
+  const prof = root.querySelector('#bd-prof');
+  if (prof) {
+    const segVal = {};
+    prof.querySelectorAll('[data-pseg]').forEach(seg => seg.querySelectorAll('button').forEach(btn => btn.onclick = () => {
+      seg.querySelectorAll('button').forEach(x => x.classList.toggle('active', x === btn));
+      segVal[seg.dataset.pseg] = btn.dataset.v;
+      if (seg.dataset.pseg === 'activity') prof.querySelector('#pActHint').textContent = ACT.find(a => a[0] === btn.dataset.v)[2];
+    }));
+    prof.querySelector('[data-saveprof]').onclick = () => {
+      const ft = parseFloat(prof.querySelector('#pFt').value), inch = parseFloat(prof.querySelector('#pIn').value) || 0;
+      const by = parseInt(prof.querySelector('#pBy').value, 10), tm = parseFloat(prof.querySelector('#pTm').value);
+      const yr = new Date().getFullYear();
+      const cur = store.getProfile().body || {};
+      const body = { ...cur, ...segVal };
+      if (ft > 0) {
+        const h = ft * 12 + inch;
+        if (h < 48 || h > 90) { ctx.toast('Height looks off'); return; }
+        body.heightIn = Math.round(h * 2) / 2;
+      }
+      if (by) { if (by < yr - 100 || by > yr - 12) { ctx.toast('Birth year looks off'); return; } body.birthYear = by; }
+      if (tm >= 0 && tm < 600) body.trainingMonths = tm;
+      editProfile = false;
+      store.updateProfile({ body });
+      ctx.toast('Profile saved');
+    };
+  }
+
+  // tips
+  root.querySelectorAll('[data-tip]').forEach(btn => btn.onclick = e => {
+    e.preventDefault();
+    const box = root.querySelector(`[data-tipbox="${btn.dataset.tip}"]`); if (box) box.hidden = !box.hidden;
+  });
+
+  // save measurements
+  root.querySelector('[data-savem]')?.addEventListener('click', () => {
+    const d = root.querySelector('#mDate').value || ds();
+    if (d > ds()) { ctx.toast('Date is in the future'); return; }
+    const vals = {};
+    let bad = null;
+    root.querySelectorAll('[data-m]').forEach(inp => {
+      const v = parseFloat(inp.value); if (!(v > 0)) return;
+      const k = inp.dataset.m;
+      const [lo, hi] = k === 'weight' ? [70, 600] : k === 'bodyFat' ? [2, 60] : [5, 80];
+      if (v < lo || v > hi) bad = bad || k; else vals[k] = v;
+    });
+    if (bad) { ctx.toast(`${bad === 'weight' ? 'Weight' : LABEL[bad] || 'Body fat'} looks off`); return; }
+    if (!Object.keys(vals).length) { ctx.toast('Enter at least one value'); return; }
+    if (document.activeElement) document.activeElement.blur();
+    const { weight, ...rest } = vals;
+    const n = Object.keys(vals).length;
+    if (weight) store.logBodyweight(d, weight);
+    if (Object.keys(rest).length) store.logMeasurement({ d, ...rest });
+    ctx.toast(`Saved ${n} value${n === 1 ? '' : 's'} for ${fmtShort(d)}`);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+
+  // delete rows
+  root.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    if (!b.dataset.armed) { b.dataset.armed = '1'; b.textContent = 'Delete?'; b.classList.add('armed'); setTimeout(() => { if (b.isConnected) { delete b.dataset.armed; b.textContent = '✕'; b.classList.remove('armed'); } }, 3000); return; }
+    const d = b.dataset.del;
+    store.deleteMeasurement(d); store.deleteBodyweight(d);
+    ctx.toast(`Deleted ${fmtShort(d)}`);
+  });
+  bindCharts(root);
+}

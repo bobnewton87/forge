@@ -107,7 +107,7 @@ export function render(ctx, params = {}) {
 }
 
 function emptyState(ctx) {
-  const planned = ctx.store.getSessions().filter(s => s.status === 'planned').slice(-3).reverse();
+  const planned = ctx.store.getSessions().filter(s => s.status === 'planned' && s.date <= ds(new Date()) && !(s.plan && s.plan.auto && s.date < ds(new Date())) && (s.blocks || []).length).slice(-3).reverse();
   return `<div class="tr-session"><div class="empty tr-empty">
     <div class="tr-empty-ic">🏋️</div>
     <h2>No workout in progress</h2>

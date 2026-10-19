@@ -21,6 +21,7 @@ function renderMore(ctx) {
   return `<div class="page-head"><h1>More</h1><p class="sub">${esc(p.name || 'Bob')} · ${n} workouts logged</p></div>
     <div class="list">
       ${item('library', '📚', 'Exercise library', 'Cues, videos, alternatives, your PRs')}
+      ${item('measure', '📏', 'Body profile', p.body?.heightIn ? 'Height, age, measurements, body fat' : 'Add height, age and measurements')}
       ${item('nutrition', '🥗', 'Nutrition', p.nutrition?.mode && p.nutrition.mode !== 'off' ? (p.nutrition.mode === 'cycling' ? 'Carb cycling on' : 'Simple targets on') : 'Optional · off')}
       ${item('settings', '⚙️', 'Settings', 'Goals, sculpt focus, locations, timer')}
     </div>
@@ -126,7 +127,8 @@ function renderSettings(ctx) {
     <div class="row mt"><div class="grow field" style="margin:0"><label>Bodyweight (lb)</label><input type="number" inputmode="decimal" step="0.1" data-bw value="${p.bodyweight ?? ''}" placeholder="e.g. 165"></div></div></div>
 
   <div class="section-title">Profile</div>
-  <div class="card"><div class="field" style="margin:0"><label>Name</label><input type="text" data-name value="${esc(p.name || '')}"></div></div>`;
+  <div class="card"><div class="field" style="margin:0"><label>Name</label><input type="text" data-name value="${esc(p.name || '')}"></div></div>
+  <div class="list"><button class="list-item" data-nav="measure"><span class="ic">📏</span><div class="grow"><div class="t">Body profile</div><div class="s">Height, birth year, activity, measurements</div></div><span class="chev">›</span></button></div>`;
 }
 
 function goalInfoSheet(ctx, id) {
@@ -185,6 +187,7 @@ function locationSheet(ctx, id) {
 }
 
 function bindSettings(root, ctx, params) {
+  root.querySelectorAll('[data-nav]').forEach(b => b.onclick = () => ctx.nav(b.dataset.nav));
   const up = patch => ctx.store.updateProfile(patch);
   root.querySelectorAll('[data-seg]').forEach(s => s.addEventListener('click', e => {
     const b = e.target.closest('[data-v]'); if (!b) return;

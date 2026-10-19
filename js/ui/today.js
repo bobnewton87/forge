@@ -6,8 +6,15 @@
 //   sessions so they can be started later.
 // CONTRACT-NOTE: "Log something I already did" creates an 'active' session with source 'manual'
 //   and startedAt null; session.js shows a date field instead of the elapsed timer for it.
-import { ds, fmtDay, fmtShort } from '../util.js';
-import { GROUPS, GROUP_ORDER, PRESETS } from '../data/muscles.js';
+// CONTRACT-NOTE (UI-PLAN): params.date ('YYYY-MM-DD', today or later) puts the builder in
+//   "planning" mode: recommendations/builds use now = that date, the location is a local choice
+//   (defaults to the day's schedule) and the builder state is an in-memory copy (not persisted).
+//   The preview's primary button is "Save to plan" (planned session, plan.auto:false), stored in
+//   kv 'planDraft' so Today's own draft is untouched. Without a date, Today shows a "Today's plan"
+//   card for today's planned session and the saved list shows only today's/overdue items
+//   (overdue auto-planned sessions are treated as missed suggestions and hidden).
+import { ds, fmtDay, fmtShort, parseDs } from '../util.js';
+import { GROUPS, GROUP_ORDER, PRESETS, REGIONS } from '../data/muscles.js';
 import { SCULPT_GOALS } from '../data/sculpt.js';
 import { expandEquipment } from '../data/equipment.js';
 import { cardioOptions, CARDIO, INTENSITIES } from '../data/cardio.js';
@@ -30,6 +37,54 @@ let lastParams = null;
 let showBuilderOverride = false;  // params.targets arrived → show builder even if a draft exists
 let customTime = false;
 
+// ---------- planning mode (params.date) ----------
+let planDate = null;     // 'YYYY-MM-DD' when building for the plan
+let planLocId = null;    // location chosen for that planned day
+const DOW_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+// Reference "now" for engines: the planned day at noon, or the real now.
+function refNow() {
+  if (!planDate) return new Date();
+  const d = parseDs(planDate); d.setHours(12, 0, 0, 0); return d;
+}
+const draftKey = () => (planDate ? 'planDraft' : 'draft');
+function getDraft(ctx) {
+  const d = ctx.store.kv(draftKey());
+  if (planDate && d && d.date !== planDate) return null;
+  return d;
+}
+function setDraft(ctx, v) { ctx.store.kv(draftKey(), v && planDate ? { ...v, date: planDate } : v); }
+function enterPlanMode(ctx, date, profile) {
+  planDate = date;
+  const existing = ctx.store.getSessions().find(s => s.status === 'planned' && s.date === date && s.plan?.kind !== 'rest');
+  const day = (profile.schedule || {})[DOW_KEYS[parseDs(date).getDay()]] || {};
+  planLocId = existing?.location || day.location || profile.currentLocation;
+  B = JSON.parse(JSON.stringify(builderState(ctx, profile)));
+  const m = Number(existing?.minutes) || (day.kind !== 'rest' && Number(day.minutes)) || 0;
+  if (m) B.minutes = m;
+  customTime = !TIMES.includes(B.minutes);
+  B.targets = Array.isArray(existing?.targets) ? existing.targets.filter(t => GROUPS[t] || SCULPT_GOALS[t] || PRESETS[t]) : [];
+}
+function exitPlanMode(ctx, profile) { planDate = null; planLocId = null; B = builderState(ctx, profile); customTime = false; }
+
+// Muscle groups a session works, weighted by sets: [{ g, name, sets }] (strongest first).
+export function sessionGroups(s, { min = 1.5 } = {}) {
+  const acc = {};
+  for (const b of (s && s.blocks) || []) {
+    let mus = null, n = 1;
+    if (b.kind === 'lift') { mus = getEx(b.exId)?.muscles; n = b.target?.sets || (b.sets || []).length || 3; }
+    else if (b.kind === 'class') mus = b.classify?.muscles;
+    if (!mus) continue;
+    for (const [r, w] of Object.entries(mus)) {
+      const g = REGIONS[r]?.group; if (!g) continue;
+      acc[g] = (acc[g] || 0) + (b.kind === 'lift' ? (w >= 0.5 ? w * n : 0) : w);
+    }
+  }
+  let out = Object.entries(acc).filter(([, v]) => v >= min).sort((a, b) => b[1] - a[1]).map(([g, v]) => ({ g, name: GROUPS[g]?.name || g, sets: v }));
+  if (!out.length) out = (s?.targets || []).map(t => (GROUPS[t] ? t : PRESETS[t]?.groups?.[0] || SCULPT_GOALS[t]?.group || null)).filter(Boolean)
+    .filter((g, i, a) => a.indexOf(g) === i).map(g => ({ g, name: GROUPS[g]?.name || g, sets: 0 }));
+  return out;
+}
+
 // ---------- state ----------
 function builderState(ctx, profile) {
   const b = ctx.store.kv('builder') || {};
@@ -41,9 +96,10 @@ function builderState(ctx, profile) {
   };
 }
 let B = null;  // in-memory builder state; persisted on change
-function saveB(ctx) { ctx.store.kv('builder', B); }
+function saveB(ctx) { if (!planDate) ctx.store.kv('builder', B); }
 
 function currentLoc(ctx, profile) {
+  if (planDate && planLocId) { const l = (profile.locations || []).find(x => x.id === planLocId); if (l) return l; }
   const fromCtx = safe(() => ctx.location && ctx.location(), null);
   const locs = profile.locations || [];
   return locs.find(l => l.id === profile.currentLocation) || fromCtx || locs[0] || { id: 'home', name: 'Home', icon: '🏠', equipment: ['bodyweight'] };
@@ -67,6 +123,8 @@ export function render(ctx, params = {}) {
   const store = ctx.store;
   const profile = store.getProfile();
   const sessions = store.getSessions();
+  const wantDate = typeof params?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(params.date) && params.date >= ds() ? params.date : null;
+  if (wantDate !== planDate) { if (wantDate) enterPlanMode(ctx, wantDate, profile); else exitPlanMode(ctx, profile); showBuilderOverride = false; }
   if (!B) B = builderState(ctx, profile);
   const pkey = JSON.stringify(params?.targets || null);
   if (pkey !== lastParams) {
@@ -78,11 +136,22 @@ export function render(ctx, params = {}) {
   }
   const loc = currentLoc(ctx, profile);
   const active = store.getActiveSession();
-  const draft = store.kv('draft');
+  const draft = getDraft(ctx);
   const showPreview = draft?.session && !showBuilderOverride;
+
+  if (planDate) {
+    let p = `<div class="tr-today pl-planning"><header class="tr-hello pl-plan-hello">
+      <button type="button" class="tr-link" data-t="plan-back">‹ Plan</button>
+      <div class="tr-date">Planning</div><h1>${esc(fmtDay(planDate))}</h1>
+      <div class="muted small">Build it your way, then save it to that day. Re-planning won't overwrite it.</div></header>`;
+    if (showPreview) p += preview(draft, profile);
+    else { p += recsSection(sessions, profile, loc); p += builderSection(sessions, profile, loc); }
+    return p + '</div>';
+  }
 
   let h = `<div class="tr-today">${header(profile, sessions, showPreview)}`;
   if (active && active.status === 'active') h += resumeCard(active);
+  if (!showPreview) h += todayPlanCard(sessions, profile, active);
   if (showPreview) h += preview(draft, profile);
   else {
     h += recsSection(sessions, profile, loc);
@@ -124,7 +193,7 @@ function resumeCard(s) {
 }
 
 function recsSection(sessions, profile, loc) {
-  const recs = safe(() => recommend(sessions, { now: new Date(), profile, minutes: B.minutes, location: loc }), []).slice(0, 3);
+  const recs = safe(() => recommend(sessions, { now: refNow(), profile, minutes: B.minutes, location: loc }), []).slice(0, 3);
   if (!recs.length) return '';
   return `<section class="tr-sec">
     <div class="section-title">What should I train?</div>
@@ -137,7 +206,7 @@ function recsSection(sessions, profile, loc) {
 }
 
 function builderSection(sessions, profile, loc) {
-  const gs = safe(() => groupStatus(sessions, { now: new Date(), profile }), {});
+  const gs = safe(() => groupStatus(sessions, { now: refNow(), profile }), {});
   const sculpt = [...new Set([...(profile.sculptGoals || []), ...B.targets])].filter(id => SCULPT_GOALS[id]);
   const isCustom = customTime || !TIMES.includes(B.minutes);
   const eq = safe(() => expandEquipment(loc.equipment || []), new Set(['bodyweight']));
@@ -196,8 +265,42 @@ function othersSection(loc) {
   </section>`;
 }
 
+function todaysPlan(sessions) {
+  const t = ds();
+  return sessions.filter(s => s.status === 'planned' && s.date === t);
+}
+function todayPlanCard(sessions, profile, active) {
+  const list = todaysPlan(sessions);
+  const s = list.find(x => x.plan?.kind !== 'rest' && (x.blocks || []).length);
+  if (!s) {
+    if (!list.some(x => x.plan?.kind === 'rest')) return '';
+    return `<div class="card pl-today-rest"><span class="pl-today-ic">🌙</span><div class="grow"><b>Rest day planned</b>
+      <div class="muted small">Recovery is where you grow. Feel great? Build something below.</div></div>
+      <button type="button" class="btn btn-ghost btn-sm" data-t="plan-open">Plan</button></div>`;
+  }
+  const loc = (profile.locations || []).find(l => l.id === s.location);
+  const groups = sessionGroups(s).slice(0, 5);
+  const cardio = (s.blocks || []).filter(b => b.kind === 'cardio').reduce((n, b) => n + (Number(b.minutes) || 0), 0);
+  const cls = (s.blocks || []).find(b => b.kind === 'class');
+  const n = (s.blocks || []).filter(b => b.kind === 'lift').length;
+  return `<section class="pl-today">
+    <div class="pl-today-top"><span>Today's plan</span>${s.plan ? `<span class="pl-tag ${s.plan.auto ? 'auto' : 'custom'}">${s.plan.auto ? 'Auto' : 'Custom'}</span>` : ''}</div>
+    <div class="pl-today-title">${esc(s.title || 'Workout')}</div>
+    <div class="pl-today-meta">~${Math.round(s.estMinutes || s.minutes || 0) || '?'} min${loc ? ` · ${esc(loc.icon || '')} ${esc(loc.name)}` : ''}${n ? ` · ${n} exercise${n === 1 ? '' : 's'}` : ''}${cls?.time ? ` · ${esc(cls.time)}` : ''}</div>
+    ${groups.length || cardio || cls ? `<div class="pl-chips">${groups.map(g => `<span class="pl-mchip">${esc(g.name)}</span>`).join('')}${cls ? `<span class="badge warn">🎟️ Class</span>` : ''}${cardio ? `<span class="badge cardio">${cardio} min cardio</span>` : ''}</div>` : ''}
+    ${s.plan?.reason ? `<div class="pl-today-why muted small">${esc(s.plan.reason)}</div>` : ''}
+    <div class="pl-today-btns">
+      <button type="button" class="btn btn-primary" data-t="p-start" data-id="${esc(s.id)}">▶ Start</button>
+      <button type="button" class="btn btn-ghost" data-t="plan-change">Change</button>
+    </div>
+  </section>`;
+}
+
 function plannedSection(sessions) {
-  const planned = sessions.filter(s => s.status === 'planned').slice(-5).reverse();
+  const t = ds();
+  const featured = todaysPlan(sessions).find(x => x.plan?.kind !== 'rest' && (x.blocks || []).length);
+  const planned = sessions.filter(s => s.status === 'planned' && s !== featured && s.plan?.kind !== 'rest' &&
+    (s.date === t || (s.date < t && !s.plan?.auto))).slice(-5).reverse();
   if (!planned.length) return '';
   return `<section class="tr-sec">
     <div class="section-title">Saved for later</div>
@@ -254,11 +357,13 @@ function preview(draft, profile) {
       <button type="button" class="btn btn-ghost" data-t="add">+ Add exercise</button>
       ${draft.params ? '<button type="button" class="btn btn-ghost" data-t="shuffle">🔀 Shuffle</button>' : ''}
     </div>
-    <button type="button" class="btn btn-primary tr-big" data-t="start">▶ Start workout</button>
+    ${planDate ? `<button type="button" class="btn btn-primary tr-big" data-t="save-plan">Save to plan · ${esc(fmtDay(planDate))}</button>
+    <div class="tr-plan-tools"><button type="button" class="btn btn-ghost tr-danger-text" data-t="discard">Discard</button></div>`
+    : `<button type="button" class="btn btn-primary tr-big" data-t="start">▶ Start workout</button>
     <div class="tr-plan-tools">
       <button type="button" class="btn btn-ghost" data-t="later">Save for later</button>
       <button type="button" class="btn btn-ghost tr-danger-text" data-t="discard">Discard</button>
-    </div>
+    </div>`}
   </section>`;
 }
 
@@ -305,7 +410,7 @@ function build(ctx, targets) {
   const params = { targets: [...targets], minutes: B.minutes, locationId: loc.id, style: B.style, cardio };
   const s = runBuild(ctx, params, profile, sessions, loc);
   if (!s) return;
-  store.kv('draft', { session: s, params });
+  setDraft(ctx, { session: s, params });
   showBuilderOverride = false;
   ctx.rerender();
   scrollTop();
@@ -313,7 +418,7 @@ function build(ctx, targets) {
 
 function runBuild(ctx, params, profile, sessions, loc) {
   const s = safe(() => buildWorkout({
-    targets: params.targets, minutes: params.minutes, location: loc, profile, sessions, now: new Date(),
+    targets: params.targets, minutes: params.minutes, location: loc, profile, sessions, now: refNow(),
     style: params.style, cardio: params.cardio, seed: Math.floor(Math.random() * 1e9), exclude: profile.avoidExercises || [],
   }), null);
   if (!s || !Array.isArray(s.blocks)) { toast(ctx, 'Could not build a workout. Try other muscles or more time.'); return null; }
@@ -323,11 +428,11 @@ function runBuild(ctx, params, profile, sessions, loc) {
 }
 
 function updateDraft(ctx, fn) {
-  const draft = ctx.store.kv('draft');
+  const draft = getDraft(ctx);
   if (!draft?.session) return;
   const s = fn(draft.session) || draft.session;
   s.estMinutes = safe(() => estimateMinutes(s.blocks || []), s.estMinutes);
-  ctx.store.kv('draft', { ...draft, session: s });
+  setDraft(ctx, { ...draft, session: s });
   ctx.rerender();
 }
 
@@ -446,18 +551,34 @@ export function bind(root, ctx, params = {}) {
     const profile = store.getProfile();
     const loc = currentLoc(ctx, profile);
     const i = Number(el.dataset.i);
-    const draft = store.kv('draft');
+    const draft = getDraft(ctx);
     switch (t) {
+      case 'plan-back': ctx.nav('plan', planDate ? { date: planDate } : {}); break;
+      case 'plan-open': ctx.nav('plan'); break;
+      case 'plan-change': ctx.nav('today', { date: ds() }); break;
+      case 'save-plan': {
+        if (!draft?.session || !planDate) return;
+        const blocks = draft.session.blocks || [];
+        const kind = blocks.some(b => b.kind === 'lift') ? 'lift' : blocks.some(b => b.kind === 'class') ? 'class' : blocks.length ? 'cardio' : 'lift';
+        const s = { ...draft.session, id: store.newSessionId(), date: planDate, status: 'planned', startedAt: null, endedAt: null,
+          plan: { auto: false, kind, generatedAt: new Date().toISOString(), reason: 'Custom' } };
+        const date = planDate;
+        store.replacePlanned(date, date, [s], () => true);
+        setDraft(ctx, null);
+        toast(ctx, `Saved to ${fmtDay(date)}`);
+        ctx.nav('plan', { date });
+        break;
+      }
       case 'resume': { const a = store.getActiveSession(); ctx.nav('session', a ? { id: a.id } : {}); break; }
       case 'rec': {
-        const recs = safe(() => recommend(store.getSessions(), { now: new Date(), profile, minutes: B.minutes, location: loc }), []);
+        const recs = safe(() => recommend(store.getSessions(), { now: refNow(), profile, minutes: B.minutes, location: loc }), []);
         const r = recs[i]; if (!r) return;
         build(ctx, r.targets?.length ? r.targets : (r.groups || []));
         break;
       }
       case 'time': customTime = false; B.minutes = Number(el.dataset.m); saveB(ctx); ctx.rerender(); break;
       case 'custom': customTime = true; ctx.rerender(); setTimeout(() => root.querySelector('[data-f="minutes"]')?.focus(), 30); break;
-      case 'loc': store.updateProfile({ currentLocation: el.dataset.id }); ctx.rerender(); break;
+      case 'loc': if (planDate) { planLocId = el.dataset.id; ctx.rerender(); } else { store.updateProfile({ currentLocation: el.dataset.id }); ctx.rerender(); } break;
       case 'group': case 'sculpt': {
         const id = el.dataset.id;
         B.targets = B.targets.includes(id) ? B.targets.filter(x => x !== id) : [...B.targets, id];
@@ -482,7 +603,7 @@ export function bind(root, ctx, params = {}) {
         if (!draft?.params) return;
         const l = locById(profile, draft.params.locationId) || loc;
         const s = runBuild(ctx, draft.params, profile, store.getSessions(), l);
-        if (s) { store.kv('draft', { ...draft, session: s }); ctx.rerender(); }
+        if (s) { setDraft(ctx, { ...draft, session: s }); ctx.rerender(); }
         break;
       }
       case 'up': case 'down': updateDraft(ctx, s => {
@@ -505,7 +626,7 @@ export function bind(root, ctx, params = {}) {
         swapSheet(ctx, {
           exId: b.exId, equipment: l.equipment || [], exclude: s.blocks.filter(x => x.kind === 'lift').map(x => x.exId),
           onPick: id => updateDraft(ctx, ss => {
-            const out = safe(() => swapBlock(ss, i, id, { sessions: store.getSessions(), now: new Date() }), null);
+            const out = safe(() => swapBlock(ss, i, id, { sessions: store.getSessions(), now: refNow() }), null);
             if (!out) return ss;
             if (out.blocks[i] && out.blocks[i].group == null && b.group) out.blocks[i].group = b.group;
             return out;
@@ -519,18 +640,18 @@ export function bind(root, ctx, params = {}) {
         addExerciseSheet(ctx, {
           equipment: l.equipment || [], targets: s.targets || [], sculptGoals: profile.sculptGoals || [],
           exclude: (s.blocks || []).filter(x => x.kind === 'lift').map(x => x.exId),
-          onPick: id => updateDraft(ctx, ss => safe(() => addExercise(ss, id, { sessions: store.getSessions(), now: new Date() }), ss)),
+          onPick: id => updateDraft(ctx, ss => safe(() => addExercise(ss, id, { sessions: store.getSessions(), now: refNow() }), ss)),
         });
         break;
       }
-      case 'start': if (draft?.session) { if (startSession(ctx, draft.session)) store.kv('draft', null); } break;
+      case 'start': if (draft?.session) { if (startSession(ctx, draft.session)) setDraft(ctx, null); } break;
       case 'later': {
         if (!draft?.session) return;
         const s = { ...draft.session, id: draft.session.id || store.newSessionId(), status: 'planned' };
         store.saveSession(s); store.kv('draft', null);
         toast(ctx, 'Saved for later'); ctx.rerender(); break;
       }
-      case 'discard': store.kv('draft', null); showBuilderOverride = false; ctx.rerender(); break;
+      case 'discard': setDraft(ctx, null); showBuilderOverride = false; ctx.rerender(); break;
       case 'p-start': { const s = store.getSession(el.dataset.id); if (s) startSession(ctx, s); break; }
       case 'p-del': if (confirm('Delete this saved workout?')) { store.deleteSession(el.dataset.id); ctx.rerender(); } break;
       case 'class': openClassSheet(ctx, loc); break;

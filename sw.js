@@ -1,7 +1,7 @@
 // Network-first for app code and schedule data (so updates land without cache-busting),
 // falling back to cache when offline.
-const CACHE = 'forge-v2';
-const CORE = ['./', './index.html', './manifest.json', './css/base.css', './css/train.css', './js/main.js', './icons/icon-192.png', './data/crunch-schedule.json'];
+const CACHE = 'forge-v3';
+const CORE = ['./', './index.html', './manifest.json', './css/base.css', './css/train.css', './css/plan.css', './css/body2.css', './js/main.js', './icons/icon-192.png', './data/crunch-schedule.json'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE)).then(() => self.skipWaiting()));

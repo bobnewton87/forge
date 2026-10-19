@@ -73,7 +73,8 @@ function weekLabel(ws) {
 }
 
 export function render(ctx) {
-  const all = (() => { try { return ctx.store.getSessions(); } catch (e) { return []; } })();
+  // History = done + active sessions. Planned (future) sessions live in the Plan tab (UI-PLAN).
+  const all = (() => { try { return ctx.store.getSessions().filter(s => s.status !== 'planned'); } catch (e) { return []; } })();
   if (!all.length) {
     return `<div class="page-head"><h1>History</h1></div><div class="card"><div class="empty"><div class="big">📅</div><h3>No workouts yet</h3><p>Finish a workout or import your Iron Runner history.</p>
       <div class="btn-row"><button class="btn btn-primary" data-nav="today">Start one</button><button class="btn" data-nav="import">Import</button></div></div></div>`;
@@ -128,7 +129,7 @@ export function repeatSession(store, s, date = ds()) {
   return copy;
 }
 
-function detailSheet(ctx, id) {
+export function detailSheet(ctx, id) {
   const s = ctx.store.getSession(id); if (!s) return;
   const sm = summarize(s); const loc = locOf(ctx, s.location);
   ctx.openSheet(`<div class="tiny muted bold" style="letter-spacing:.08em;text-transform:uppercase">${fmtDay(s.date)}</div><h2>${esc(s.title || 'Workout')}</h2>
