@@ -11,13 +11,13 @@ import { createShell, createTimer } from './ui/shell.js';
 import { esc } from './ui/components.js';
 
 const SCREEN_FILES = {
-  today: './ui/today.js', session: './ui/session.js', body: './ui/body.js', history: './ui/history.js',
+  today: './ui/today.js', session: './ui/session.js', body: './ui/body.js', history: './ui/history.js', plan: './ui/plan.js', measure: './ui/measure.js', projection: './ui/projection.js',
   more: './ui/settings.js', settings: './ui/settings.js', library: './ui/library.js', exercise: './ui/library.js',
   nutrition: './ui/nutrition.js', import: './ui/importer.js',
 };
-const TAB_OF = { today: 'today', session: 'session', body: 'body', history: 'history', more: 'more', settings: 'more', library: 'more', exercise: 'more', nutrition: 'more', import: 'more' };
-const PARENT = { settings: 'more', library: 'more', nutrition: 'more', import: 'more', exercise: 'library' };
-const TITLES = { settings: 'Settings', library: 'Exercise Library', exercise: 'Exercise', nutrition: 'Nutrition', import: 'Import' };
+const TAB_OF = { today: 'today', session: 'session', body: 'body', history: 'plan', plan: 'plan', measure: 'body', projection: 'body', more: 'more', settings: 'more', library: 'more', exercise: 'more', nutrition: 'more', import: 'more' };
+const PARENT = { history: 'plan', measure: 'body', projection: 'body', settings: 'more', library: 'more', nutrition: 'more', import: 'more', exercise: 'library' };
+const TITLES = { history: 'History', measure: 'Measurements', projection: 'Projection', settings: 'Settings', library: 'Exercise Library', exercise: 'Exercise', nutrition: 'Nutrition', import: 'Import' };
 
 const modules = {};
 async function loadModules() {

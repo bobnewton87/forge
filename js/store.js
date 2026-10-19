@@ -45,6 +45,18 @@ export function defaultProfile() {
     nutrition: { mode: 'off', calories: null, protein: null },  // 'off' | 'simple' | 'cycling'
     crunch: { club: 'allen' },
     restTimer: { enabled: true, sound: true },
+    // Body profile for body-comp math + projections (see CONTRACT §11).
+    body: { sex: 'male', heightIn: null, birthYear: null, trainingMonths: 7, activity: 'desk' },
+    // Weekly availability template for the planner. kind: 'lift'|'cardio'|'class'|'flex'|'rest'.
+    schedule: {
+      mon: { kind: 'lift', minutes: 45, location: 'crunch' },
+      tue: { kind: 'lift', minutes: 30, location: 'home' },
+      wed: { kind: 'cardio', minutes: 30, location: 'home' },
+      thu: { kind: 'lift', minutes: 45, location: 'crunch' },
+      fri: { kind: 'lift', minutes: 30, location: 'home' },
+      sat: { kind: 'flex', minutes: 60, location: 'crunch' },
+      sun: { kind: 'rest', minutes: 0, location: 'home' },
+    },
   };
 }
 
@@ -52,7 +64,8 @@ function migrate(p) {
   const d = defaultProfile();
   if (!p) return d;
   // Shallow-merge so new fields get defaults without clobbering user choices.
-  const out = { ...d, ...p, nutrition: { ...d.nutrition, ...(p.nutrition || {}) }, restTimer: { ...d.restTimer, ...(p.restTimer || {}) } };
+  const out = { ...d, ...p, nutrition: { ...d.nutrition, ...(p.nutrition || {}) }, restTimer: { ...d.restTimer, ...(p.restTimer || {}) },
+    body: { ...d.body, ...(p.body || {}) }, schedule: { ...d.schedule, ...(p.schedule || {}) } };
   out.schema = SCHEMA;
   return out;
 }
@@ -93,6 +106,31 @@ export const store = {
     const p = this.getProfile(); p.bodyweight = l[l.length - 1].w; set('profile', p);
   },
   deleteBodyweight(date) { set('body', this.getBodyLog().filter(e => e.d !== date)); },
+
+  // Tape measurements (inches) + optional manual body fat. One entry per date; logging merges fields.
+  // Entry: { d:'YYYY-MM-DD', neck, shoulders, chest, waist, hips, armL, armR, forearm, thigh, calf, bodyFat }
+  getMeasurements() { return get('meas', []); },
+  logMeasurement(entry) {
+    if (!entry || !entry.d) throw new Error('measurement needs d');
+    const l = this.getMeasurements();
+    const i = l.findIndex(e => e.d === entry.d);
+    const clean = Object.fromEntries(Object.entries(entry).filter(([, v]) => v !== '' && v != null && !(typeof v === 'number' && isNaN(v))));
+    if (i >= 0) l[i] = { ...l[i], ...clean }; else l.push(clean);
+    l.sort((a, b) => a.d.localeCompare(b.d));
+    set('meas', l);
+  },
+  deleteMeasurement(date) { set('meas', this.getMeasurements().filter(e => e.d !== date)); },
+
+  // Planned sessions are ordinary sessions with status 'planned' and a date (possibly future).
+  getPlanned({ from, to } = {}) {
+    return this.getSessions().filter(s => s.status === 'planned' && (!from || s.date >= from) && (!to || s.date <= to));
+  },
+  // Replace the planned sessions in [from, to] that match `pred` (default: auto-generated only) with `sessions`.
+  replacePlanned(from, to, sessions, pred = s => s.plan && s.plan.auto) {
+    const all = get('sessions', []).filter(s => !(s.status === 'planned' && s.date >= from && s.date <= to && pred(s)));
+    sessions.forEach(s => { const i = all.findIndex(x => x.id === s.id); if (i >= 0) all[i] = s; else all.push(s); });
+    set('sessions', sortSessions(all));
+  },
 
   // Generic small key/value for UI state (e.g. last chosen targets). Namespaced under fg_kv_.
   kv(key, value) { if (value === undefined) return get('kv_' + key); set('kv_' + key, value); },
