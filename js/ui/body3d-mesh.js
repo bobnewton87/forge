@@ -1121,7 +1121,12 @@ function unskinPositions(A, posed, M, n = A.nMesh, dirs = false) {
 
 // ================================================================== fitting
 function geometryFor(shape, bodyFatPct, muscle, sex = 'male') {
-  const sh = { ...(sex === 'female' ? DEF_SHAPE_F : DEF_SHAPE), ...(shape || {}) };
+  // §21b: only the stature falls back to a default. Every missing tape site is left to anthro, which estimates it
+  // from THIS body's height and weight and records it in geom.estimated. Filling them here from a fixed median
+  // tape drew an average-sized body for anyone who had not taped themselves, so a 300 lb user with only a weight
+  // logged came out average and narrow, and anthro could not tell a measured site from a defaulted one.
+  const sh = { ...(shape || {}) };
+  if (!num(sh.heightIn)) sh.heightIn = (sex === 'female' ? DEF_SHAPE_F : DEF_SHAPE).heightIn;
   const avg = (a, b) => (num(a) && num(b) ? (a + b) / 2 : num(a) ?? num(b));
   const limbs = {};
   for (const k of ['armL', 'armR', 'thighL', 'thighR', 'calfL', 'calfR']) if (num(sh[k])) limbs[k] = sh[k];
@@ -1417,7 +1422,11 @@ export function fitBody(A, opts = {}) {
   const shY = LM.shoulder.y, chY = LM.chest.y, nbY = geom.heights.neckBase;
   const shCross = crossings(V2, tris, (a, b, c) => part[a] < 4 && part[b] < 4 && part[c] < 4, shY, bins);
   const shList = [...new Set([...shCross.a, ...shCross.b])];
-  const gSp = y => sstep(chY + 0.3 * (shY - chY), shY, y) * (1 - sstep(nbY - 1.6, nbY - 0.15, y));
+  // §21b: the trunk's share of the spread holds all the way up over the acromion and fades only across the
+  // trapezius into the neck base (the neck itself is a station and is restored in 5d). It used to fade out
+  // 1.6 in BELOW the neck base, i.e. right at the acromion, while the arms translated out in full — the shear
+  // between them tore the top of the shoulder and smeared the sports-top strap into a wide dark wedge.
+  const gSp = y => sstep(chY + 0.3 * (shY - chY), shY, y) * (1 - sstep(nbY - 0.5, nbY + 0.6, y));
   const xSh = { L: J2[B.uarm1L][0], R: J2[B.uarm1R][0] };
   const spreadPt = (i, x, y, sigma) => {
     const a = grp[i * 6 + 2] + grp[i * 6 + 3];
@@ -1425,19 +1434,28 @@ export function fitBody(A, opts = {}) {
     return mix(x * (1 + sigma * gSp(y)), x + sigma * xSh[s], a);
   };
   const V3 = new Float32Array(V2);
-  const loopAt = (sigma) => {
-    for (const i of shList) V3[i * 3] = spreadPt(i, V2[i * 3], V2[i * 3 + 1], sigma);
-    return hull2(crossPoints(V3, shCross)).per;
-  };
-  let sA = 0, pA = loopAt(0), sB = 0.04, pB = loopAt(sB);
   const Gsh = LM.shoulder.girth;
-  for (let k = 0; k < 8 && Math.abs(pB - Gsh) > 1e-3; k++) {
-    const sN = clamp(sB + (Gsh - pB) * (sB - sA) / ((pB - pA) || 1e-6), -0.3, 0.45);
-    sA = sB; pA = pB; sB = sN; pB = loopAt(sB);
-  }
-  const sigma = sB;
+  // §21b: how far the girdle may be spread, and a bracketed (monotone) solve instead of a secant that could
+  // wander, stop early or sit on a clamp. A MEASURED shoulders tape is honoured over a wide band; an ESTIMATED
+  // one is only a model value, so the mesh's own station-fitted shoulders are trusted and the spread is kept
+  // small — chasing a fabricated number used to squash very large bodies into collapsed, narrow shoulders.
+  const shMeasured = !(geom.estimated || []).includes('shoulders');
+  const SIG_LO = shMeasured ? -0.20 : -0.15, SIG_HI = shMeasured ? 0.32 : 0.22;
+  // bisect sigma so the loop reads the target (monotone: wider girdle → longer hull), saturating at the band
+  const solveSpread = (src, out, cross, list, target, lo, hi) => {
+    const at = s => { for (const i of list) out[i * 3] = spreadPt(i, src[i * 3], src[i * 3 + 1], s); return hull2(crossPoints(out, cross)).per; };
+    let a = lo, b = hi;
+    const pa = at(a), pb = at(b);
+    if (!(target > 0) || !(pa > 0) || !(pb > 0) || !(pb > pa)) { const s = clamp(0, lo, hi); return { sigma: s, per: at(s) }; }
+    if (target <= pa) return { sigma: a, per: at(a) };
+    if (target >= pb) return { sigma: b, per: at(b) };
+    for (let k = 0; k < 18; k++) { const m = (a + b) / 2; if (at(m) < target) a = m; else b = m; }
+    const s = (a + b) / 2;
+    return { sigma: s, per: at(s) };
+  };
+  const sigma = solveSpread(V2, V3, shCross, shList, Gsh, SIG_LO, SIG_HI).sigma;
   for (let i = 0; i < nMesh; i++) V3[i * 3] = spreadPt(i, V2[i * 3], V2[i * 3 + 1], sigma);
-  const J3 = J2.map((j, b) => {
+  let J3 = J2.map((j, b) => {
     const g = bones[b].group;
     if (g === 2) return [j[0] + sigma * xSh.L, j[1], j[2]];
     if (g === 3) return [j[0] + sigma * xSh.R, j[1], j[2]];
@@ -1493,6 +1511,28 @@ export function fitBody(A, opts = {}) {
     const Vc = new Float32Array(V3); deform(Vc, V3);
   }
   for (const st of stacks) for (const s of st.stations) { const m = hull2(crossPoints(V3, s.cross)); s.err = m.per > 0 ? m.per / s.G - 1 : 0; }
+  // 5e. the Taubin smoothing (5c) and the station correction (5d) each relax part of the girdle spread, which left
+  // the shoulders tape 1–3 % short on every body (§21b). Re-slice the finished surface and spread the remainder,
+  // inside the same band. The ramp is zero at the chest tape and has faded out by the neck base, so no other
+  // station moves by more than a few hundredths of a percent.
+  let sigma2 = 0, shCross2 = shCross;
+  {
+    const bins4 = triBins(V3, tris);
+    shCross2 = crossings(V3, tris, (a, b, c) => part[a] < 4 && part[b] < 4 && part[c] < 4, shY, bins4);
+    const list2 = [...new Set([...shCross2.a, ...shCross2.b])];
+    const Vs = Float32Array.from(V3);
+    sigma2 = solveSpread(Vs, V3, shCross2, list2, Gsh, Math.min(0, SIG_LO - sigma), Math.max(0, SIG_HI - sigma)).sigma;
+    if (sigma2) {
+      for (let i = 0; i < nMesh; i++) V3[i * 3] = spreadPt(i, Vs[i * 3], Vs[i * 3 + 1], sigma2);
+      J3 = J3.map((j, b) => {
+        const g = bones[b].group;
+        if (g === 2) return [j[0] + sigma2 * xSh.L, j[1], j[2]];
+        if (g === 3) return [j[0] + sigma2 * xSh.R, j[1], j[2]];
+        if (g === 0) return [j[0] * (1 + sigma2 * gSp(j[1])), j[1], j[2]];
+        return j;
+      });
+    } else for (let i = 0; i < nMesh; i++) V3[i * 3] = Vs[i * 3];
+  }
   head.after = applyHead(V3, null);
   const rough1 = (() => { const d = new Float32Array(nMesh * 3); for (let i = 0; i < nMesh * 3; i++) d[i] = V3[i] - Q[i]; return fieldRoughness(A, d); })();
 
@@ -1517,7 +1557,7 @@ export function fitBody(A, opts = {}) {
   const fit = {
     A, sex, cup: P.cup || 0, geom, bf, muscle: opts.muscle, muscleEff: muEff, rest, restNrm, cavity, flare, heads: heads1, frames, relaxed: V3, relax,
     sections: {}, neckY, src: Q, joints: GJ,
-    report: { head, stations: [], shoulders: { girth: hull2(crossPoints(V3, shCross)).per, target: Gsh, sigma }, iters, worst, hs, anchors: ax.map((m, i) => [m, ay[i]]), smooth: { roughBefore: rough0, roughAfter: rough1 } },
+    report: { head, stations: [], shoulders: { girth: hull2(crossPoints(V3, shCross2)).per, target: Gsh, sigma: sigma + sigma2, measured: shMeasured }, iters, worst, hs, anchors: ax.map((m, i) => [m, ay[i]]), smooth: { roughBefore: rough0, roughAfter: rough1 } },
   };
   for (const st of stacks) for (const s of st.stations) {
     if (s.fixed) continue;
@@ -1696,7 +1736,7 @@ float hairMaskF(vec3 c){
 // Sports top as a material region in canonical space (no geometry): a band under the bust, a scoop neckline rising
 // to the cup tops, side panels up to the armpits, a low back with a racer-back converging to the spine, and straps
 // over the shoulders. Returns 0..1 (anti-aliased by fw).
-float braMask(vec3 c, float fw, float part){
+float braMask(vec3 c, float fw, float part, float sw){
   float ax = abs(c.x), y = c.y, imf = uBra.x, nip = uBra.y, nx = uBra.z, notch = uBra.w;
   float bottom = imf - 0.30;
   float fb = smoothstep(-0.1, 0.55, c.z);                                       // 1 front … 0 back
@@ -1708,7 +1748,7 @@ float braMask(vec3 c, float fw, float part){
   // never drag a "sleeve" of fabric up from the armpit
   float panel = smoothstep(bottom - fw, bottom + fw, y) * (1.0 - smoothstep(top - fw, top + fw, y)) * (1.0 - smoothstep(0.45, 0.6, part));
   float scF = nx * 0.88, scB = mix(0.2, nx * 0.88, smoothstep(nip, notch - 0.2, y));
-  float sc = mix(scB, scF, fb), sw = 0.15;
+  float sc = mix(scB, scF, fb);
   float strap = (1.0 - smoothstep(sw - fw, sw + fw, abs(ax - sc))) * smoothstep(bottom + 0.3, bottom + 0.4, y);
   return max(panel, strap);
 }
@@ -1771,7 +1811,12 @@ void main(){
   // female: sports top (torso, plus the neck part only where the straps cross the trapezius)
   float cloth = shorts, bra = 0.0, braBand = 0.0;
   if (uFem > 0.5 && vPart < 1.5 && vC.y < uBra.w + 0.6) {
-    bra = braMask(vC, max(fwidth(vC.y) + fwidth(vC.x), 1e-4), vPart);
+    // §21b: the strap is a band of constant width ON THE BODY (≈ 1.25 in), not a band of constant canonical x.
+    // |∇c.x| along the surface converts inches to canonical units per fragment. A fixed canonical band covered
+    // far more surface wherever the shoulder was broad and flat, which smeared the straps into wide dark wedges
+    // over the trapezius — the "shoulders look way too big right in the centre" artefact on broad female tapes.
+    float gx = length(vec2(dFdx(vC.x), dFdy(vC.x))) / max(1e-5, length(vec2(length(dFdx(vW)), length(dFdy(vW)))));
+    bra = braMask(vC, max(fwidth(vC.y) + fwidth(vC.x), 1e-4), vPart, clamp(gx * 0.62, 0.055, 0.22));
     braBand = bra * (1.0 - ss(uBra.x - 0.17, uBra.x - 0.13, vC.y));
     cloth = max(shorts, bra);
   }

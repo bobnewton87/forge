@@ -101,6 +101,10 @@ export function lengthsOf(src) {
 }
 export function shapeOf(p, heightIn) {
   const sh = { ...(p?.shape || p?.measurements || {}), heightIn: (p?.shape?.heightIn) || heightIn };
+  // CONTRACT §21b: body weight sizes the tape sites the user has not measured (anthro fillGirths). Without it a
+  // 300 lb profile with no tape rendered as an average body. Series points carry weightLb directly.
+  const w = Number(p?.weightLb ?? p?.shape?.weightLb ?? p?.measurements?.weightLb);
+  if (Number.isFinite(w) && w > 0) sh.weightLb = w; else delete sh.weightLb;
   const len = lengthsOf(p);
   if (len) sh.lengths = len; else delete sh.lengths;
   return sh;

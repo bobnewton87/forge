@@ -55,6 +55,9 @@ if (SEX === 'female') {
 if (qs.has('bf')) state.bodyFatPct = +qs.get('bf');
 if (qs.has('m')) for (const k in state.muscle) state.muscle[k] = +qs.get('m');
 for (const k of Object.keys(state.shape)) if (qs.has(k)) state.shape[k] = +qs.get(k);
+// ?drop=shoulders,chest (or ?drop=all) removes tape sites so they have to be estimated; pair it with ?weightLb=
+if (qs.has('drop')) { const d = qs.get('drop').split(','); for (const k of Object.keys(state.shape)) if (k !== 'heightIn' && (d[0] === 'all' || d.includes(k))) delete state.shape[k]; }
+if (qs.has('weightLb')) state.shape.weightLb = +qs.get('weightLb');
 // per-side segment lengths (CONTRACT §16c), e.g. ?lenUpperArmL=14.2&lenUpperArmR=14.6&lenThighL=17&lenThighR=17.4
 // or ?asym=1 for a demo (right arm and leg longer)
 const LEN_KEYS = { lenUpperArmL: 'upperArmL', lenUpperArmR: 'upperArmR', lenForearmL: 'forearmL', lenForearmR: 'forearmR',

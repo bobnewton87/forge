@@ -1247,3 +1247,60 @@ deficits cost more lean; protein and lifting change retention; floors and warnin
 allowed only under this goal; the projected body shrinks; and a golden comparison that `recomp` / `cut` /
 `lean_bulk` are unchanged. e2e `L1` picks the goal with a goal weight and checks Projection, Nutrition, Plan and
 Body agree with no page errors.
+## 21b. 3D body guards (2026-10-20)
+Bob: "some bugs in the women's shoulders look way too big in some cases like right in the center, and sometimes
+when you have a very fat person, the body gets really tiny and narrow."
+
+Ownership: FEMALE-3D (`js/engine/anthro.js`, `js/ui/body3d*.js`, `js/ui/silhouette.js`, `tools/body3d*-demo.html`,
+`test/anthro-guards.test.js`, `test/mesh-guards.test.js`, e2e `S5`), plus two targeted pass-throughs in the shared
+`js/ui/projection.js` (`shapeOf` forwards `weightLb`) and `js/ui/body.js` (the Body card passes `weightLb`).
+
+**Bug 1 — the shoulder loop.** The shoulders tape is a convex hull around the torso and both deltoids. When the tape
+needed a frame outside the biacromial plausibility clamp (`cMin`/`cMax`; the female clamp bites from ≈ 1.25 × bust
+upward), the old code clamped the skeleton and then forced the *section* to reproduce the tape: `solveN` failed and
+the fallback gave a pancake (depth 0.7 in at a 36 in tape) or a barrel (12.5 in deep at 52 in). The renderer's girdle
+spread was an unguarded secant clamped at −0.30/+0.45 which under-converged (every body read ≈ 1 % short) and at the
+top blew the upper torso out, so broad female tapes rendered as flat "shoulder pads" with the sports-top straps
+smeared into dark wedges over the trapezius — the "too big, right in the centre" artefact.
+- The frame is solved first and clamped; the remainder of the tape goes into **deltoid soft tissue** (`kd`), bounded
+  so the bideltoid stays 1.06–1.75 × biacromial and ≤ 0.35 H. The skeleton no longer absorbs an implausible tape.
+- The shoulder section keeps the hull's width and depth with `n` solved in **1.7–4.2**; outside that the tape is not
+  a possible circumference for the body, so the section falls back to the tape at a plausible aspect (0.34–0.72) and
+  a second warning names the problem. Every given tape is still reproduced within ±1 % (§16).
+- Renderer: the girdle spread is a **bracketed bisection** inside a band (±0.20/+0.32 with a measured tape,
+  −0.15/+0.22 with an estimated one), and a **second pass after the Taubin smoothing and the station correction**
+  re-slices the finished surface and spreads the remainder — the shoulders tape now reads back at ±0.0 % instead of
+  −1 %. The trunk's share of the spread holds over the acromion and fades across the trapezius (it used to fade out
+  at the acromion while the arms translated in full, shearing the top of the shoulder).
+- The sports-top strap is a band of constant width **on the body** (≈ 1.25 in, from |∇ canonical x| per fragment),
+  not a band of constant canonical x: a fixed canonical band covered far more surface wherever the shoulder was
+  broad and flat.
+
+**Bug 2 — a very fat person rendered small.** Two causes, both fixed:
+- `geometryFor()` filled every missing tape site from a fixed median body (`DEF_SHAPE`) and body weight never
+  reached the 3D, so a 300 lb profile with only a weight logged was drawn as an average 164 lb body. Now only the
+  stature falls back; every other site is left to `anthro.fillGirths`, which sizes it from this body's height and
+  weight (girth² ∝ weight / height) and records it in `geom.estimated`. `shapeOf()` forwards `weightLb`, the Body
+  card passes it, and `silhouetteSVG(m, { weightLb })` scales its defaults the same way.
+- The trunk inside the shoulder loop was purely skeletal, so a heavy body necked in above the armpits and the
+  shoulders collapsed; the renderer then squashed them further chasing a tape estimated from stature alone. The
+  trunk may now never be narrower than 0.93 × the chest half-breadth below it (inert up to BMI ≈ 40 of either sex),
+  and the acromion station follows it.
+
+**Guards (whole input space).** Over sex × height 56–80 in × weight 90–420 lb × body fat 5–60 % × muscle × any
+subset of tape sites (including none), `bodyGeometry()` must give: finite numbers everywhere; every **given** tape
+reproduced within ±1 %; biacromial 0.17–0.28 H; bideltoid > biacromial and 0.19–0.42 H; shoulder-section aspect
+0.25–0.90 and `n` 1.7–4.2; no trunk step-in above the armpits (≥ 0.88 × the axilla breadth at the deltoid, ≥ 0.85 ×
+that at the acromion); head circumference 0.28–0.40 H; every section `rx`, `rz` > 0. Where the input is genuinely
+implausible the model clamps and pushes a user-visible `warning` saying what was adjusted.
+
+**Male output is unchanged**: `bodyGeometry()` is byte-identical on a golden set of eight male bodies (taped,
+partly taped and weight-only) and over a 3,024-case plausible-male matrix nothing moves except at BMI ≳ 40 or where
+a frame-clamp warning was already being raised — both cases the fix is for. The male *render* does change by the
+shoulder-loop convergence fix (the tape reads 46.00 instead of 45.52 for Bob), which is the §16 accuracy contract
+being met; the obese and untaped male bodies were broken in the same way as the female ones and are fixed too.
+
+**Tests.** `test/anthro-guards.test.js` (the matrix above, the clamp/warning behaviour, weight-driven estimates, the
+male golden lock), `test/mesh-guards.test.js` (twelve fitted bodies: tapes read back off the skinned mesh, the
+spread band, untaped-by-weight sizing, head size, no NaN), e2e `S5` (obese female and obese male, with and without
+a tape, mount the 3D with no page errors and are sized to their weight).

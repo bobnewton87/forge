@@ -733,21 +733,35 @@ export function bodyGeometry(input = {}) {
   // Lateral reach of the deltoid beyond the acromion: [AN] (bideltoid − biacromial)/2 ≈ (49.0 − 39.7)/2 cm
   // ≈ 1.83 in for the median man; more with bigger delts and more fat. The acromion's lateral tip sits
   // ≈ 0.35 in lateral of the GH centre [NY], so the arm's lateral reach from the GH centre = offset + 0.35.
-  const delOffset = 1.83 * s * K.delt * clamp(1 + 0.35 * (mu.delts - 0.5) + 0.012 * (bf - 20), 0.75, 1.35);
   const acrGH = 0.35 * s;
-  const ax = delOffset + acrGH, az = ax * clamp(1.05 + 0.08 * (mu.delts - 0.5), 0.95, 1.15);
+  const azAsp = clamp(1.05 + 0.08 * (mu.delts - 0.5), 0.95, 1.15);
+  const delNom = 1.83 * s * K.delt * clamp(1 + 0.35 * (mu.delts - 0.5) + 0.012 * (bf - 20), 0.75, 1.35);
+  // §21b floor — the trunk inside the loop. On a lean body the shoulder girdle is the widest structure at this
+  // height, so the trunk is the skeletal frame plus a little acromial overhang. On a heavy body the chest wall and
+  // the axillary fat are wider than the skeleton and the tape rides on them, so the trunk may never neck in to
+  // less than 0.93 of the chest half-breadth two inches below it (the trunk tapers upward, it does not step in).
+  // Without the floor the torso pinched in above the armpits on very large bodies, the shoulders collapsed, and a
+  // missing shoulders tape was estimated as the median one for the stature however big the body was. Calibrated
+  // so it is inert for every body up to BMI ≈ 40 of either sex (male output unchanged; see test/anthro-guards).
+  const torsoFloorX = sec.chest.rx * 0.93;
   // (female: the loop passes above the breasts, so the torso depth there is the ribcage's, ≈ 0.9 × underbust depth;
   //  this reproduces [AN2F] median biacromial / shoulder circumference with the same relative error as the male loop)
   const Tz = FEM ? sec.underbust.rz * 0.9 : sec.chest.rz * 0.93, Tn = 2.8;
-  const loopAt = c => shoulderLoop(c, c + 0.3 * acrGH, Tz, Tn, ax, az);
+  const TxAt = cc => Math.max(cc + 0.3 * acrGH, torsoFloorX);
+  // kd scales the deltoid soft tissue (kd = 1 is exactly the reach above, so nothing below changes a body whose
+  // tape the skeleton can reach): the skeleton (c) is solved first and kd absorbs whatever a clamped frame cannot,
+  // so an implausible tape widens or narrows the delts instead of the bones or the shape of the section.
+  const axAt = kd => delNom * kd + acrGH;
+  const loopAt = (cc, kd = 1) => { const a = axAt(kd); return shoulderLoop(cc, TxAt(cc), Tz, Tn, a, a * azAsp); };
   // Skeletal plausibility: biacromial ≈ 0.20–0.255 H ([AN] 1st–99th pct ≈ 36–44.5 cm at 175 cm).
   const cMin = K.cMin * H - acrGH, cMax = K.cMax * H - acrGH;
-  let c;
+  let c, kd = 1;
   if (!given.shoulders) {
     // No shoulders tape: biacromial from stature ([AN] median 39.7–40.9 cm at 175.6 cm ≈ 0.229 H; it grows less
-    // than proportionally with height, exponent ≈ 0.75), wider with traps/delts development; tape = the loop.
+    // than proportionally with height, exponent ≈ 0.75), wider with traps/delts development; tape = the loop
+    // (which now carries this body's own trunk size, not only its stature).
     const biac = K.biac * K.biacRef * Math.pow(H / K.biacRef, 0.75) * (1 + 0.03 * (mu.delts - 0.5) + 0.02 * (mu.traps - 0.5));
-    c = biac / 2 - acrGH;
+    c = clamp(biac / 2 - acrGH, cMin, cMax);
     g.shoulders = Math.round(loopAt(c).perimeter * 10) / 10;
   } else {
     let lo = cMin * 0.6, hi = cMax * 1.25;
@@ -755,26 +769,37 @@ export function bodyGeometry(input = {}) {
     c = (lo + hi) / 2;
   }
   if (c < cMin || c > cMax) {
-    warnings.push(`Shoulders tape (${g.shoulders}) implies a ${c < cMin ? 'narrower' : 'wider'} shoulder frame (biacromial ${(2 * (c + acrGH)).toFixed(1)} in) than adults of this height; the skeleton was clamped to ${c < cMin ? 'the narrowest' : 'the widest'} plausible frame and the tape is still matched.`);
+    // §21b: keep the skeleton plausible and put the rest of the tape into the deltoid soft tissue, bounded so the
+    // bideltoid stays inside 1.06–1.75 × biacromial and ≤ 0.35 H (ANSUR 99.9 pct bideltoid / stature ≈ 0.30).
+    const wide = c > cMax;
     c = clamp(c, cMin, cMax);
+    const biacC = 2 * (c + acrGH);
+    const lim = wide ? Math.max(1, Math.min(2.2, (0.175 * H - c - acrGH) / delNom, (0.375 * biacC) / delNom))
+      : Math.min(1, Math.max(0.2, (0.03 * biacC) / delNom));
+    const reach = loopAt(c, lim).perimeter;
+    if (wide ? reach <= g.shoulders : reach >= g.shoulders) kd = lim;
+    else { let lo = Math.min(1, lim), hi = Math.max(1, lim); for (let i = 0; i < 28; i++) { const m = (lo + hi) / 2; if (loopAt(c, m).perimeter < g.shoulders) lo = m; else hi = m; } kd = (lo + hi) / 2; }
+    warnings.push(`Shoulders tape (${g.shoulders}) implies a ${wide ? 'wider' : 'narrower'} shoulder frame than adults of this height; the skeleton was clamped to ${wide ? 'the widest' : 'the narrowest'} plausible one (biacromial ${(2 * (c + acrGH)).toFixed(1)} in) and the rest of the tape was put into ${wide ? 'bigger' : 'smaller'} deltoids, so the tape is still matched.`);
   }
-  const loop = loopAt(c);
-  const bideltoid = 2 * loop.halfWidth, biacromial = 2 * (c + acrGH);
+  const loop = loopAt(c, kd), ax = axAt(kd), az = ax * azAsp;
+  const bideltoid = 2 * (c + ax), biacromial = 2 * (c + acrGH);
   let shoulderSec;
   {
     const rx = loop.halfWidth, rz = loop.halfDepth;
-    const n = solveN(rx, rz, g.shoulders);
+    const n0 = solveN(rx, rz, g.shoulders);
+    // §21b: a loop around a torso and two arms is never a diamond or a box, so an exponent outside 1.7–4.2 means
+    // the tape cannot be drawn on this frame at all — take the plausible-shape fallback instead.
+    const n = n0 != null && n0 >= 1.7 && n0 <= 4.2 ? n0 : null;
     if (n != null) shoulderSec = { rx, rz, n, girth: perimeter(rx, rz, n) };
     else {
-      // Tape is not reachable with this width/depth (clamped frame): keep the width, solve the depth at n=2.5.
-      let lo2 = 0.05, hi2 = rx * 2;
-      for (let i = 0; i < 50; i++) { const m = (lo2 + hi2) / 2; if (perimeter(rx, m, 2.5) < g.shoulders) lo2 = m; else hi2 = m; }
-      const rz2 = (lo2 + hi2) / 2;
-      shoulderSec = perimeter(rx, rz2, 2.5) > g.shoulders * 1.005 || rz2 < 0.06
-        ? solveSection(g.shoulders, 0.5, 2.5) : { rx, rz: rz2, n: 2.5, girth: perimeter(rx, rz2, 2.5) };
+      // The tape is out of reach even with the frame clamped and the deltoids at their limit, i.e. it is not a
+      // possible adult shoulder circumference for this body. Reproduce it anyway (§16), but with a plausibly
+      // shaped section: keep the loop's depth:breadth where it is sane and never a pancake or a barrel.
+      shoulderSec = solveSection(g.shoulders, clamp(rz / rx, 0.34, 0.72), 2.5);
+      warnings.push(`Shoulders tape (${g.shoulders}) is not a possible circumference around this body's chest and arms; the shoulder section was drawn at the tape value with typical proportions. Check the tape goes around both deltoids, horizontally, with the arms down.`);
     }
   }
-  const torsoShoulder = { rx: c + 0.3 * acrGH, rz: Tz, n: Tn };
+  const torsoShoulder = { rx: TxAt(c), rz: Tz, n: Tn };
   torsoShoulder.girth = perimeter(torsoShoulder.rx, torsoShoulder.rz, Tn);
 
   // ---- sagittal centres
@@ -844,6 +869,10 @@ export function bodyGeometry(input = {}) {
   const neckZ = Z.neck * H;
   const slope = (20 + 8 * (mu.traps - 0.5)) * Math.PI / 180;   // neck-to-acromion shoulder line ≈ 20° (traps raise it)
   const acrX = biacromial / 2;
+  // §21b: the trunk at acromion level carries the same soft tissue as the deltoid station just below it, so it
+  // keeps the loop's trunk floor (slightly narrower, the chest wall tapers upward). Inert for lean bodies, where
+  // the bony frame is the widest thing there. The shoulder-slope / neck-base line stays on the skeleton (acrX).
+  const acrXEff = Math.max(acrX * 0.96, torsoFloorX * 0.95);
   const neckBaseY = Math.min(hy('acromion') + Math.tan(slope) * (acrX - sec.neck.rx), hy('neck') - 0.002 * H);
   // Crotch: bottom of the trunk; the thighs (legL/legR) carry the outer contour below the hips.
   const crotchSec = { rx: sec.hip.rx * 0.95, rz: sec.hip.rz * 0.85, n: N.crotch };
@@ -859,8 +888,8 @@ export function bodyGeometry(input = {}) {
     T('chest', hy('chest'), sec.chest, czOf.chest),
     T('axilla', hy('axilla'), { rx: sec.chest.rx * 1.01, rz: sec.chest.rz * 0.98, n: N.chest }, lerp(czOf.chest, Z.shoulder * H, 0.4)),
     T('shoulder', hy('deltoid'), torsoShoulder, Z.shoulder * H),
-    T('acromion', hy('acromion'), { rx: acrX * 0.96, rz: sec.chest.rz * 0.70, n: 2.6 }, Z.acromion * H),
-    T('trap', lerp(hy('acromion'), neckBaseY, 0.55), { rx: lerp(sec.neck.rx * 1.1, acrX * 0.96, trapT), rz: lerp(sec.neck.rz * 1.15, sec.chest.rz * 0.7, 0.45), n: 2.3 }, Z.trap * H),
+    T('acromion', hy('acromion'), { rx: acrXEff, rz: sec.chest.rz * 0.70, n: 2.6 }, Z.acromion * H),
+    T('trap', lerp(hy('acromion'), neckBaseY, 0.55), { rx: lerp(sec.neck.rx * 1.1, acrXEff, trapT), rz: lerp(sec.neck.rz * 1.15, sec.chest.rz * 0.7, 0.45), n: 2.3 }, Z.trap * H),
     T('neckBase', neckBaseY, { rx: sec.neck.rx * 1.12 * K.neckBase, rz: sec.neck.rz * 1.12 * K.neckBase, n: 2.1 }, Z.neckBase * H),
   ];
 
