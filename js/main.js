@@ -6,9 +6,17 @@
 // Optional extras a screen may export:
 //   title(ctx, params) → string   header title for sub-pages
 //   autoRerender = false          opt out of re-render on store changes
-import { store } from './store.js';
+import { store, accounts } from './store.js';
 import { createShell, createTimer } from './ui/shell.js';
 import { esc } from './ui/components.js';
+
+// Cloud sign-in redirect (CONTRACT §19): take OAuth / email-link tokens off the address bar before the router
+// reads the hash. ui/accounts.js picks them up after the first draw.
+let authReturn = '';
+if (/(^|[#&?/])(access_token|error_description)=/.test(location.hash + '&' + location.search)) {
+  authReturn = location.hash + '&' + location.search.slice(1);
+  history.replaceState(null, '', location.pathname + '#/settings?section=accounts');
+}
 
 const SCREEN_FILES = {
   today: './ui/today.js', session: './ui/session.js', body: './ui/body.js', history: './ui/history.js', plan: './ui/plan.js', measure: './ui/measure.js', projection: './ui/projection.js', supplements: './ui/supplements.js',
@@ -51,6 +59,7 @@ const shell = createShell(app, {
   onTab: t => ctx.nav(t),
   onBack: () => ctx.back(),
   onLocation: openLocationSheet,
+  onAccount: () => import('./ui/accounts.js').then(m => m.openSwitcher(ctx)),
 });
 const timer = createTimer(shell.timerEl, () => store.getProfile());
 
@@ -107,7 +116,7 @@ function draw({ scroll = false } = {}) {
     const mod = modules[SCREEN_FILES[route]];
     let title = TITLES[route] || '';
     try { if (mod && typeof mod.title === 'function') title = mod.title(ctx, params) || title; } catch (e) { /* ignore */ }
-    shell.setHeader({ title, back: !!PARENT[route], location: ctx.location() });
+    shell.setHeader({ title, back: !!PARENT[route], location: ctx.location(), account: accountChip() });
     shell.setTabs(TAB_OF[route], { activeSession: hasActive() });
     const y = window.scrollY;
     const root = shell.content;
@@ -119,6 +128,10 @@ function draw({ scroll = false } = {}) {
     root.dataset.route = route;
     if (scroll) window.scrollTo(0, 0); else window.scrollTo(0, y);
   } finally { drawing = false; }
+}
+// Header account chip: shown when there is more than one account, TEST badge on test accounts (CONTRACT §19).
+function accountChip() {
+  try { const a = accounts.active(); return { name: a.name, test: accounts.kind(a) === 'test', multi: accounts.list().length > 1 }; } catch (e) { return null; }
 }
 function hasActive() { try { const s = store.getActiveSession(); return !!(s && s.status !== 'done'); } catch (e) { return false; } }
 
@@ -139,4 +152,6 @@ document.addEventListener('focusout', () => setTimeout(() => { if (pending && !e
   await loadModules();
   history.replaceState(history.state || { i: 0 }, '', location.hash || '#/today');
   draw({ scroll: true });
+  // Cloud sync starts after the first paint and never blocks it (it does nothing while js/config.js is blank).
+  setTimeout(() => import('./ui/accounts.js').then(m => m.startCloud(ctx, { authReturn })).catch(e => console.error(e)), 0);
 })();
