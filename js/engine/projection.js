@@ -82,6 +82,7 @@ import { sexOf, BODY, FAT_COEF as SEX_FAT_COEF, SMM_SHARE_RAW_MALE, SMM_SHARE_RA
 //   it came from potassium-40 lean mass, not DXA, and no DXA recalibration exists (a 1–3 point shift moves p by ~0.02).
 import { sessionVolume } from './recovery.js';
 import { dailyTargets, macrosFor, adaptiveTdee } from './nutrition.js';
+import { lossPlan, LOSS_RATES, DEFAULT_LOSS_RATE } from './targets.js';
 import { _sessionDetail, NEAT_FACTORS, tdee as formulaTdee } from './bodycomp.js';
 import * as MET from './metabolic.js';
 import { GROUPS, GROUP_ORDER } from '../data/muscles.js';
@@ -146,7 +147,34 @@ const INTERF_FREE_MIN = 150, INTERF_PER_100 = 0.04, INTERF_CAP = 0.2;
 const IMPACT_W = { high: 1.6, low: 1 };
 const INTENSITY_W = { easy: 0.8, moderate: 1, hard: 1.25, intervals: 1.25 };
 const HIGH_IMPACT_CLASSES = new Set(['hiit', 'boxing', 'cardio_dance']);
-const GOAL_OFFSET = { recomp: -300, cut: -500, lean_bulk: 250 };
+// §23: 'cut' = get lean, keep muscle. 'weight_loss' = get smaller, lean mass allowed to follow; its intake is
+// normally sized from the user's chosen rate (targets.lossPlan), and this offset is only the fallback when no
+// rate, goal weight or nutrition target exists.
+const GOAL_OFFSET = { recomp: -300, cut: -500, lean_bulk: 250, weight_loss: -600 };
+// ---- §23 lean loss in a deficit -----------------------------------------------------------------------------
+// Rate of loss → multiplier on the fraction of lost mass that is lean. Garthe et al. 2011 (Int J Sport Nutr Exerc
+// Metab 21:97, doi:10.1123/ijsnem.21.2.97) randomised 24 elite athletes, all lifting 4x/week on a high-protein diet,
+// to 0.7 %/week or 1.4 %/week. The slow group achieved 0.7 ± 0.8 %/week: fat −31 ± 3 %, LEAN +2.1 ± 0.4 %. The fast
+// group actually achieved 1.0 ± 0.4 %/week: fat −21 ± 4 %, lean −0.2 ± 0.7 %, for the same ≈5.5 % body-mass drop. So
+// the demonstrated contrast is 0.7 vs 1.0 %/week, not 0.7 vs 1.4: Forge anchors the curve on 0.7 (factor 1.0) and
+// ×1.6 at 1.0 %/week, extrapolating linearly past it with a hard cap, and easing down more gently below 0.7 (slower
+// loss helps, but there is no study showing it helps as steeply as speed hurts). Directionally confirmed in
+// non-athletes by Ashtary-Larky 2017 (Int J Endocrinol Metab 15:e13249, doi:10.5812/ijem.13249): rapid loss took more
+// lean mass, fat-free mass, body water and RMR than slow loss for the same weight.
+const LOSS_RATE_REF = DEFAULT_LOSS_RATE;      // 0.7 %/week
+const LOSS_RATE_K_UP = 2.0, LOSS_RATE_K_DOWN = 0.7, LOSS_RATE_CAP = [0.5, 3];
+// Protein → how much of the achievable lean-sparing you get, in a DEFICIT (a different curve from the growth
+// curve above). Mettler, Mitchell & Tipton 2010 (Med Sci Sports Exerc 42:326, doi:10.1249/MSS.0b013e3181b2ef8e):
+// resistance-trained men at 60 % of habitual intake for 2 weeks lost 1.6 ± 0.3 kg of lean at 1.0 g/kg (~0.45 g/lb)
+// but only 0.3 ± 0.3 kg at 2.3 g/kg (~1.05 g/lb) — a 5.3x difference in lean loss. Longland et al. 2016 (Am J Clin
+// Nutr 103:738, doi:10.3945/ajcn.115.119339): 4 weeks at a 40 % deficit with 6 training days/week, 1.2 vs 2.4 g/kg
+// (0.55 vs 1.09 g/lb) → lean +0.1 ± 1.0 vs +1.2 ± 1.0 kg and fat −3.5 vs −4.8 kg. Helms et al. 2014
+// (doi:10.1123/ijsnem.2013-0054) recommends 2.3-3.1 g/kg of FFM for lean athletes in a deficit, which is ~0.9-1.2
+// g/lb of bodyweight at 15 % body fat: the curve therefore reaches 1.0 at 1.1 g/lb and does not reward more.
+const PROTEIN_RETAIN_ANCHORS = [[0.3, 0.28], [0.45, 0.52], [0.6, 0.70], [0.8, 0.88], [1.0, 0.98], [1.1, 1]];
+// A deficit past this stopped lifters gaining lean mass at all (Murphy & Koehler 2022, Scand J Med Sci Sports
+// 32:125, doi:10.1111/sms.14075, meta-regression); strength gains largely survived (ES -0.31, p = 0.28).
+const LEAN_GAIN_DEFICIT_LIMIT = 500;
 const TEMPLATE_HISTORY_DAYS = 28;
 const CALIB_WEIGHT = { low: 0.4, medium: 0.7, high: 0.9 };
 
@@ -277,6 +305,16 @@ export function energyFactor(balance) {
   return b >= 0 ? EF_MAINT + (1 - EF_MAINT) * (1 - Math.exp(-b / EF_TAU_SURPLUS)) : EF_MAINT * Math.exp(b / EF_TAU_DEFICIT);
 }
 export function proteinFactor(gPerLb) { return interp(PROTEIN_ANCHORS, Math.max(0, numOr(gPerLb, PROTEIN_ASSUMED))); }
+// §23. Protein → fraction of the achievable lean-sparing in a DEFICIT (Mettler 2010 / Longland 2016 / Helms 2014).
+// Steeper and plateauing later than proteinFactor(), which is about GROWTH in a surplus.
+export function proteinRetentionFactor(gPerLb) { return interp(PROTEIN_RETAIN_ANCHORS, Math.max(0, numOr(gPerLb, PROTEIN_ASSUMED))); }
+// §23. Weekly weight loss as % of bodyweight → multiplier on the lean share of what is lost (Garthe 2011).
+// 1.0 at the evidence-backed 0.7 %/week, ~1.6 at 1.0 %/week, clamped to [0.5, 3].
+export function lossRateFactor(pctPerWeek) {
+  const r = Math.max(0, numOr(pctPerWeek, LOSS_RATE_REF));
+  const k = r > LOSS_RATE_REF ? LOSS_RATE_K_UP : LOSS_RATE_K_DOWN;
+  return clamp(1 + k * (r - LOSS_RATE_REF), LOSS_RATE_CAP[0], LOSS_RATE_CAP[1]);
+}
 // Weekly fractional sets for one muscle group → stimulus (10 sets = 1.0, plateau ≈ 1.36, 0 sets = 0).
 export function setResponse(sets) { const S = Math.max(0, numOr(sets, 0)); return rRaw(S) / R_NORM; }
 // Legacy whole-body helper (kept for compatibility; the model now works per muscle group).
@@ -448,9 +486,15 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   const months0 = Number.isFinite(Number(body.trainingMonths)) && Number(body.trainingMonths) >= 0 ? Number(body.trainingMonths) : 6;
   const neatFactor = NEAT_FACTORS[body.activity] ?? NEAT_FACTORS.desk;
   const goal = GOAL_OFFSET[profile.goal] != null ? profile.goal : 'recomp';
+  // §23: the weight-loss goal turns on the honest lean-loss model (rate + deficit-specific protein curve) and
+  // aims at a goal WEIGHT as well as a goal body fat. Every other goal keeps the previous behaviour exactly.
+  const lossModel = goal === 'weight_loss';
   const nut = profile.nutrition && typeof profile.nutrition === 'object' ? profile.nutrition : {};
   const nutritionOn = !!(nut.mode && nut.mode !== 'off');
   const goalBf = pos(body.goalBodyFat) || BC.goalBodyFat;
+  let lplan = null;
+  try { lplan = lossModel ? lossPlan(profile, { weightLb: W0, now: nowD }) : null; } catch (e) { lplan = null; }
+  const goalWeightLb = lplan && lplan.goalWeightLb && lplan.goalWeightLb < W0 ? lplan.goalWeightLb : null;
   const age = pos(b.age) ?? (pos(body.birthYear) ? nowD.getFullYear() - Number(body.birthYear) : null);
 
   // ---------------- intake spec
@@ -685,7 +729,9 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   const intakeMode = specCal ? 'calories' : specSurplus != null ? 'surplus' : nutritionOn ? 'nutrition' : 'goal';
   const intakeSource = intakeMode === 'calories' || intakeMode === 'surplus' ? 'arg' : intakeMode;
   const userSet = intakeMode === 'calories' || intakeMode === 'surplus' || (intakeMode === 'nutrition' && (pos(nut.calories) || (nut.surplus != null && nut.surplus !== '' && fin(Number(nut.surplus)))));
-  const goalIntake = tdeeStart + GOAL_OFFSET[goal];
+  // §23: a weight-loss goal eats at maintenance minus the deficit its chosen rate needs (targets.lossPlan uses
+  // nutrition.lossRateDeficit, so Nutrition shows exactly this number).
+  const goalIntake = lossModel && lplan?.deficitKcal ? Math.max(800, tdeeStart - lplan.deficitKcal) : tdeeStart + GOAL_OFFSET[goal];
   const fixedIntake = intakeMode === 'calories' ? specCal : intakeMode === 'surplus' ? Math.max(800, tdeeStart + specSurplus) : null;
 
   // ---------------- nutrition phases (explicit arg, else the saved plan unless an explicit intake was passed)
@@ -707,6 +753,7 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
     intakeMode, intakeSource, userSet, goalIntake, fixedIntake, specSurplus,
     midDates, endDates, ageMid, rmrAge, leanAgeFactor, ffmiCeil, leanAtFfmi, PA0, gammaFatLb, phasePlan, realism, modsWeek, waterWeek,
     weekResp, stopAtGoal: !!stopAtGoal, share, smmFrac, fstat, lmBf: leanModelBf(sex),
+    lossModel, lplan, goalWeightLb,
   };
 }
 
@@ -806,7 +853,7 @@ function nutritionIntake(ctx, wk, Wt, maint) {
 //   true maintenance is below the estimate), leanMult (lean-rate multiplier), ceilShift (FFMI points vs the ceiling),
 //   adhDecay (fraction of training lost asymptotically, τ = 78 weeks) }
 function simulate(ctx, opts = {}) {
-  const { W, W0, L0, F0, sex, goal, goalBf, months0, weekDrivers, bmrOf, exNetPerDay, calib, ffmiOf, today, PA0, gammaFatLb, share } = ctx;
+  const { W, W0, L0, F0, sex, goal, goalBf, months0, weekDrivers, bmrOf, exNetPerDay, calib, ffmiOf, today, PA0, gammaFatLb, share, lossModel, goalWeightLb } = ctx;
   const femaleRate = sex === 'female';
   const labFixed = opts.fixedIntake != null;
   const fixedIntake = labFixed ? opts.fixedIntake : ctx.fixedIntake;
@@ -859,7 +906,12 @@ function simulate(ctx, opts = {}) {
       if (k === 0) EIref = M;
       dRef = EIref;
       // A goal-driven diet (or a user-set deficit with stopAtGoal) moves to maintenance once at the goal body fat.
-      const atGoal = bfNow <= goalBf && (userSet ? ctx.stopAtGoal && !labFixed && fixedIntake != null && fixedIntake < EIref : goal !== 'lean_bulk');
+      // §23: under the weight-loss goal the SCALE is the goal, so a goal weight replaces the body-fat stop
+      // entirely (someone already under their goal body fat but over their goal weight must keep going).
+      // Without a goal weight it falls back to the body-fat stop, exactly like the other goals.
+      const hitWeight = lossModel && !labFixed && goalWeightLb != null && Wt <= goalWeightLb;
+      const atGoalBf = bfNow <= goalBf && (userSet ? ctx.stopAtGoal && !labFixed && fixedIntake != null && fixedIntake < EIref : goal !== 'lean_bulk');
+      const atGoal = lossModel && goalWeightLb != null && !labFixed ? hitWeight : (hitWeight || atGoalBf);
       if (atGoal) track = true;
       else if (fixedIntake != null) inK = fixedIntake;
       else if (ctx.intakeMode === 'nutrition') {
@@ -941,13 +993,28 @@ function simulate(ctx, opts = {}) {
     for (const g of GROUP_ORDER) gG[g] += leanDirect * share[g];
     let gain = gainTrain + leanDirect;
     // Lean loss in a deficit: Forbes partition, mostly prevented by lifting + protein.
-    let loss = 0;
+    let loss = 0, lossFrac = 0, lossRatePct = 0;
     if (bal < 0) {
       const massLoss = (-bal * 7) / KCAL_PER_LB_FAT;
+      // Forbes' rule: the leaner you are, the more of what you lose is lean tissue. p = 10.4 / (10.4 + fat kg)
+      // (Forbes 1987, Nutr Rev 45:225, doi:10.1111/j.1753-4887.1987.tb02684.x; Forbes 2000, Ann N Y Acad Sci
+      // 904:359, doi:10.1111/j.1749-6632.2000.tb06482.x; restated for macroscopic changes by Hall 2007, Br J Nutr
+      // 97:1059, doi:10.1017/S0007114507691946). At 45 lb of fat p = 0.34; at 15 lb it is 0.60.
       const pForbes = 10.4 / (10.4 + F / LB_PER_KG);
-      // Keeping muscle needs far less volume than building it: protection saturates at ~70% of the stimulus.
-      const protect = 0.9 * Math.min(1, respW / 0.7) * Math.min(1, bfNow / ctx.lmBf.protectFull) * pf;
-      loss = massLoss * pForbes * (1 - protect) * mods.leanRetentionMult;
+      if (!lossModel) {
+        // Keeping muscle needs far less volume than building it: protection saturates at ~70% of the stimulus.
+        const protect = 0.9 * Math.min(1, respW / 0.7) * Math.min(1, bfNow / ctx.lmBf.protectFull) * pf;
+        loss = massLoss * pForbes * (1 - protect) * mods.leanRetentionMult;
+      } else {
+        // §23 weight-loss model. Same Forbes partition and the same lifting-protection shape, but (a) protein
+        // uses the deficit-specific retention curve (Mettler 2010 / Longland 2016), and (b) the lean share is
+        // scaled by how FAST the weight is coming off (Garthe 2011). The lean fraction of the loss is then
+        // clamped to 0.95: even starvation leaves some fat coming off.
+        const protect = 0.9 * Math.min(1, respW / 0.7) * Math.min(1, bfNow / ctx.lmBf.protectFull) * proteinRetentionFactor(protein);
+        lossRatePct = Wt > 0 ? 100 * massLoss / Wt : 0;
+        lossFrac = clamp(pForbes * (1 - protect) * mods.leanRetentionMult * lossRateFactor(lossRatePct), 0, 0.95);
+        loss = massLoss * lossFrac;
+      }
     }
     // Energy: lean built costs ~1,250 kcal/lb, lean lost releases ~800; the rest of the balance is fat.
     let dF = (bal * 7 - gain * KCAL_PER_LB_LEAN + loss * KCAL_LEAN_RELEASED) / KCAL_PER_LB_FAT;
@@ -980,11 +1047,39 @@ function simulate(ctx, opts = {}) {
     pts.push(lite ? { L, F, water } : { L, F, water, G: { ...G }, ph, track, Ceff, defended });
     prevBal = bal;
     wkOut.push({ kcalIn: inK, kcalOut: out, balance: bal, raw: raw - (track ? 0 : eShift), adapt, defended, gain, loss, ceiling, fatChange: dF,
-      leanDirect, fatDirect, gainByGroup: lite ? null : { ...gG }, months, maint: M, track, ph,
+      leanDirect, fatDirect, gainByGroup: lite ? null : { ...gG }, months, maint: M, track, ph, lossFrac, lossRatePct,
       f: { vf: respW, pf, cf, itf, ff, bff, fE, stack: mods.leanCeilingMult, age: ageF },
       macros: k === 0 ? macrosFor(profFor(protein, fat), { calories: inK, bodyweight: Wt }) : null });
   }
   return { pts, wkOut };
+}
+
+// §23. What each candidate rate of loss actually costs, simulated (not asserted): one lite run per rate at the
+// intake that rate implies, read at the week the goal weight is reached (or at the horizon if it isn't).
+// This is the "at this rate you lose about X lb of lean and Y lb of fat" trade-off the UI shows.
+function lossRateScan(ctx, rates) {
+  const out = [];
+  for (const r of rates) {
+    const deficitKcal = Math.round(ctx.W0 * r / 100 * KCAL_PER_LB_FAT / 7);
+    const calories = Math.max(800, Math.round(ctx.tdeeStart - deficitKcal));
+    let run; try { run = simulate(ctx, { fixedIntake: calories, lite: true }); } catch (e) { continue; }
+    const p0 = run.pts[0];
+    const w0 = p0.L + p0.F + p0.water;
+    let k = run.pts.length - 1, reached = false;
+    if (ctx.goalWeightLb != null) {
+      const i = run.pts.findIndex(q => q.L + q.F + q.water <= ctx.goalWeightLb);
+      if (i > 0) { k = i; reached = true; }
+    }
+    const p = run.pts[k], T = p.L + p.F;
+    const dL = p.L - p0.L, dF = p.F - p0.F, dW = T + p.water - w0;
+    out.push({ pctPerWeek: Math.round(r * 100) / 100, deficitKcal, calories, week: k, reached,
+      lbPerWeek: Math.round(ctx.W0 * r / 100 * 100) / 100,
+      leanLb: r2(dL), fatLb: r2(dF), weightLb: r2(dW), endWeightLb: r1(T + p.water), endLeanLb: r1(p.L), endFatLb: r1(p.F),
+      bodyFatPct: r1(100 * p.F / T),
+      // share of the weight lost that came off as lean tissue (null when nothing was lost)
+      leanShareOfLoss: dW < -0.2 && dL < 0 ? r2(clamp(dL / dW, 0, 1)) : dW < -0.2 ? 0 : null });
+  }
+  return out;
 }
 
 // Averages of the lean-model factors over a run (what limited muscle gain).
@@ -1132,14 +1227,14 @@ export function project(args = {}) {
   const weeklyLite = likely.pts.map((p, k) => {
     const T = p.L + p.F;
     const sh = shapeAt(p.L, p.F, p.G);
-    return { week: k, date: ds(addDays(start, 7 * k)), bodyFatPct: r1(100 * p.F / T), leanLb: r1(p.L), ffmi: r1(ffmiOf(p.L)),
+    return { week: k, date: ds(addDays(start, 7 * k)), bodyFatPct: r1(100 * p.F / T), leanLb: r1(p.L), fatLb: r1(p.F), weightLb: r1(T + p.water), ffmi: r1(ffmiOf(p.L)),
       ratios: { shoulderToWaist: pos(m0.shoulders) && pos(m0.waist) ? r2(sh.shoulders / sh.waist) : null,
         ...(sex === 'female' ? { waistToHip: pos(m0.waist) && pos(m0.hips) ? r2(sh.waist / sh.hips) : null, waistToHeight: pos(m0.waist) && heightIn ? r2(sh.waist / heightIn) : null } : {}) } };
   });
 
   // ---------------- milestones
-  const milestones = sex === 'female' ? buildFemaleMilestones({ series: weeklyLite, W, goalBf, L0, body, m0, heightIn, ffmiCeil: ctx.ffmiCeil })
-    : buildMilestones({ series: weeklyLite, W, goalBf, L0, body, sex, m0, heightIn, ffmiCeil: ctx.ffmiCeil });
+  const milestones = sex === 'female' ? buildFemaleMilestones({ series: weeklyLite, W, goalBf, L0, body, m0, heightIn, ffmiCeil: ctx.ffmiCeil, goalWeightLb: ctx.goalWeightLb })
+    : buildMilestones({ series: weeklyLite, W, goalBf, L0, body, sex, m0, heightIn, ffmiCeil: ctx.ffmiCeil, goalWeightLb: ctx.goalWeightLb });
   const phaseWeeks = ctx.phasePlan ? ctx.phasePlan.instances.flatMap(x => [x.startWeek, x.startWeek - 1]) : [];
   const keep = sampleWeeks(W, [...milestones.map(m => m.week).filter(k => k != null), ...phaseWeeks]);
   const series = keep.map(pointAt);
@@ -1242,6 +1337,15 @@ export function project(args = {}) {
   assumptions.push(`How much of that ceiling you reach depends on food: about 70% at maintenance, ~93% at +250 kcal/day, ~98% at +500, and no more beyond that; a 300 kcal deficit gives ~45% and a 1,000 kcal deficit ~13% (newer lifters and people above 20% body fat recomp a bit better; very lean or veteran lifters worse). Leaner people put a bit more of a surplus into muscle (Forbes). This plan reaches ${partition.ceilingUsedPct}% of the ceiling. Calories beyond what muscle can use are stored as fat: that is why a huge surplus adds fat much faster than muscle (Iraki 2019; Garthe 2013 found the same in elite athletes).`);
   assumptions.push(`Energy bookkeeping: building 1 lb of lean tissue costs ~${KCAL_PER_LB_LEAN} kcal (what it stores plus the cost of making it); fat is ~${KCAL_PER_LB_FAT} kcal/lb. Whatever is left after muscle is fat gained (or, in a deficit, fat burned). Water and glycogen swings (often 2-4 lb day to day, and a few lb when carbs change a lot) are not modelled, so the line is your trend weight.`);
   assumptions.push(`Macros: protein matters up to ~1 g/lb (Morton 2018 meta-analysis: benefits plateau around 0.7 g/lb, upper estimate 1 g/lb), below ~0.7 g/lb muscle gain drops. At equal calories and protein the carb/fat split barely changes body composition; it is only modelled as a small training-quality penalty when carbs fall under ~100-150 g/day. Week 1 here: ${macros ? `${macros.protein} g protein, ${macros.carbs} g carbs, ${macros.fat} g fat (${macros.fatPct}% fat)` : 'n/a'}.`);
+  if (ctx.lossModel) {
+    const p0F = F0 / LB_PER_KG;
+    const avgFrac = likely.wkOut.filter(w => w.loss > 0 || w.lossFrac > 0);
+    const fracTxt = avgFrac.length ? Math.round(100 * avgFrac.reduce((a, w) => a + w.lossFrac, 0) / avgFrac.length) : 0;
+    assumptions.push(`Your goal is LOSING WEIGHT, not holding muscle, so Forge models lean loss honestly instead of assuming it away. Three things decide how much of each pound you lose is muscle. (1) Forbes' rule: the leaner you already are, the more of it is lean tissue. The fraction is 10.4 ÷ (10.4 + your fat mass in kg), so at your ${r1(F0)} lb (${r1(p0F)} kg) of fat it starts at ${Math.round(100 * 10.4 / (10.4 + p0F))}% and rises as you get leaner (Forbes 1987/2000; restated for real-sized weight changes by Hall 2007). (2) How FAST: in 24 elite athletes all lifting 4x/week, losing 0.7% of bodyweight a week took 31% of their fat off and ADDED 2.1% lean mass, while the faster group (which actually achieved 1.0%/week) took the same weight off but only 21% of their fat and no lean at all (Garthe 2011). (3) Protein and lifting: at ~0.45 g/lb, trained men lost 1.6 kg of lean in two weeks of hard dieting against 0.3 kg at ~1.05 g/lb (Mettler 2010), and 81% of diet-only groups lost 15%+ of their weight as fat-free mass against 39% of diet-plus-exercise groups (Weinheimer 2010). Here that works out at about ${fracTxt}% of each pound lost coming off as lean mass.`);
+    const pl = ctx.lplan;
+    if (pl) assumptions.push(`Rate and deficit: you asked for ${pl.pctPerWeek}% of bodyweight a week${pl.source === 'date' ? ` (set by your ${pl.goalWeightDate} target date)` : pl.source === 'default' ? ' (the default, and the best-evidenced rate)' : ''} = about ${pl.lbPerWeek} lb/week, which needs roughly ${pl.deficitKcal} kcal/day below maintenance. That conversion uses 3,500 kcal per lb, which Hall 2008 showed only holds above about 30 kg of fat mass and OVERSTATES the deficit a leaner person needs (lean tissue releases ~800 kcal/lb, not 3,500), while adaptive thermogenesis pulls real loss the other way; the week-by-week simulation below does the proper bookkeeping, so the projected rate may differ a little from the one you asked for.${ctx.goalWeightLb ? ` Once you hit ${r1(ctx.goalWeightLb)} lb the projection assumes you stop dieting and eat at maintenance.` : ''}`);
+    assumptions.push(`What lean loss actually costs you: strength falls more slowly than size (training cessation moves maximal force about −0.46 SD, submaximal strength −0.62 SD, and the longer the layoff the worse it gets; Bosquet 2013), bone density is the quiet cost (a year of diet-only weight loss took ~2% off hip and spine BMD while the same weight lost through exercise took none; Villareal 2006), and if you are losing mass to run faster, note that the benefit comes from carrying less, not from a better engine: adding 5% of bodyweight cost 89 m over a 12-minute run while VO2max per kg of FAT-FREE mass was unchanged (Cureton 1978, PMID 723510). Losing fat makes you faster; losing muscle mostly does not.`);
+  }
   assumptions.push(`In a deficit some lean mass can be lost (Forbes: more when leaner); lifting with enough protein prevents most (~90%) of that, and keeping muscle takes much less volume than building it. Cardio burns calories by machine, intensity and bodyweight; it only trims muscle gain modestly above ~150 effective min/week, about twice as much for running as for cycling (Wilson 2012 concurrent-training meta-analysis).${ctx.cdMin ? ` You added ${sgn(ctx.cdMin)}${Math.round(ctx.cdMin)} min/week of ${ctx.cdInt} ${CARDIO[ctx.cdMod]?.name || ctx.cdMod}.` : ''}`);
   const drvText = {
     plan: `Training comes from your planned sessions (${plannedCount} in range, through ${lastPlanned}).`,
@@ -1275,8 +1379,68 @@ export function project(args = {}) {
   if (ctx.realism) assumptions.push(`Long-term realism is on: weeks after the planned days fade toward ${Math.round((1 - ctx.realism) * 100)}% of the planned training over ~1.5 years (missed weeks, travel, life).`);
   assumptions.push(`Band: low/high combine, as independent errors, ±${sigmaE} kcal/day of maintenance-estimate error${calib.applied ? ' (narrowed by your food-log calibration)' : ''}, ${Math.round(lmLo * 100)}-${Math.round(lmHi * 100)}% of the expected muscle response, a genetic ceiling ±${FFMI_CEIL_SD} FFMI, and (low side) training adherence slipping ~20% over the years. It widens with the horizon and is wider when there is less real data (confidence: ${confidence}). Re-measuring narrows it: the projection re-anchors to your real numbers.`);
 
+  // ---------------- §23 weight-loss goal: the trade-off, in numbers, plus the honest warnings
+  let weightLoss = null;
+  if (ctx.lossModel) {
+    const plan = ctx.lplan || {};
+    const first = likely.wkOut.find(w => !w.track) || likely.wkOut[0] || {};
+    const deficitStart = Math.round((first.maint || tdeeStart) - (first.kcalIn || intakeStart));
+    const dieting = likely.wkOut.filter(w => !w.track);
+    const avgLossRate = dieting.reduce((a, w, _i, arr) => a + w.lossRatePct / arr.length, 0);
+    // What the simulation actually delivers, which is less than the nominal deficit implies once the body adapts.
+    const projLbPerWeek = r2(W0 * avgLossRate / 100);
+    const hitWeek = ctx.goalWeightLb != null ? weeklyLite.findIndex(p => p.weightLb <= ctx.goalWeightLb) : -1;
+    const at = hitWeek > 0 ? weeklyLite[hitWeek] : weeklyLite[weeklyLite.length - 1];
+    // Candidate rates: the user's own plus the standard set, deduped. Skipped on huge horizons (cost).
+    const rateSet = [...new Set([plan.pctPerWeek || DEFAULT_LOSS_RATE, ...LOSS_RATES.map(x => x.pctPerWeek)].map(x => Math.round(x * 100) / 100))].sort((a, b) => a - b);
+    const rates = W <= 260 ? lossRateScan(ctx, rateSet) : [];
+    const warn = [...(plan.warnings || [])];
+    const leanLost = Math.max(0, L0 - at.leanLb), fatLost = Math.max(0, weeklyLite[0].fatLb - at.fatLb);
+    const totalLost = leanLost + fatLost;
+    if (plan.lbPerWeek && projLbPerWeek > 0 && projLbPerWeek < plan.lbPerWeek * 0.8) warn.push(`You asked for ${plan.lbPerWeek} lb a week, but at ${Math.round(deficitStart)} kcal/day below maintenance the simulation only delivers about ${projLbPerWeek} lb a week. That is the body pushing back: digestion burns less, and adaptive thermogenesis adds up to ${AT_CAP} kcal/day plus ~${AT_PER_LB_LOST} kcal/day for every lb already lost (Martins 2020). Plan for the slower number, or add cardio rather than cutting food further.`);
+    if (ctx.goalWeightLb != null && hitWeek < 0) warn.push(`At this intake you reach about ${r1(at.weightLb)} lb within ${horizonLabel(W)}, short of your ${r1(ctx.goalWeightLb)} lb goal. Either extend the horizon, eat less, or move more.`);
+    if (likely.wkOut.some(w => w.defended)) warn.push(`The projection stops losing around ${DEFENDED_BF[sex]}% body fat: below that a fixed diet is not sustained (hunger and adaptive thermogenesis win), so intake is assumed to rise back to maintenance. Men who dieted to 4-6% body fat on an Army course did keep going, but "sacrificed increasingly larger proportions of fat-free mass" to do it (Friedl 1994, J Appl Physiol 77:933, doi:10.1152/jappl.1994.77.2.933).`);
+    if (ctx.goalWeightLb != null) {
+      // What the goal weight implies if you kept ALL your current lean mass: a sanity check on the target.
+      const bfAtGoal = 100 * (ctx.goalWeightLb - L0) / ctx.goalWeightLb;
+      // Lean mass that would still fit under the goal weight at the essential-fat floor.
+      const leanRoom = ctx.goalWeightLb * (1 - ESSENTIAL_BF[sex] / 100);
+      if (bfAtGoal < ESSENTIAL_BF[sex]) warn.push(`${r1(ctx.goalWeightLb)} lb is less than your current lean mass plus the essential fat a ${sex === 'female' ? 'woman' : 'man'} cannot go below (${ESSENTIAL_BF[sex]}%), so reaching it REQUIRES shedding about ${r1(L0 - leanRoom)} lb of lean mass. Forge will still project it; this is what it costs.`);
+      else if (bfAtGoal < DEFENDED_BF[sex]) warn.push(`At ${r1(ctx.goalWeightLb)} lb with all of today's lean mass you would be about ${r1(bfAtGoal)}% body fat, below the ${DEFENDED_BF[sex]}% the body defends. Expect to either lose lean mass on the way down or stall before the number.`);
+    }
+    if (deficitStart > LEAN_GAIN_DEFICIT_LIMIT) warn.push(`A deficit of about ${deficitStart} kcal/day is past the ~${LEAN_GAIN_DEFICIT_LIMIT} kcal/day point where lifters stopped gaining lean mass at all in a meta-regression of resistance-training studies (Murphy & Koehler 2022, doi:10.1111/sms.14075). Strength held up far better than size.`);
+    weightLoss = {
+      goalWeightLb: ctx.goalWeightLb, goalWeightDate: plan.goalWeightDate ?? null, source: plan.source ?? 'default',
+      ratePctPerWeek: plan.pctPerWeek ?? null, lbPerWeek: plan.lbPerWeek ?? null, deficitKcal: deficitStart,
+      projectedRatePctPerWeek: r2(avgLossRate), projectedLbPerWeek: projLbPerWeek, tier: plan.tier ?? null,
+      reached: hitWeek > 0, week: hitWeek > 0 ? hitWeek : null, date: hitWeek > 0 ? at.date : null,
+      atGoal: { weightLb: r1(at.weightLb), leanLb: r1(at.leanLb), fatLb: r1(at.fatLb), bodyFatPct: r1(at.bodyFatPct) },
+      leanLostLb: r1(leanLost), fatLostLb: r1(fatLost),
+      leanShareOfLoss: totalLost > 0.2 ? r2(Math.max(0, leanLost / totalLost)) : null,
+      leanProtection: body.leanProtection && ['protect', 'balanced', 'minimal'].includes(body.leanProtection) ? body.leanProtection : 'protect',
+      proteinGPerLb: r2(ctx.proteinGPerLb), proteinRetention: r2(proteinRetentionFactor(ctx.proteinGPerLb)),
+      rateFactor: r2(lossRateFactor(avgLossRate)), rates, warnings: [...new Set(warn)],
+    };
+  }
+
   // ---------------- female mode extras (§20)
   let energyAvailability = null, caution = null;
+  if (sex !== 'female' && ctx.lossModel) {
+    // §23: energy availability matters for men too. The 30 kcal/kg FFM/day threshold was established in women
+    // (Loucks & Thuma 2003, doi:10.1210/jc.2002-020369) and no male number has been validated, but the IOC's
+    // 2023 REDs consensus (doi:10.1136/bjsports-2023-106994) documents the same syndrome in male athletes.
+    const eas = likely.wkOut.map((w, k) => { const p = likely.pts[k];
+      return (w.kcalIn - ctx.exNetPerDay(weekDrivers[k], p.L + p.F, p.L)) / (p.L / LB_PER_KG); }).filter(fin);
+    if (eas.length) {
+      const min = r1(Math.min(...eas));
+      energyAvailability = { start: r1(eas[0]), min, low: min < EA_LOW, threshold: EA_LOW };
+      if (min < EA_LOW) {
+        const msg = `Energy availability (food minus exercise, per kg of lean mass) drops to about ${min} kcal/kg/day in this plan. ~45 is adequate; below ~30 is where measurable harm starts. That threshold comes from women (Loucks & Thuma 2003) and no male equivalent has been validated, but low energy availability costs bone density, hormones, sleep and training quality in men too (IOC REDs consensus 2023). Forge doesn't model those effects: treat this as a warning, not a target.`;
+        assumptions.push(msg);
+        if (weightLoss) weightLoss.warnings.push(msg);
+      }
+    }
+  }
   if (sex === 'female') {
     // EA = (intake − net exercise kcal) / kg lean mass / day, per simulated week (weeks at maintenance included).
     const eaAt = k => { const w = likely.wkOut[k], p = likely.pts[k]; const Wt = p.L + p.F;
@@ -1292,6 +1456,7 @@ export function project(args = {}) {
       caution = 'postpartum';
       assumptions.unshift(`Postpartum: weight, fluid and hormones change fast for months after birth${ctx.fstat.breastfeeding ? ' and breastfeeding burns roughly 500 kcal/day' : ''}, which this model doesn't capture, so treat the projection as very rough. A slow loss of about 0.5-1 kg a month after the first month is compatible with breastfeeding (Kominiarek & Rajan 2016). Check with your provider before a deficit or hard training.`);
     }
+    if (weightLoss && energyAvailability?.low) weightLoss.warnings.push(`Energy availability drops to about ${energyAvailability.min} kcal per kg of lean mass a day. Below ~30 the hormone pulses that run the menstrual cycle were disrupted within five days (Loucks & Thuma 2003); missed periods, bone loss and stalled progress follow (IOC REDs 2023).`);
     if (ctx.fstat?.cycling) assumptions.push('Your scale weight can swing 1-3 lb across your cycle from water; the projection is your trend. Resting burn runs slightly higher in the luteal phase (Benton 2020 meta-analysis), which averages out over a month. Menstrual-cycle phase has at most a trivial effect on performance (McNulty 2020), so the plan doesn\'t change with your cycle.');
   }
 
@@ -1310,17 +1475,35 @@ export function project(args = {}) {
       cardioDeltaMin: ctx.cdMin, cardioModality: ctx.cdMod, cardioIntensity: ctx.cdInt, exerciseKcal: Math.round(ctx.avgEx) },
     macros, partition, tdeeCalibration: calib, startBodyFat: sb, stack,
     driverSource, bodyFatAssumed: bfAssumed, shapeEstimated, missing: outMissing, missingInfo: outMissingInfo,
-    ...(sex === 'female' ? { energyAvailability, ...(caution ? { caution } : {}) } : {}),
+    ...(sex === 'female' ? { energyAvailability, ...(caution ? { caution } : {}) } : ctx.lossModel ? { energyAvailability } : {}),
+    ...(weightLoss ? { weightLoss } : {}),
   };
 }
 
+// §23: the goal-weight milestone, first in the list because under the weight-loss goal it IS the goal.
+// It names the lean/fat split of the weight lost on the way, so the scale number never stands alone.
+function goalWeightMilestone({ series, W, goalWeightLb, span, when, add, L0 }) {
+  if (!(goalWeightLb > 0)) return;
+  const s0 = series[0], endPt = series[series.length - 1];
+  const already = s0.weightLb <= goalWeightLb;
+  const hit = series.find(p => p.weightLb <= goalWeightLb);
+  const at = hit || endPt;
+  const dLean = r1(at.leanLb - s0.leanLb), dFat = r1(at.fatLb - s0.fatLb);
+  const split = `Getting there costs about ${r1(Math.abs(dFat))} lb of fat and ${dLean < -0.05 ? `${r1(Math.abs(dLean))} lb of lean mass` : dLean > 0.05 ? `GAINS about ${r1(dLean)} lb of lean mass` : 'no lean mass'}${hit ? '' : ' by the end of this projection'}, leaving you at about ${at.bodyFatPct}% body fat.`;
+  add({ id: 'goal_weight', label: `Goal weight (${r1(goalWeightLb)} lb)`, target: r1(goalWeightLb), value: endPt.weightLb, already,
+    note: already ? `Already at or below ${r1(goalWeightLb)} lb (${r1(s0.weightLb)} lb today).`
+      : hit ? `${when(hit)} ${split}`
+        : `Not reached within ${span} at this pace (projected ${r1(endPt.weightLb)} lb at the end). ${split}` }, hit);
+}
+
 // `series` here is the full weekly track (week, date, bodyFatPct, leanLb, ffmi, ratios). Each milestone carries `week`.
-function buildMilestones({ series, W, goalBf, L0, body, sex, m0, heightIn = null, ffmiCeil = FFMI_NATURAL_CEILING }) {
+function buildMilestones({ series, W, goalBf, L0, body, sex, m0, heightIn = null, ffmiCeil = FFMI_NATURAL_CEILING, goalWeightLb = null }) {
   const milestones = [];
   const endPt = series[series.length - 1];
   const span = W >= 78 ? `${r1(W / 52)} years` : `${W} weeks`;
   const when = hit => `Projected around ${hit.date} (${hit.week >= 78 ? `year ${r1(hit.week / 52)}` : `week ${hit.week}`}).`;
   const add = (m, hit) => milestones.push({ ...m, date: hit ? hit.date : null, week: hit ? hit.week : null, reached: !!hit });
+  goalWeightMilestone({ series, W, goalWeightLb, span, when, add, L0 });
   const bfMilestone = (id, label, thr, note) => {
     const already = series[0].bodyFatPct <= thr;
     const hit = series.find(p => p.bodyFatPct <= thr);
@@ -1391,12 +1574,13 @@ function buildMilestones({ series, W, goalBf, L0, body, sex, m0, heightIn = null
 }
 
 // Female milestones (§20). Same mechanics as buildMilestones; female thresholds and notes.
-function buildFemaleMilestones({ series, W, goalBf, L0, body, m0, heightIn = null, ffmiCeil = BODY.female.ffmiCeiling }) {
+function buildFemaleMilestones({ series, W, goalBf, L0, body, m0, heightIn = null, ffmiCeil = BODY.female.ffmiCeiling, goalWeightLb = null }) {
   const milestones = [];
   const endPt = series[series.length - 1];
   const span = W >= 78 ? `${r1(W / 52)} years` : `${W} weeks`;
   const when = hit => `Projected around ${hit.date} (${hit.week >= 78 ? `year ${r1(hit.week / 52)}` : `week ${hit.week}`}).`;
   const add = (m, hit) => milestones.push({ ...m, date: hit ? hit.date : null, week: hit ? hit.week : null, reached: !!hit });
+  goalWeightMilestone({ series, W, goalWeightLb, span, when, add, L0 });
   const down = (id, label, thr, val, note) => {
     const v0 = val(series[0]); if (v0 == null) return;
     const already = v0 <= thr, hit = series.find(p => val(p) != null && val(p) <= thr), vN = val(endPt);
