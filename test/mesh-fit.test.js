@@ -127,3 +127,38 @@ test('asset budget: ≤ 15k vertices and ≤ 1.5 MB', () => {
   const size = fs.statSync(fileURLToPath(new URL('body.bin', dir))).size + fs.statSync(fileURLToPath(new URL('body.json', dir))).size;
   assert.ok(size <= 1.5 * 1024 * 1024, `${size} bytes`);
 });
+
+// Head proportions vs adult-male anthropometry (ANSUR II medians at 69 in; head size scales weakly with stature:
+// horizontal dims ∝ H^0.3, vertex→menton ∝ H^0.5). Measured independently here by slicing the skinned relaxed mesh.
+const HEAD69 = { breadth: 6.1, length: 7.8, circumference: 22.6, bizygomatic: 5.6, height: 9.1 };
+function sliceHead(pos) {
+  const ear = A.earMask, ok = all3(i => P[i] === 1 && !ear[i]);
+  let top = -Infinity, ey = 0, ne = 0;
+  for (let i = 0; i < A.nMesh; i++) { if (P[i] === 6) { ey += pos[i * 3 + 1]; ne++; } else top = Math.max(top, pos[i * 3 + 1]); }
+  ey /= ne;
+  const chin = pos[A.lm.chinV * 3 + 1], height = top - chin, yG = ey + 0.054 * height;
+  let breadth = 0, circumference = 0, zmin = Infinity, zmax = -Infinity;
+  for (let y = yG; y <= top - 0.3; y += 0.05) {
+    const h = sliceHull(pos, A.tris, ok, y); if (h.n < 6) continue;
+    breadth = Math.max(breadth, h.maxx - h.minx); circumference = Math.max(circumference, h.per);
+    zmin = Math.min(zmin, h.minz); zmax = Math.max(zmax, h.maxz);
+  }
+  const zF = zmin + 0.6 * (zmax - zmin);   // cheekbones: front 40 % of the head (ahead of the ears)
+  let bizygomatic = 0;
+  for (let y = ey - 0.18 * height; y <= ey; y += 0.05) { const h = sliceHull(pos, A.tris, ok, y, p => p[1] >= zF); if (h.n >= 2) bizygomatic = Math.max(bizygomatic, h.maxx - h.minx); }
+  return { breadth, length: zmax - zmin, circumference, bizygomatic, height, neck: chin - pos[A.notchV * 3 + 1], eyeFrac: (ey - chin) / height };
+}
+for (const name of Object.keys(BODIES)) {
+  test(`${name}: head breadth, length, circumference, bizygomatic, head height and neck length match anthropometry ±4%`, () => {
+    const fit = fits[name], H = fit.geom.heightIn, kh = (H / 69) ** 0.3, kv = (H / 69) ** 0.5;
+    const want = { breadth: HEAD69.breadth * kh, length: HEAD69.length * kh, circumference: HEAD69.circumference * kh, bizygomatic: HEAD69.bizygomatic * kh, height: HEAD69.height * kv, neck: 0.052 * H };
+    const got = sliceHead(relaxedMesh(fit));
+    const report = Object.keys(want).map(k => `${k.padEnd(14)} ${got[k].toFixed(2)} / ${want[k].toFixed(2)} in  ${pct(got[k], want[k]).toFixed(1)}%`).join('\n');
+    if (process.env.MESH_REPORT) console.log(`\n[${name} head]\n${report}`);
+    for (const k of Object.keys(want)) assert.ok(Math.abs(pct(got[k], want[k])) <= 4, `${name} ${k}\n${report}`);
+    // eyes sit about mid head height (menton→sellion ≈ 0.52 of vertex→menton), not a long face under a squashed cranium
+    assert.ok(got.eyeFrac > 0.46 && got.eyeFrac < 0.58, `${name} eye height ${got.eyeFrac.toFixed(2)} of the head`);
+    // sanity: head breadth / biacromial-ish shoulder tape stays human (not a pinhead, not a bobblehead)
+    assert.ok(got.breadth / BODIES[name].shape.shoulders > 0.11 && got.breadth / BODIES[name].shape.shoulders < 0.15);
+  });
+}

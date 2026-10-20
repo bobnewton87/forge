@@ -9,7 +9,10 @@
 //      are moved onto anthro's joints, and horizontal cross-sections are scaled about their centres so the
 //      convex-hull perimeter (what a tape reads) hits anthro's section at every profile station (all tape
 //      sites incl. the shoulders loop around both arms), with smooth interpolation in between.
-//   4. The fitted pose is un-skinned back to the bind pose, so every other pose is plain skinning.
+//   4. Head proportions: vertex→menton and menton→suprasternale are remapped (step 3 anchors) and a head-region
+//      scale, faded in across the upper neck, sets head breadth / bizygomatic breadth / length to ANSUR II
+//      adult-male medians scaled weakly with stature (headTargets(); head size grows ∝ H^0.3, not ∝ H).
+//   5. The fitted pose is un-skinned back to the bind pose, so every other pose is plain skinning.
 //
 //   mountBody3D(el, { shape, muscle, bodyFatPct, pose, compareShape, autoRotate, height, showScale, showPoses, onPose })
 //     → { update(opts), setPose(name), destroy() }
@@ -21,8 +24,11 @@
 //   - showScale (default false) draws a height ruler; showPoses (default true) renders pose chips;
 //     onPose(name) is called when a chip is tapped; label (string) draws a corner caption.
 //   - Handle extras: canvas, getPose(), stats() → { fitMs, frameMs, verts, tris }, setView(yawRad, pitchRad).
+//   - update() keeps the user's yaw / pitch / zoom (only a pose change animates the camera), and the camera frames
+//     by stature only, so swapping shape (e.g. "now" ↔ "projected" blink) keeps floor, scale and framing fixed.
+//     The last 4 fitted bodies are cached by (shape, bodyFatPct, muscle), so switching back and forth never refits.
 //   - Pure helpers for tests/tools: decodeBodyAsset, fitBody, poseGlobals, skinMatrices, skinPositions,
-//     sliceHull, flexGirthAt, POSE_SPECS.
+//     sliceHull, flexGirthAt, POSE_SPECS, HEAD_REF, headTargets, headDims.
 //   - Flexed poses (front/back double biceps, side chest) bulge the upper arm to the flexed biceps tape
 //     (anthro: arm/forearm tapes are flexed; the hanging rest arm uses the relaxed girth).
 import { bodyGeometry } from '../engine/anthro.js';
@@ -357,6 +363,59 @@ function prepareAsset(A) {
   let ey = 0, ex = 0, ez = 0, ne = 0;
   for (let i = 0; i < nMesh; i++) if (A.part[i] === 6) { ey += base[i * 3 + 1]; ex += Math.abs(base[i * 3]); ez += base[i * 3 + 2]; ne++; }
   A.eye = [ey / ne, ex / ne, ez / ne];
+  // head anthropometry helpers (canonical dm): the ears (excluded from head breadth/circumference, as ANSUR
+  // measures above them) and the suprasternal notch (deepest point of the front midline between chest and chin)
+  const earMask = new Uint8Array(nMesh), [eyY, , eyZ] = A.eye;
+  for (let i = 0; i < nMesh; i++) {
+    if (A.part[i] !== 1) continue;
+    const y = base[i * 3 + 1], z = base[i * 3 + 2];
+    if (y > eyY - 0.65 && y < eyY + 0.13 && z > eyZ - 1.1 && z < eyZ - 0.58 && Math.abs(base[i * 3]) > 0.7) earMask[i] = 1;
+  }
+  A.earMask = earMask;
+  let notch = -1, nz = Infinity;
+  for (let i = 0; i < nMesh; i++) {
+    const y = base[i * 3 + 1], z = base[i * 3 + 2];
+    if (A.part[i] > 1 || Math.abs(base[i * 3]) > 0.015 || z <= 0 || y <= yNip || y >= yChin - 0.3) continue;
+    if (z < nz) { nz = z; notch = i; }
+  }
+  A.notchV = notch;
+}
+
+// ================================================================== head anthropometry
+// ANSUR II adult-male medians at 69 in stature. Head size scales much less than proportionally with stature:
+// horizontal dimensions ∝ H^0.3, head height (vertex→menton, partly facial) ∝ H^0.5. The neck (menton →
+// suprasternale) follows anthro's segment ratio (0.052 H: chin 0.870 H − suprasternale ≈ acromion 0.818 H).
+export const HEAD_REF = { statureIn: 69, breadth: 6.1, length: 7.8, circumference: 22.6, bizygomatic: 5.6, height: 9.1, expH: 0.3, expV: 0.5, neck: 0.052 };
+export function headTargets(H) {
+  const R = HEAD_REF, kh = Math.pow(H / R.statureIn, R.expH), kv = Math.pow(H / R.statureIn, R.expV);
+  return { breadth: R.breadth * kh, length: R.length * kh, circumference: R.circumference * kh, bizygomatic: R.bizygomatic * kh, height: R.height * kv, neck: R.neck * H };
+}
+/**
+ * Head dimensions of a posed mesh (inches; upright head): breadth / length / circumference from horizontal
+ * slices of the cranium (glabella level up, ears excluded), bizygomatic breadth from the slices between the
+ * eyes and the cheekbones (front 40% of the head only), height = vertex − menton, neck = menton − suprasternale.
+ */
+export function headDims(A, pos) {
+  const { nMesh, part, tris, earMask: ear } = A;
+  let top = -Infinity, ey = 0, ne = 0;
+  for (let i = 0; i < nMesh; i++) {
+    if (part[i] === 6) { ey += pos[i * 3 + 1]; ne++; } else if (pos[i * 3 + 1] > top) top = pos[i * 3 + 1];
+  }
+  ey /= ne || 1;
+  const chin = pos[A.lm.chinV * 3 + 1], height = top - chin;
+  const ok = (a, b, c) => part[a] === 1 && part[b] === 1 && part[c] === 1 && !ear[a] && !ear[b] && !ear[c];
+  const yG = ey + 0.054 * height;   // ≈ glabella (brow ridge) level
+  let breadth = 0, circumference = 0, zmin = Infinity, zmax = -Infinity;
+  for (let y = yG; y <= top - 0.3; y += 0.1) {
+    const h = sliceHull(pos, tris, ok, y); if (h.n < 6) continue;
+    breadth = Math.max(breadth, h.maxx - h.minx); circumference = Math.max(circumference, h.per);
+    zmin = Math.min(zmin, h.minz); zmax = Math.max(zmax, h.maxz);
+  }
+  const zF = zmin + 0.6 * (zmax - zmin);
+  let bizygomatic = 0;
+  for (let y = ey - 0.18 * height; y <= ey; y += 0.1) { const h = sliceHull(pos, tris, ok, y, p => p[1] >= zF); if (h.n >= 2) bizygomatic = Math.max(bizygomatic, h.maxx - h.minx); }
+  const notch = pos[A.notchV * 3 + 1];
+  return { top, chin, height, eyeY: ey, glabellaY: yG, breadth, length: zmax - zmin, circumference, bizygomatic, notch, neck: chin - notch, cz: (zmin + zmax) / 2 };
 }
 function computeNormals(pos, tris, n, out) {
   const N = out || new Float32Array(n * 3); N.fill(0);
@@ -728,6 +787,8 @@ export function fitBody(A, opts = {}) {
   for (const s of SIDES) { const k = 'fingertip' + s, b = B[auxBone[k]] * 16, p = sk0.aux[k]; tipQ[s] = [M0[b] * p[0] + M0[b + 4] * p[1] + M0[b + 8] * p[2] + M0[b + 12], M0[b + 1] * p[0] + M0[b + 5] * p[1] + M0[b + 9] * p[2] + M0[b + 13] - qMin, M0[b + 2] * p[0] + M0[b + 6] * p[1] + M0[b + 10] * p[2] + M0[b + 14]]; }
   const Hm = qMax - qMin, hs = H / Hm;
   const qy = i => Q[i * 3 + 1];
+  // head height and neck length from adult-male anthropometry (head size scales weakly with stature)
+  const HT = headTargets(H), chinT = H - HT.height, notchT = chinT - HT.neck;
 
   // 3a. vertical remap anchors (mesh height → anthro height), all in the rest pose
   const yKnee = Jq[B.shinL][1], yAnk = Jq[B.footL][1], yCr = qy(A.lm.crotchV);
@@ -743,8 +804,12 @@ export function fitBody(A, opts = {}) {
     [qy(A.lm.navelV), LM.waist.y],
     [qy(A.lm.nippleV), LM.chest.y],
     [Jq[B.uarm1L][1], GJ.shoulderL.y],
+    [qy(A.notchV), notchT],
     [Jq[B.neck][1], geom.heights.neckBase],
-    [qy(A.lm.chinV), LM.chin.y],
+    [qy(A.lm.chinV), chinT],
+    // the head itself maps linearly (uniform vertical scale about the chin), keeping the base mesh's facial
+    // proportions (eyes ≈ mid head height); without these the cubic stretches the face and squashes the cranium
+    ...[0.12, 0.35, 0.6, 0.85].map(f => [mix(qy(A.lm.chinV), Hm, f), mix(chinT, H, f)]),
     [Hm, H],
   ].sort((a, b) => a[0] - b[0]);
   const ax = [], ay = [];
@@ -830,13 +895,13 @@ export function fitBody(A, opts = {}) {
   let neckY = LM.neck.y;
   {
     let best = Infinity;
-    for (let y = geom.heights.neckBase - 0.4; y <= LM.chin.y - 0.25; y += 0.1) {
+    for (let y = geom.heights.neckBase - 0.4; y <= chinT - 0.25; y += 0.1) {
       const g = hull2(crossPoints(V1, crossings(V1, tris, notArm, y, bins))).per;
       if (g > 0 && g < best) { best = g; neckY = y; }
     }
   }
   for (const st of stacks) {
-    st.stations = st.src.map(s => ({ name: s.name, y: st.name === 'trunk' && s.name === 'neck' ? neckY : s.y, rx: s.rx, rz: s.rz, G: s.girth, cx: 0, cz: 0, kx: 1, kz: 1 })).sort((a, b) => a.y - b.y);
+    st.stations = st.src.map(s => ({ name: s.name, y: st.name === 'trunk' && s.name === 'neck' ? neckY : st.name === 'trunk' && s.name === 'chin' ? chinT : s.y, rx: s.rx, rz: s.rz, G: s.girth, cx: 0, cz: 0, kx: 1, kz: 1 })).sort((a, b) => a.y - b.y);
     for (const s of st.stations) {
       s.cross = crossings(V1, tris, st.ok, s.y, bins);
       for (const i of s.cross.a) touched[i] = 1; for (const i of s.cross.b) touched[i] = 1;
@@ -947,6 +1012,25 @@ export function fitBody(A, opts = {}) {
     return j;
   });
 
+  // 5b. head proportions: a head-region scale (x about the midline, z about the cranium centre) so breadth,
+  // bizygomatic breadth and length hit headTargets(); faded in across the upper neck (zero at the neck tape's
+  // narrowest section, full just above the chin) so the neck girth is untouched and no seam appears.
+  const hd = headDims(A, V3);
+  const head = { fB: HT.breadth / hd.breadth, fZ: HT.bizygomatic / hd.bizygomatic, fL: HT.length / hd.length, before: hd };
+  if ([head.fB, head.fZ, head.fL].every(f => f > 0.5 && f < 2)) {
+    const y0 = neckY + 0.1, y1 = chinT + 0.6, yz = hd.eyeY, yg = hd.glabellaY, cz = hd.cz;
+    const map = (x, y, z, k = 1) => {
+      const w = sstep(y0, y1, y) * k; if (!(w > 0)) return null;
+      const fx = mix(head.fZ, head.fB, sstep(yz, yg, y));
+      return [x * mix(1, fx, w), y, cz + (z - cz) * mix(1, head.fL, w)];
+    };
+    for (let i = 0; i < nMesh; i++) {
+      const k = 1 - grp[i * 6 + 2] - grp[i * 6 + 3];
+      const p = map(V3[i * 3], V3[i * 3 + 1], V3[i * 3 + 2], k); if (p) { V3[i * 3] = p[0]; V3[i * 3 + 2] = p[2]; }
+    }
+    for (let b = 0; b < nb; b++) if (bones[b].group <= 1) { const p = map(J3[b][0], J3[b][1], J3[b][2]); if (p) J3[b] = p; }
+  }
+
   // 6. back to the bind pose: bind skeleton with fitted lengths and bind orientations, then inverse skinning
   const heads1 = new Array(nb);
   for (let b = 0; b < nb; b++) {
@@ -964,7 +1048,7 @@ export function fitBody(A, opts = {}) {
   // flexed-arm bulge amplitude so the flexed biceps section reaches the flexed tape (anthro flex.arm)
   const fit = {
     A, geom, bf, muscle: opts.muscle, rest, restNrm, cavity, flare, heads: heads1, frames, relaxed: V3, relax,
-    sections: {}, neckY, report: { stations: [], shoulders: { girth: loopAt(sigma), target: Gsh, sigma }, iters, worst, hs, anchors: ax.map((m, i) => [m, ay[i]]) },
+    sections: {}, neckY, report: { head, stations: [], shoulders: { girth: loopAt(sigma), target: Gsh, sigma }, iters, worst, hs, anchors: ax.map((m, i) => [m, ay[i]]) },
   };
   for (const st of stacks) for (const s of st.stations) {
     if (s.fixed) continue;
@@ -1317,11 +1401,20 @@ export function mountBody3D(el, opts = {}) {
 
   const keyOf = (s, bf, m) => JSON.stringify([s || null, bf ?? null, m || null]);
   let fitKey = '', ghostKey = '';
+  // small LRU of fitted bodies, so blinking between "now" and "projected" via update() never refits
+  const fitCache = new Map(), FIT_CACHE = 4;
+  function cachedFit(k, args) {
+    let f = fitCache.get(k);
+    if (f) fitCache.delete(k); else f = fitBody(A, args);
+    fitCache.set(k, f);
+    while (fitCache.size > FIT_CACHE) fitCache.delete(fitCache.keys().next().value);
+    return f;
+  }
   function refit() {
     if (!A) return;
     const k = keyOf(o.shape, o.bodyFatPct, o.muscle);
     if (k !== fitKey) {
-      fit = fitBody(A, { shape: o.shape, bodyFatPct: o.bodyFatPct, muscle: o.muscle }); fitKey = k;
+      fit = cachedFit(k, { shape: o.shape, bodyFatPct: o.bodyFatPct, muscle: o.muscle }); fitKey = k;
       if (gl && !lost) uploadFit(fit, 'main');
       poseTo = null; poseFrom = null;
     }
@@ -1329,7 +1422,7 @@ export function mountBody3D(el, opts = {}) {
     const gk = cs ? keyOf(cs, num(cs.bodyFatPct) ?? o.compareBodyFatPct ?? o.bodyFatPct, cs.muscle || o.compareMuscle || o.muscle) : '';
     if (gk !== ghostKey) {
       ghostKey = gk;
-      ghostFit = cs ? fitBody(A, { shape: cs, bodyFatPct: num(cs.bodyFatPct) ?? o.compareBodyFatPct ?? o.bodyFatPct, muscle: cs.muscle || o.compareMuscle || o.muscle }) : null;
+      ghostFit = cs ? cachedFit(gk, { shape: cs, bodyFatPct: num(cs.bodyFatPct) ?? o.compareBodyFatPct ?? o.bodyFatPct, muscle: cs.muscle || o.compareMuscle || o.muscle }) : null;
       if (ghostFit && gl && !lost) uploadFit(ghostFit, 'ghost');
     }
   }
@@ -1626,7 +1719,7 @@ export function mountBody3D(el, opts = {}) {
       canvas.removeEventListener('pointerup', onUp); canvas.removeEventListener('pointercancel', onUp);
       canvas.removeEventListener('wheel', onWheel); canvas.removeEventListener('webglcontextlost', onLost); canvas.removeEventListener('webglcontextrestored', onRestored);
       try { freeGL(); const ext = gl && gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (e) { /* ignore */ }
-      gl = null; fit = ghostFit = null; root.remove();
+      gl = null; fit = ghostFit = null; fitCache.clear(); root.remove();
     },
   };
 }
