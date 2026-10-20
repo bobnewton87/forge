@@ -433,6 +433,11 @@ function labBadge(L, v) {
   const st = v != null && v !== '' && isFinite(Number(v)) ? L.status(Number(v)) : null;
   return st ? `<span class="badge ${st[1]}">${esc(st[0])}</span>` : '';
 }
+// §22: not a lab, but the input the energy-availability model is gated on. Chronic under-eating is the fastest way
+// for a lean, hard-training man to lower his own testosterone, and it is invisible to every blood test here.
+const DEFICIT_FIELD = { k: 'deficitKcal', label: 'Typical daily calorie deficit', unit: 'kcal/d', step: '50',
+  ref: 'How far under maintenance you usually eat. Around 500 kcal/day stops lean-mass gain from lifting (Murphy & Koehler 2021); 1,000+ with a heavy training load is where testosterone starts falling hard (Friedl 2000). Leave blank if you eat at or above maintenance.',
+  status: v => v >= 1000 ? ['Large', 'bad'] : v >= 500 ? ['Moderate', 'warn'] : v > 0 ? ['Small', 'good'] : ['None', 'good'] };
 const sleepNoteFor = sleep => sleep < 6 ? 'Short: lowers the muscle ceiling and, in a deficit, more of what you lose is muscle.' : sleep < 7 ? 'A bit short of the 7–9 h baseline.' : sleep <= 9 ? 'In the 7–9 h baseline range.' : 'Plenty.';
 const stressNoteFor = stress => stress >= 4 ? 'High stress modestly slows strength gains and recovery.' : 'No adjustment at 1–3.';
 function metabolicForm(p, I) {
@@ -457,6 +462,9 @@ function metabolicForm(p, I) {
     <div class="sp-lab sp-col"><div class="row between"><div class="t">Life stress</div><div class="s">1 calm · 5 maxed out</div></div>
       <div class="tabs" data-stress>${[1, 2, 3, 4, 5].map(n => `<button type="button" class="${Number(stress) === n ? 'active' : ''}" data-v="${n}">${n}</button>`).join('')}</div>
       <div class="s" data-stressn>${stressNoteFor(stress)}</div></div>
+    ${sex === 'female' ? '' : `<div class="sp-lab"><div class="grow"><div class="t">Typical daily calorie deficit <span data-badge="deficitKcal">${labBadge(DEFICIT_FIELD, m.deficitKcal)}</span></div>
+      <div class="s">${esc(DEFICIT_FIELD.ref)}</div></div>
+      <label class="sp-inwrap"><input type="number" inputmode="numeric" step="50" min="0" data-met="deficitKcal" value="${m.deficitKcal ?? ''}" placeholder="0" class="sp-in"><span class="sp-unit">kcal/d</span></label></div>`}
   </div>`;
 }
 
@@ -542,7 +550,7 @@ export function bind(root, ctx) {
     refreshPlan();
     const m = I.profile.metabolic || {};
     const sx = sexOf(I.profile);
-    for (const L of [...labsFor(LABS, LABS_F, sx), ...labsFor(PANEL, PANEL_F, sx)]) { const el = root.querySelector(`[data-badge="${L.k}"]`); if (el) el.innerHTML = labBadge(L, m[L.k]); }
+    for (const L of [...labsFor(LABS, LABS_F, sx), ...labsFor(PANEL, PANEL_F, sx), DEFICIT_FIELD]) { const el = root.querySelector(`[data-badge="${L.k}"]`); if (el) el.innerHTML = labBadge(L, m[L.k]); }
     const sn = root.querySelector('[data-sleepn]'); if (sn) sn.textContent = sleepNoteFor(m.sleepHours ?? 7);
     const tn = root.querySelector('[data-stressn]'); if (tn) tn.textContent = stressNoteFor(m.stress ?? 3);
     root.querySelectorAll('[data-stress] button').forEach(b => b.classList.toggle('active', Number(b.dataset.v) === Number(m.stress ?? 3)));
