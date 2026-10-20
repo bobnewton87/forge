@@ -507,3 +507,83 @@ Model guidance (be evidence-honest and conservative, and state it all in `assump
   those groups, and shrink slightly with fat loss. Label all of these as rough estimates.
 - Bob: male, former elite marathoner (2:30), about 7 months of lifting experience, started at
   164 lb / ~22% BF in March 2026, race weight 137 lb at ~6-7%, goal ~12% BF with more upper-body muscle.
+
+---
+
+# Phase 3: Accuracy, nutrition lab, 3D physique, smarter planning (2026-10-20)
+
+Bob's feedback after real use:
+1. Changing location sometimes makes suggestions not show up.
+2. Suggestions aren't always the best. Editing or re-suggesting a day must account for the planned days BEFORE AND AFTER it.
+3. He wants to gain muscle fast and assumed "eat a lot". The app must let him study calories, macro ratios (protein/carbs/fat) and cardio volume vs lean and fat gain, accurately and honestly.
+4. Measure LEFT and RIGHT thigh and calf separately.
+5. Easily add cardio minutes and see the effect on the plan and projection.
+6. A much better physique model: a real 3D feel, rotatable, multiple poses, more detail. Better body-fat projections.
+
+## Phase 3 file ownership
+| Path | Owner |
+|---|---|
+| `js/store.js`, `js/main.js`, `index.html`, `sw.js`, this file | lead |
+| `js/engine/projection.js`, `js/engine/bodycomp.js`, `js/engine/nutrition.js` | ENGINE-NUTRI |
+| `js/ui/projection.js`, `js/ui/measure.js`, `js/ui/nutrition.js`, `css/body2.css` (+ targeted edits to `js/ui/body.js`) | UI-LAB |
+| `js/ui/body3d.js` (new), `css/body3d.css` (new, linked by lead) | MODEL-3D |
+| `js/engine/planner.js`, `js/engine/generator.js`, `js/engine/recovery.js` (targeted), `js/ui/plan.js`, `js/ui/today.js`, `js/ui/session.js` (targeted), `css/plan.css`, `css/train.css` | PLAN-FIX |
+
+## 14. Store additions (lead, done)
+```js
+store.getFoodLog() / store.logFood({ d, kcal, protein, carbs, fat }) / store.deleteFood(d)  // optional daily intake log
+// measurement entries now use thighL, thighR, calfL, calfR (legacy `thigh`/`calf` = both sides)
+```
+
+## 15. Nutrition model (ENGINE-NUTRI): the core of Bob's question
+`profile.nutrition` becomes:
+```js
+{ mode:'off'|'simple'|'cycling',
+  calories:null|number,            // daily target (avg); null → derived from goal + TDEE
+  surplus:null|number,             // alternative: kcal vs TDEE (+ bulk / − cut); used when calories is null
+  proteinGPerLb: 1.0,              // protein target, g per lb bodyweight (0.6–1.4)
+  fatPct: 25,                      // % of calories from fat (15–40); carbs = remainder
+  // cycling offsets stay as before
+}
+```
+`js/engine/nutrition.js` exports (keep the old exports working):
+```js
+export function macrosFor(profile, { calories, bodyweight }) → { calories, protein, carbs, fat, proteinPct, carbPct, fatPct, warnings:[] }
+export function dailyTargets(profile, opts)   // now uses macrosFor
+export function adaptiveTdee({ bodyLog, foodLog, from, to }) → null | { tdee, days, confidence, note }
+   // MacroFactor-style: avg intake − (trend weight change × ~3500 kcal/lb)/days, using an EWMA weight trend. Needs ≥10 days of both.
+```
+`js/engine/projection.js` `project()` gains inputs (all optional; the defaults keep current behaviour):
+```js
+intake:{ calories?, surplus?, proteinGPerLb?, fatPct? }   // overrides profile.nutrition
+cardioDeltaMin: 0          // extra cardio minutes per week on top of the plan (can be negative)
+cardioModality: 'bike'|… , cardioIntensity: 'easy'|…
+```
+and a new export:
+```js
+export function nutritionLab({ baseline, profile, sessions, weeks = 12, now,
+   calorieRange = [-750, +1000], step = 125, proteinGPerLb, fatPct, cardioDeltaMin }) → {
+   points:[{ surplus, calories, leanLb, fatLb, weightLb, bodyFatPct }],   // end-of-horizon outcome per calorie level
+   sweetSpot:{ from, to, note },     // surplus band that maximizes lean gain per lb of fat (≈ +200…+500 for Bob)
+   explanation:[string] }
+```
+Model requirements. Be evidence-honest, and list every assumption in `assumptions`:
+- **Energy partitioning (P-ratio):** in a surplus, the fraction of gained mass that is lean depends on training stimulus, training age and body fat (Forbes: leaner people partition more to lean). Muscle growth has a **ceiling** set by training age × volume adherence × protein adequacy. Energy beyond what supports that ceiling (plus the cost of building tissue) is stored as fat. So more calories means more lean only up to a point (diminishing returns at ~+10–20% surplus for novices; Iraki 2019, Garthe 2013-type findings), after which nearly all the extra goes to fat. This is THE lesson to make visible.
+- **Protein:** below ~0.7 g/lb, lean gain is reduced (scaling down smoothly toward 0.5 at 0.4 g/lb). Above ~1.0 g/lb there is no added benefit (Morton 2018 meta-analysis: ~1.6 g/kg plateau, upper CI ~2.2 g/kg).
+- **Carbs/fat split:** minimal effect on body composition at equal calories and protein. Carbs support training volume and performance. Flag fat < ~20% of kcal (hormonal). Say so honestly; don't fake big effects.
+- **Deficit:** lean gain is reduced. Novices and returners can still recomp; large deficits risk lean loss.
+- **Cardio:** adds energy expenditure (by modality, intensity and bodyweight). The interference effect is small at moderate volume and grows with high-volume, high-impact running (Wilson 2012). Model it as a modest reduction of the lean ceiling above ~150–200 min/week, larger for running than cycling.
+- **Body-fat projection accuracy:** track fat mass and lean mass separately (BF% = fat/weight); exclude water/glycogen shifts but note them. Calibrate TDEE with `adaptiveTdee` when data exists (raising confidence), otherwise use the formula. Use separate L/R limb measures (averaged for the model). Project limb and torso circumferences from lean distribution (by planned volume share) and fat distribution (male pattern: waist/abdomen gains and loses fat first, limbs less).
+- Each series point gains `shape` fields for the 3D model: `{ neck, shoulders, chest, waist, hips, arm, forearm, thigh, calf, heightIn }`, plus `muscle: { chest, delts, lats, arms, abs, quads, calves, traps }` development scores 0..1 (from lean mass, FFMI and the volume distribution) and `bodyFatPct`.
+
+## 16. 3D physique (MODEL-3D): `js/ui/body3d.js`
+```js
+export function mountBody3D(el, { shape, muscle, bodyFatPct, pose = 'relaxed', compareShape = null,
+   autoRotate = false, height = 360 }) → { update(opts), setPose(name), destroy() }
+export const POSES = ['relaxed','front_double_biceps','lat_spread','side_chest','back_double_biceps']
+export function supported() → boolean   // WebGL2 available
+```
+- No libraries, no build: raw **WebGL2 fragment-shader SDF raymarching** of a stylized male physique made of smooth-blended primitives (capsules/ellipsoids per muscle: pecs, delts (3 heads), lats, traps, biceps, triceps, forearms, abs (rectus blocks + obliques), serratus, glutes, quads (sweep), hamstrings, calves, and a simplified neck/head). Proportions come from `shape` (inches), muscle sizes from the `muscle` scores, and a fat layer from `bodyFatPct`: it smooths separation and thickens the waist, love handles and chest. Abs and muscle separation appear below ~15% and sharpen toward ~9%.
+- Drag (touch and mouse) to rotate around the vertical axis (plus a slight tilt), pinch or wheel to zoom, pose chips, and smooth pose transitions (joint angles for shoulders, elbows and hips). An optional `compareShape` renders a translucent ghost of the "now" body.
+- Tasteful studio lighting (key/rim/ambient, soft shadow/AO), a skin-ish or app-accent gradient material, and a dark backdrop matching the app. Must run at ≥30 fps on a recent iPhone: adaptive resolution (render scale 0.5–1.0 based on frame time), rendering only on interaction or animation (no idle loop).
+- When `supported() === false`, the caller falls back to `silhouetteSVG` (js/ui/silhouette.js).

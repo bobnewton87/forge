@@ -108,7 +108,8 @@ export const store = {
   deleteBodyweight(date) { set('body', this.getBodyLog().filter(e => e.d !== date)); },
 
   // Tape measurements (inches) + optional manual body fat. One entry per date; logging merges fields.
-  // Entry: { d:'YYYY-MM-DD', neck, shoulders, chest, waist, hips, armL, armR, forearm, thigh, calf, bodyFat }
+  // Entry: { d:'YYYY-MM-DD', neck, shoulders, chest, waist, hips, armL, armR, forearm, thighL, thighR, calfL, calfR, bodyFat }
+  // (legacy entries may have single `thigh` / `calf` — treat as both sides)
   getMeasurements() { return get('meas', []); },
   logMeasurement(entry) {
     if (!entry || !entry.d) throw new Error('measurement needs d');
@@ -120,6 +121,16 @@ export const store = {
     set('meas', l);
   },
   deleteMeasurement(date) { set('meas', this.getMeasurements().filter(e => e.d !== date)); },
+
+  // Optional daily food log for adaptive TDEE. Entry: { d, kcal, protein, carbs, fat } (grams). Merges by date.
+  getFoodLog() { return get('food', []); },
+  logFood(entry) {
+    if (!entry || !entry.d) throw new Error('food entry needs d');
+    const l = this.getFoodLog().filter(e => e.d !== entry.d);
+    const clean = Object.fromEntries(Object.entries(entry).filter(([, v]) => v !== '' && v != null && !(typeof v === 'number' && isNaN(v))));
+    l.push(clean); l.sort((a, b) => a.d.localeCompare(b.d)); set('food', l);
+  },
+  deleteFood(date) { set('food', this.getFoodLog().filter(e => e.d !== date)); },
 
   // Planned sessions are ordinary sessions with status 'planned' and a date (possibly future).
   getPlanned({ from, to } = {}) {
