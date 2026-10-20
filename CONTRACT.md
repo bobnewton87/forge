@@ -718,3 +718,22 @@ export function targetsSummaryHTML(ctx) → html   // compact "Your targets" str
 Rules: projection what-if sliders are PREVIEWS (clearly labelled "what-if") until "Apply", which calls setTargets.
 Plan's cardio stepper, Body's cardio card, Nutrition's targets, and Settings all call setTargets. No screen keeps
 its own copy of a target value.
+
+## 16c. Segment lengths per side (2026-10-20)
+Bob: "add various elbow-to-shoulder lengths for both sides, knee-to-ankle and knee-to-hip, to capture asymmetries and make
+the 3D model more accurate, smooth and accurate in rendering, specifically head to neck but everywhere."
+
+Measurement entry fields (inches, bony landmarks; store merges arbitrary fields):
+`lenUpperArmL/R` (acromion → olecranon, elbow bent 90°), `lenForearmL/R` (olecranon → ulnar styloid),
+`lenThighL/R` (greater trochanter → lateral knee joint line), `lenShankL/R` (lateral knee joint line → lateral malleolus).
+Ownership: ANTHRO-2 → `js/engine/anthro.js`, `js/engine/bodycomp.js` (baseline.measurements.lengths), `js/engine/projection.js`
+(pass `shape.lengths` through every series point unchanged), `js/ui/measure.js` (inputs + tips + asymmetry), the
+`shapeOf()` helper in `js/ui/projection.js` (pass lengths), tests. MESH-3 → `js/ui/body3d-mesh.js` + `test/mesh-*.test.js`.
+```js
+bodyGeometry({ ...girths, lengths: { upperArmL, upperArmR, forearmL, forearmR, thighL, thighR, shankL, shankR } })
+  → joints: { shoulderL, elbowL, wristL, hipL, kneeL, ankleL, …R }   // per side, honouring given lengths
+    bones:  { upperArmL, upperArmR, forearmL, forearmR, thighL, thighR, shankL, shankR, … }   // joint-centre lengths, per side
+    asymmetry: [{ segment, diffIn, note }], estimated: [...missing lengths filled from ratios]
+// Landmark-to-joint-centre conversions are documented (surface landmarks sit slightly off the joint centres).
+// Standing height stays fixed (it's measured), so leg-length differences shift the pelvis tilt/hip heights per side within limits.
+```

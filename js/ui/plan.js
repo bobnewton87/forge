@@ -123,6 +123,7 @@ export function render(ctx, params = {}) {
       ${canPlanWeek ? `<button type="button" class="btn btn-primary" data-a="plan-week">✦ Plan ${weekOff === 0 ? 'my week' : 'this week'}</button>` : ''}
       <button type="button" class="btn" data-a="plan-4">Plan next 4 weeks</button>
     </div>
+    ${clearRowHTML(ctx, sessions, days)}
     ${safe(() => targetsSummaryHTML(ctx), '')}
     <div class="pl-days">${days.map(d => dayCard(d, sessions, profile, t)).join('')}</div>`;
   h += summaryCard(sessions, profile, ws, weekOff === 0 ? safe(() => makeRoomHTML(ctx, { cls: 'tg-warnp small' }), '') : '');
@@ -696,6 +697,63 @@ export function bind(root, ctx) {
       }
       case 'projection': ctx.nav('projection'); break;
       case 'history': ctx.nav('history'); break;
+      case 'clear-week': openClearWeek(ctx, Array.from({ length: 7 }, (_, i) => ds(addDays(ws, i)))); break;
+      case 'undo-clear': undoClear(ctx); break;
     }
   };
+}
+
+// ---------------------------------------------------------------- clear a week
+// Removes the week's planned sessions (and, only if explicitly ticked, its completed workouts). An active
+// workout is never removed. The removed sessions are kept for 15 minutes so the clear can be undone.
+const UNDO_KEY = 'planUndo', UNDO_MS = 15 * 60 * 1000;
+function weekSessions(sessions, days) {
+  const inWeek = s => s.date >= days[0] && s.date <= days[6];
+  return { planned: sessions.filter(s => inWeek(s) && s.status === 'planned'), done: sessions.filter(s => inWeek(s) && s.status === 'done') };
+}
+function pendingUndo(store, days) {
+  const u = safe(() => store.kv(UNDO_KEY), null);
+  return u && u.week === days[0] && Date.now() - u.at < UNDO_MS && (u.sessions || []).length ? u : null;
+}
+function clearRowHTML(ctx, sessions, days) {
+  const u = pendingUndo(ctx.store, days);
+  if (u) return `<div class="pl-clear"><span class="muted small">Cleared ${u.sessions.length} workout${u.sessions.length === 1 ? '' : 's'} from this week.</span><button type="button" class="btn btn-sm btn-ghost" data-a="undo-clear">↶ Undo</button></div>`;
+  const { planned, done } = weekSessions(sessions, days);
+  if (!planned.length && !done.length) return '';
+  return `<div class="pl-clear"><button type="button" class="btn btn-sm btn-ghost pl-clear-btn" data-a="clear-week">🗑 Clear this week…</button></div>`;
+}
+function openClearWeek(ctx, days) {
+  const store = ctx.store;
+  const { planned, done } = weekSessions(store.getSessions(), days);
+  const custom = planned.filter(s => s.plan && s.plan.auto === false).length;
+  const html = `<div class="sheet-body pl-clear-sheet">
+    <h2>Clear ${esc(fmtShort(days[0]))} – ${esc(fmtShort(days[6]))}?</h2>
+    <p class="muted">${planned.length ? `Removes <b>${planned.length}</b> planned workout${planned.length === 1 ? '' : 's'}${custom ? ` (including ${custom} you customized)` : ''}. You can re-plan the week afterwards.` : 'There are no planned workouts left this week.'}</p>
+    ${done.length ? `<label class="pl-clear-done"><input type="checkbox" data-cl="done" ${planned.length ? '' : 'checked'}><span>Also delete <b>${done.length}</b> completed workout${done.length === 1 ? '' : 's'} (removes ${done.length === 1 ? 'it' : 'them'} from History, progress and recovery tracking)</span></label>` : ''}
+    <p class="tiny muted">You can undo this for 15 minutes.</p>
+    <div class="row gap"><button type="button" class="btn btn-ghost grow" data-cl="cancel">Cancel</button><button type="button" class="btn grow pl-danger" data-cl="go">Clear</button></div>
+  </div>`;
+  ctx.openSheet(html, (el, close) => {
+    el.querySelector('[data-cl="cancel"]').onclick = close;
+    el.querySelector('[data-cl="go"]').onclick = () => {
+      const alsoDone = !!el.querySelector('[data-cl="done"]')?.checked;
+      const removed = [...planned, ...(alsoDone ? done : [])];
+      if (!removed.length) { close(); return; }
+      store.kv(UNDO_KEY, { at: Date.now(), week: days[0], sessions: removed });
+      if (planned.length) store.replacePlanned(days[0], days[6], [], () => true);
+      if (alsoDone) done.forEach(s => store.deleteSession(s.id));
+      close();
+      toast(ctx, `Cleared ${removed.length} workout${removed.length === 1 ? '' : 's'}. Undo is on the Plan screen for 15 min.`);
+      ctx.rerender();
+    };
+  });
+}
+function undoClear(ctx) {
+  const store = ctx.store;
+  const u = safe(() => store.kv(UNDO_KEY), null);
+  if (!u || !(u.sessions || []).length) return;
+  u.sessions.forEach(s => store.saveSession(s));
+  store.kv(UNDO_KEY, null);
+  toast(ctx, `Restored ${u.sessions.length} workout${u.sessions.length === 1 ? '' : 's'}`);
+  ctx.rerender();
 }

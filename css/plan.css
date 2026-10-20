@@ -176,3 +176,11 @@ button.pl-line:active { background: var(--card2); }
   background: var(--card2); border: 1px dashed var(--line); font-size: 13px; }
 .pl-today-where span { color: var(--muted); }
 .pl-today-where .btn { flex: none; }
+
+/* Clear-week row + sheet */
+.pl-clear { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -4px 0 12px; }
+.pl-clear-btn { color: var(--bad); }
+.pl-clear-sheet h2 { margin: 0 0 8px; }
+.pl-clear-done { display: flex; gap: 10px; align-items: flex-start; padding: 12px; margin: 12px 0; border: 1px solid var(--line); border-radius: 12px; font-size: 14px; line-height: 1.4; }
+.pl-clear-done input { width: 20px; height: 20px; margin-top: 1px; accent-color: var(--bad); flex: 0 0 auto; }
+.pl-danger { background: var(--bad); color: #fff; border-color: transparent; }
