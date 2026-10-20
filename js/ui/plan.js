@@ -20,7 +20,7 @@ import { expandEquipment } from '../data/equipment.js';
 import { cardioOptions, CARDIO } from '../data/cardio.js';
 import { getEx } from '../data/exercises.js';
 import { planRange, suggestForDay, weekPlanSummary } from '../engine/planner.js';
-import { buildWorkout } from '../engine/generator.js';
+import { buildWorkout, swapBlock, addExercise, estimateMinutes } from '../engine/generator.js';
 import { loadSchedule } from '../classes/crunch.js';
 import { renderClassPicker, bindClassPicker } from './classes.js';
 import { startSession, sessionGroups } from './today.js';
@@ -38,6 +38,7 @@ import { UNIT_ORDER } from '../data/muscles.js';
 //   "Minimums" line with "Why these numbers?" and, when short, "Make room".
 import {
   esc, chip, fmtNum, exName, unitLabel, safe, cardioFormHtml, bindCardioForm, readCardioForm, cardioName, intensityName,
+  swapSheet, addExerciseSheet, exerciseInfoHtml,
 } from './components.js';
 
 const DOW_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
@@ -312,12 +313,17 @@ function rx(b, units) {
   const w = t.weight != null && ex?.unit !== 'seconds' ? ` @ ${fmtNum(t.weight)} ${unitLabel(ex, units)}` : '';
   return `${t.sets || (b.sets || []).length || '?'} × ${reps}${ex?.unit === 'seconds' ? 's' : ''}${w}`;
 }
-function blocksHtml(s, units) {
+function blocksHtml(s, units, { edit = false } = {}) {
   const blocks = s.blocks || [];
   if (!blocks.length) return '';
   let n = 0;
-  return `<div class="list pl-blocks">${blocks.map(b => {
-    if (b.kind === 'lift') return `<div class="list-item"><span class="pl-bi">${b.group ? esc(b.group) : ++n}</span><span class="grow"><span class="t">${esc(exName(b.exId))}</span><span class="s">${esc(rx(b, units))}</span></span></div>`;
+  return `<div class="list pl-blocks">${blocks.map((b, i) => {
+    if (b.kind === 'lift') {
+      // Tap the name for what the exercise is (cues, why, video); edit buttons change just this exercise.
+      const name = `<button type="button" class="grow pl-exname" data-exinfo="${esc(b.exId)}"><span class="t">${esc(exName(b.exId))} <span class="pl-i">ⓘ</span></span><span class="s">${esc(rx(b, units))}</span></button>`;
+      const btns = edit ? `<span class="pl-exbtns"><button type="button" data-exsets="${i}" data-d="-1" aria-label="One less set">−</button><button type="button" data-exsets="${i}" data-d="1" aria-label="One more set">+</button><button type="button" data-exswap="${i}" aria-label="Swap exercise">⇄</button><button type="button" data-exrm="${i}" aria-label="Remove exercise">✕</button></span>` : '';
+      return `<div class="list-item pl-exrow"><span class="pl-bi">${b.group ? esc(b.group) : ++n}</span>${name}${btns}</div>`;
+    }
     if (b.kind === 'cardio') return `<div class="list-item"><span class="ic">${esc(CARDIO[b.modality]?.icon || '🏃')}</span><span class="grow"><span class="t">${esc(CARDIO[b.modality]?.name || b.modality || 'Cardio')}</span><span class="s">${b.minutes || '?'} min · ${esc(intensityName(b.intensity))}</span></span></div>`;
     if (b.kind === 'class') return `<div class="list-item"><span class="ic">🎟️</span><span class="grow"><span class="t">${esc(b.name)}</span><span class="s">${[b.time, b.duration ? b.duration + ' min' : '', b.instructor, b.classify?.label].filter(Boolean).map(esc).join(' · ')}</span></span></div>`;
     return '';
@@ -358,13 +364,19 @@ function openDay(ctx, date) {
     </div>
     ${groups.length ? `<div class="pl-chips mt">${groups.map(g => `<span class="pl-mchip">${esc(g.name)} <b>${fmtNum(g.sets, 0)}</b></span>`).join('')}</div>` : ''}
     ${rationale.length ? `<ul class="pl-why">${rationale.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
-    ${has ? blocksHtml(plan, profile.units) : rest || sch.kind === 'rest' ? '<p class="muted small mt">Rest days let muscles rebuild. You can still plan something below.</p>' : '<p class="muted small mt">Get a suggestion that fits your recovery and weekly targets, or build your own.</p>'}
+    ${has ? blocksHtml(plan, profile.units, { edit: date >= t }) + (date >= t ? `<button type="button" class="btn btn-sm btn-ghost btn-block pl-exadd" data-exadd>+ Add exercise</button><p class="tiny muted center">Tap a name for form cues &amp; video · ⇄ swap just that exercise</p>` : '') : rest || sch.kind === 'rest' ? '<p class="muted small mt">Rest days let muscles rebuild. You can still plan something below.</p>' : '<p class="muted small mt">Get a suggestion that fits your recovery and weekly targets, or build your own.</p>'}
     ${date >= t ? `<div class="pl-where"><div class="tiny muted bold">Where${has ? ' · tap to re-suggest there' : ''}</div>
       <div class="pl-where-row">${(profile.locations || []).map(l => chip(`${l.icon || ''} ${l.name}`, { active: l.id === loc.id, attrs: `data-sloc="${esc(l.id)}"`, cls: 'sm' })).join('')}</div></div>
     <div class="pl-sheet-quick"><span class="tiny muted bold">Cardio</span>${QUICK_CARDIO.map(m => `<button type="button" class="pl-qc" data-act="qc" data-m="${m}">+${m}′</button>`).join('')}${cmin ? `<span class="muted small">${cmin} min now</span>` : ''}</div>` : ''}
     <div class="pl-acts">${actions.map(([id, ic, label, kind]) => `<button type="button" class="pl-act ${kind || ''}" data-act="${id}"><span>${ic}</span>${esc(label)}</button>`).join('')}</div>
   </div>`;
   ctx.openSheet(html, (el, close) => {
+    el.querySelector('.pl-blocks')?.addEventListener('click', e => blockEdit(ctx, date, plan, loc, e));
+    el.querySelector('[data-exadd]')?.addEventListener('click', () => {
+      const lifts = (plan.blocks || []).filter(b => b.kind === 'lift').map(b => b.exId);
+      addExerciseSheet(ctx, { equipment: loc.equipment || [], targets: plan.targets || [], sculptGoals: profile.sculptGoals || [], exclude: lifts,
+        onPick: id => { const s2 = safe(() => addExercise(plan, id, editCtx(ctx, date)), null); if (s2) saveEdited(ctx, date, s2, `Added ${exName(id)}`); else openDay(ctx, date); } });
+    });
     el.querySelector('.pl-acts').onclick = e => {
       const b = e.target.closest('[data-act]'); if (!b) return;
       dayAction(ctx, date, b.dataset.act, { plan, close, el, btn: b });
@@ -772,4 +784,60 @@ function undoClear(ctx) {
   store.kv(UNDO_KEY, null);
   toast(ctx, `Restored ${u.sessions.length} workout${u.sessions.length === 1 ? '' : 's'}`);
   ctx.rerender();
+}
+
+// ---------------------------------------------------------------- per-exercise edits in a planned day
+// Change one exercise (swap / remove / sets ±) or add one, without regenerating the day. Edited days become
+// custom (plan.auto = false) so re-planning keeps them.
+function editCtx(ctx, date) {
+  const now = parseDs(date); now.setHours(12, 0, 0, 0);
+  return { sessions: otherSessions(ctx.store.getSessions(), date), now };
+}
+function saveEdited(ctx, date, s, msg) {
+  const est = safe(() => estimateMinutes(s.blocks || []), null);
+  const out = { ...s, estMinutes: est ?? s.estMinutes, minutes: Math.max(Number(s.minutes) || 0, est || 0) || s.minutes,
+    plan: { ...(s.plan || {}), auto: false, edited: true, reason: s.plan?.reason && s.plan.reason !== 'Custom' ? s.plan.reason : 'Edited' } };
+  putDay(ctx.store, date, out);
+  toast(ctx, msg);
+  openDay(ctx, date);
+}
+function showExInfo(ctx, date, exId) {
+  const ex = getEx(exId);
+  ctx.openSheet(`${exerciseInfoHtml(ex)}<button type="button" class="btn btn-ghost btn-block mt" data-back>‹ Back to ${esc(fmtDay(date).split(',')[0])}</button>`, (el, close) => {
+    el.addEventListener('click', e => {
+      if (e.target.closest('[data-back]')) { openDay(ctx, date); return; }
+      const lb = e.target.closest('[data-info-lib]'); if (lb) { close(); ctx.nav('exercise', { id: lb.dataset.infoLib }); }
+    });
+  });
+}
+function blockEdit(ctx, date, plan, loc, e) {
+  const info = e.target.closest('[data-exinfo]');
+  if (info) { showExInfo(ctx, date, info.dataset.exinfo); return; }
+  const blocks = plan.blocks || [];
+  const sw = e.target.closest('[data-exswap]');
+  if (sw) {
+    const i = Number(sw.dataset.exswap), b = blocks[i]; if (!b) return;
+    const others = blocks.filter((x, j) => j !== i && x.kind === 'lift').map(x => x.exId);
+    swapSheet(ctx, { exId: b.exId, equipment: loc.equipment || [], exclude: others,
+      onPick: id => { const s2 = safe(() => swapBlock(plan, i, id, editCtx(ctx, date)), null); if (s2) saveEdited(ctx, date, s2, `Swapped in ${exName(id)}`); else openDay(ctx, date); } });
+    return;
+  }
+  const rm = e.target.closest('[data-exrm]');
+  if (rm) {
+    const i = Number(rm.dataset.exrm), b = blocks[i]; if (!b) return;
+    const next = blocks.filter((x, j) => j !== i);
+    // A superset letter left with one member is no longer a superset.
+    const counts = {}; next.forEach(x => { if (x.group) counts[x.group] = (counts[x.group] || 0) + 1; });
+    const cleaned = next.map(x => (x.group && counts[x.group] < 2 ? { ...x, group: null } : x));
+    saveEdited(ctx, date, { ...plan, blocks: cleaned }, `Removed ${exName(b.exId)}`);
+    return;
+  }
+  const st = e.target.closest('[data-exsets]');
+  if (st) {
+    const i = Number(st.dataset.exsets), b = blocks[i]; if (!b || b.kind !== 'lift') return;
+    const n = Math.max(1, Math.min(8, (Number(b.target?.sets) || (b.sets || []).length || 3) + Number(st.dataset.d)));
+    const sets = Array.from({ length: n }, (_, k) => (b.sets || [])[k] || { w: null, r: null, done: false });
+    const nb = { ...b, target: { ...(b.target || {}), sets: n }, sets };
+    saveEdited(ctx, date, { ...plan, blocks: blocks.map((x, j) => (j === i ? nb : x)) }, `${exName(b.exId)}: ${n} sets`);
+  }
 }

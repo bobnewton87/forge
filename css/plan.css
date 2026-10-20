@@ -184,3 +184,14 @@ button.pl-line:active { background: var(--card2); }
 .pl-clear-done { display: flex; gap: 10px; align-items: flex-start; padding: 12px; margin: 12px 0; border: 1px solid var(--line); border-radius: 12px; font-size: 14px; line-height: 1.4; }
 .pl-clear-done input { width: 20px; height: 20px; margin-top: 1px; accent-color: var(--bad); flex: 0 0 auto; }
 .pl-danger { background: var(--bad); color: #fff; border-color: transparent; }
+
+/* Per-exercise editing in the day sheet */
+.pl-exrow { gap: 8px; align-items: center; }
+.pl-exname { background: none; border: 0; color: inherit; text-align: left; padding: 0; font: inherit; display: flex; flex-direction: column; min-width: 0; cursor: pointer; }
+.pl-exname .t { font-weight: 600; }
+.pl-exname .s { font-size: 12px; color: var(--muted); }
+.pl-i { color: var(--accent); font-size: 12px; font-weight: 700; }
+.pl-exbtns { display: flex; gap: 4px; flex: 0 0 auto; }
+.pl-exbtns button { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--line); background: var(--card2); color: var(--text); font-size: 15px; line-height: 1; }
+.pl-exbtns button[data-exrm] { color: var(--bad); }
+.pl-exadd { margin-top: 8px; }
