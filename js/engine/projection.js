@@ -11,7 +11,9 @@
 // ~1,250 kcal; whatever energy is left over (or missing) is stored (or taken) as fat at ~3,500 kcal/lb.
 //
 // CONTRACT-NOTE: project() returns these extras beyond the contract shape:
-//   series[i].week (0..weeks), series[i].shape (every site filled + heightIn: measured sites are
+//   series[i].week (0..weeks), series[i].shape (every site filled + heightIn [+ lengths: the measured
+//     §16c bone lengths { upperArmL, … } from baseline.measurements.lengths, static, same object on every
+//     point, omitted when none are measured; not used by the model math]: measured sites are
 //     projected from the tape, unmeasured ones are rough population estimates listed in
 //     result.shapeEstimated), series[i].muscle { chest, delts, lats, arms, abs, quads, calves, traps }
 //     (0..1 development scores for the 3D model; ~0.5 = FFMI ≈ 19.5), series[i].ffmi (normalized),
@@ -1020,6 +1022,10 @@ export function project(args = {}) {
     for (const [g, w] of Object.entries(groups)) { num += w * (G?.[g] || 0); den += w * MUSCLE_SHARE[g] * smm0; }
     return den > 0 ? num / den : 0;
   };
+  // §16c: measured bone lengths are static; every series point's shape carries them for the 3D model.
+  const lengths0 = m0.lengths && typeof m0.lengths === 'object'
+    ? Object.fromEntries(Object.entries(m0.lengths).filter(([, v]) => pos(v))) : {};
+  const hasLengths = Object.keys(lengths0).length > 0;
   const shapeAt = (L, F, G) => {
     const dF = F - F0, out = {};
     for (const s of SITES) {
@@ -1028,6 +1034,7 @@ export function project(args = {}) {
       out[s] = r1(Math.max(1, shape0[s] + fc[s] * dF + lean));
     }
     out.heightIn = hEst;
+    if (hasLengths) out.lengths = lengths0;
     return out;
   };
   const known = SITES.filter(s => pos(m0[s]));

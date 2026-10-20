@@ -8,7 +8,7 @@ import { esc, readinessColor, muscleBar } from './components.js';
 import { ds, fmtShort, addDays, daysBetween } from '../util.js';
 import * as bodycomp from '../engine/bodycomp.js';
 import { silhouetteSVG } from './silhouette.js';
-import { mount3D, body3d, supports3D, estMuscle } from './projection.js';
+import { mount3D, body3d, supports3D, estMuscle, shapeOf } from './projection.js';
 import { targetsSummaryHTML, bindTargetsSummary, cardioTargetHTML, bindCardioTarget } from './targets.js';
 // CONTRACT-NOTE (INTEGRATOR §18): the cardio card is the shared editable weekly target
 // (targets.js cardioTargetHTML: stepper + 90/150/225/300 chips, done vs planned vs target this
@@ -120,7 +120,7 @@ function yourBodyCard(store, profile, log) {
   const has = b && b.weightLb;
   const stat = (v, u, l) => `<div><b>${v ?? '—'}${v != null ? `<small>${u}</small>` : ''}</b><span>${l}</span></div>`;
   const H = b?.heightIn || 69;
-  card3d = has ? { shape: { ...(b.shape || m), heightIn: H }, muscle: b.muscle || estMuscle({ leanLb: b.comp?.leanLb }, H), bodyFatPct: b.bodyFatPct ?? null } : null;
+  card3d = has ? { shape: shapeOf({ shape: b.shape, measurements: m }, H), muscle: b.muscle || estMuscle({ leanLb: b.comp?.leanLb }, H), bodyFatPct: b.bodyFatPct ?? null } : null;
   return `<div class="card bd-card">
     <div class="bd-card-sil bd-card-3d" id="bdCard3d" aria-hidden="true">${silhouetteSVG(m, { bodyFatPct: b?.bodyFatPct, heightIn: H })}</div>
     <div class="grow"><div class="row between"><div class="card-title">Your body</div>${has && b.bodyFatSource ? `<span class="tiny muted">${b.bodyFatSource === 'navy' ? 'tape BF' : b.bodyFatSource === 'manual' ? 'measured BF' : 'est. BF'}</span>` : ''}</div>

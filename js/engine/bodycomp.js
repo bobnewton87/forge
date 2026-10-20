@@ -13,6 +13,12 @@
 //   .thigh / .calf = average of the two sides (used by the model); measurements.limbs = { armL, armR,
 //   thighL, thighR, calfL, calfR } (null when unknown); baseline.asymmetry = [{ site, left, right,
 //   diff, note }] for any pair differing by more than 0.5 in.
+// CONTRACT-NOTE (§16c, ANTHRO-2): bone lengths. Entries may carry lenUpperArmL/R, lenForearmL/R, lenThighL/R,
+//   lenShankL/R (inches, surface landmarks; see anthro.js). measurements.lengths = { upperArmL, upperArmR,
+//   forearmL, forearmR, thighL, thighR, shankL, shankR } (latest per field, null when unknown; feeds
+//   anthro bodyGeometry({ lengths })), measuredOn['lenUpperArmL'…] dates, and baseline.lengthAsymmetry =
+//   [{ segment, left, right, diffIn (R − L), longer, note }] for pairs differing by more than 0.25 in
+//   (kept separate from the girth `asymmetry` list).
 // CONTRACT-NOTE (Phase 3): body fat. Priority stays manual > navy > estimate. The estimate is now the
 //   Relative Fat Mass formula (Woolcott & Bergman 2018, height/waist, validated against DEXA) when a
 //   waist is known, else Deurenberg's BMI formula. Extra fields: bodyFatMethod ('manual'|'navy'|'rfm'|
@@ -104,6 +110,8 @@ export function bodyComp({ weightLb, heightIn, bodyFatPct, age, sex = 'male', wa
 // ---------------------------------------------------------------- baseline
 const SITES = ['neck', 'shoulders', 'chest', 'waist', 'hips', 'arm', 'forearm', 'thigh', 'calf'];
 const LIMBS = ['arm', 'thigh', 'calf'];
+const LENGTHS = ['upperArm', 'forearm', 'thigh', 'shank'];
+const LENGTH_LABEL = { upperArm: 'upper arm', forearm: 'forearm', thigh: 'thigh', shank: 'lower leg' };
 // Typical error (± BF points, ~1 SD) of each method vs a lab reference.
 const BF_ERR = { manual: 3, navy: 3.5, rfm: 4, bmi: 5.5 };
 
@@ -198,6 +206,22 @@ export function baseline({ profile = {}, bodyLog = [], measurements = [], now = 
     else measurementsOut[s] = null;
   }
   measurementsOut.limbs = limbs;
+  // Bone lengths (surface landmarks), latest per field.
+  const lengths = {}, lengthAsymmetry = [];
+  for (const seg of LENGTHS) {
+    for (const S of ['L', 'R']) {
+      const key = 'len' + seg[0].toUpperCase() + seg.slice(1) + S, l = latest(meas, key);
+      lengths[seg + S] = l ? l.v : null;
+      if (l) measuredOn[key] = l.d;
+    }
+    const L = lengths[seg + 'L'], R = lengths[seg + 'R'];
+    if (L != null && R != null && Math.abs(R - L) > 0.25 + 1e-9) {
+      const diff = r2(R - L), longer = diff > 0 ? 'right' : 'left';
+      lengthAsymmetry.push({ segment: seg, left: L, right: R, diffIn: diff, longer,
+        note: `${longer === 'right' ? 'Right' : 'Left'} ${LENGTH_LABEL[seg]} ${Math.abs(diff)} in longer than ${longer === 'right' ? 'left' : 'right'}. Up to ~0.4 in (1 cm) is common and within tape error on bony landmarks; re-measure both sides twice and average.` });
+    }
+  }
+  measurementsOut.lengths = lengths;
 
   // Body fat: manual > navy > estimate (RFM if a waist is known, else Deurenberg BMI formula).
   const manual = latest(meas, 'bodyFat');
@@ -259,7 +283,7 @@ export function baseline({ profile = {}, bodyLog = [], measurements = [], now = 
     date: today, weightLb: weightLb != null ? r1(weightLb) : null, weightDate, heightIn: heightIn ?? null, age, sex,
     bodyFatPct, bodyFatSource, bodyFatDate, bodyFatEstimated: bodyFatSource === 'estimate', navyBodyFatPct,
     bodyFatMethod, bodyFatSources, bodyFatUncertainty, bodyFatSpread, bodyFatRange, bodyFatNote,
-    measurements: measurementsOut, measuredOn, asymmetry, comp, ratios, missing, missingInfo,
+    measurements: measurementsOut, measuredOn, asymmetry, lengthAsymmetry, comp, ratios, missing, missingInfo,
     weighIns30: log.filter(e => e.d >= ds(addDays(parseDs(today), -30))).length, weighInCount: log.length, measurementCount: meas.length,
   };
 }

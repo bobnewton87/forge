@@ -83,7 +83,20 @@ export function estMuscle(p, heightIn = 69) {
   const v = clampN((ffmi - 16) / 9, 0, 1);
   return { chest: v, delts: v, lats: v, arms: v, abs: v, quads: v + 0.08 > 1 ? 1 : v + 0.08, calves: v, traps: v };
 }
-export function shapeOf(p, heightIn) { return { ...(p?.shape || p?.measurements || {}), heightIn: (p?.shape?.heightIn) || heightIn }; }
+// §16c: measured bone lengths { upperArmL, … } (finite, > 0 only) from a series point's shape, a baseline's
+// measurements, or a bare object; null when none. shapeOf() always forwards them so both 3D renderers get them.
+export function lengthsOf(src) {
+  const l = src?.shape?.lengths || src?.measurements?.lengths || src?.lengths || null;
+  if (!l || typeof l !== 'object') return null;
+  const out = Object.fromEntries(Object.entries(l).filter(([, v]) => typeof v === 'number' && isFinite(v) && v > 0));
+  return Object.keys(out).length ? out : null;
+}
+export function shapeOf(p, heightIn) {
+  const sh = { ...(p?.shape || p?.measurements || {}), heightIn: (p?.shape?.heightIn) || heightIn };
+  const len = lengthsOf(p);
+  if (len) sh.lengths = len; else delete sh.lengths;
+  return sh;
+}
 export function opts3D(p, heightIn, extra = {}) {
   return { shape: shapeOf(p, heightIn), muscle: p?.muscle || estMuscle(p, heightIn), bodyFatPct: p?.bodyFatPct ?? null, ...extra };
 }

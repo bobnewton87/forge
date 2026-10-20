@@ -18,6 +18,7 @@
   .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
   .row button { padding: 8px 12px; border-radius: 10px; background: var(--card2); border: 1px solid var(--line); font-size: 13px; color: var(--text); }
   .row button.on { border-color: var(--accent); }
+  .hideui body { padding: 0; overflow: hidden; } .hideui .wrap { max-width: 100vw; width: 100vw; margin: 0; } .hideui .wrap > :not(#mount), .hideui .b3m-poses, .hideui .b3m-hint { display: none !important; }
 </style>
 </head>
 <body>
@@ -47,6 +48,14 @@ const qs = new URLSearchParams(location.search);
 if (qs.has('bf')) state.bodyFatPct = +qs.get('bf');
 if (qs.has('m')) for (const k in state.muscle) state.muscle[k] = +qs.get('m');
 for (const k of Object.keys(state.shape)) if (qs.has(k)) state.shape[k] = +qs.get(k);
+// per-side segment lengths (CONTRACT §16c), e.g. ?lenUpperArmL=14.2&lenUpperArmR=14.6&lenThighL=17&lenThighR=17.4
+// or ?asym=1 for a demo (right arm and leg longer)
+const LEN_KEYS = { lenUpperArmL: 'upperArmL', lenUpperArmR: 'upperArmR', lenForearmL: 'forearmL', lenForearmR: 'forearmR',
+  lenThighL: 'thighL', lenThighR: 'thighR', lenShankL: 'shankL', lenShankR: 'shankR' };
+if (qs.has('asym')) Object.assign(state.shape, { lengths: { upperArmL: 13.2, upperArmR: 14.6, forearmL: 10.4, forearmR: 11.2, thighL: 16.4, thighR: 17.6, shankL: 16.2, shankR: 16.8 } });
+for (const [q, k] of Object.entries(LEN_KEYS)) if (qs.has(q)) (state.shape.lengths ||= {})[k] = +qs.get(q);
+if (qs.has('hideui')) document.documentElement.classList.add('hideui');
+if (qs.has('w')) document.querySelector('.wrap').style.cssText = `width:${+qs.get('w')}px;max-width:${+qs.get('w')}px;margin:0`;   // headless shots: pin the stage width
 
 const ctl = document.getElementById('ctl');
 const add = (sec) => { const d = document.createElement('div'); d.className = 'sec'; d.textContent = sec; ctl.appendChild(d); };
@@ -64,7 +73,7 @@ add('Muscle scores');
 for (const k of Object.keys(state.muscle)) slider(k, () => state.muscle[k], v => state.muscle[k] = v, 0, 1, 0.05);
 add('Measurements (in)');
 const R = { neck: [12, 20], shoulders: [40, 60], chest: [34, 52], waist: [26, 46], hips: [32, 48], arm: [10, 20], forearm: [9, 15], thigh: [18, 30], calf: [12, 19], heightIn: [62, 78] };
-for (const k of Object.keys(state.shape)) slider(k, () => state.shape[k], v => state.shape[k] = v, R[k][0], R[k][1], 0.25);
+for (const k of Object.keys(state.shape)) if (R[k]) slider(k, () => state.shape[k], v => state.shape[k] = v, R[k][0], R[k][1], 0.25);
 
 let ghostOn = qs.has('ghost'), scaleOn = qs.has('scale'), auto = false, view = null;
 const mount = document.getElementById('mount');
@@ -73,6 +82,8 @@ if (supported()) {
   view = mountBody3D(mount, { ...state, pose: qs.get('pose') || 'relaxed', height: +(qs.get('h') || 420), showScale: scaleOn,
     compareShape: ghostOn ? ghostShape() : null, onPose: p => syncPoseButtons(p) });
   window.viewer = view;
+  // ?yaw=&pitch=&zoom=&fy= (fy: camera focus height as a fraction of stature, e.g. 0.92 for a head close-up)
+  if (qs.has('yaw') || qs.has('zoom') || qs.has('fy')) view.setView(+(qs.get('yaw') ?? 0.32), +(qs.get('pitch') ?? 0.05), +(qs.get('zoom') ?? 1), qs.has('fy') ? +qs.get('fy') : null);
 } else {
   mount.textContent = 'WebGL2 not supported';
 }

@@ -12,7 +12,14 @@
 //   4. Head proportions: vertex→menton and menton→suprasternale are remapped (step 3 anchors) and a head-region
 //      scale, faded in across the upper neck, sets head breadth / bizygomatic breadth / length to ANSUR II
 //      adult-male medians scaled weakly with stature (headTargets(); head size grows ∝ H^0.3, not ∝ H).
-//   5. The fitted pose is un-skinned back to the bind pose, so every other pose is plain skinning.
+//   5. Smoothness: the fit displacement (fitted − posed source) is Taubin-smoothed (fingers/toes held), then one smooth
+//      station-correction pass restores every girth; region weights are smooth everywhere (head scale by the diffused
+//      head-bone weight, leg-section scale faded over the foot by the foot-bone weight, no hard L/R flips).
+//   6. The fitted pose is un-skinned back to the bind pose, so every other pose is plain skinning. Normals are
+//      recomputed on the fitted bind mesh (welded across duplicate seam vertices) and skinned on the GPU.
+//   Per-side skeleton (CONTRACT §16c): anthro's per-side joints/bones/profile heights drive per-side arm maps, one
+//   vertical map per leg (pelvic obliquity: per-side hip heights) blended by each vertex's left/right share, and
+//   per-side stations; sideJoints() re-lays limb chains when only per-side bones are given.
 //
 //   mountBody3D(el, { shape, muscle, bodyFatPct, pose, compareShape, autoRotate, height, showScale, showPoses, onPose })
 //     → { update(opts), setPose(name), destroy() }
@@ -23,12 +30,14 @@
 //     translucent Fresnel ghost (depth-tested against the main body, so you see where "now" sticks out).
 //   - showScale (default false) draws a height ruler; showPoses (default true) renders pose chips;
 //     onPose(name) is called when a chip is tapped; label (string) draws a corner caption.
-//   - Handle extras: canvas, getPose(), stats() → { fitMs, frameMs, verts, tris }, setView(yawRad, pitchRad).
+//   - Handle extras: canvas, getPose(), stats() → { fitMs, frameMs, verts, tris }, setView(yawRad, pitchRad, zoom?, focus?)
+//     (focus = camera target height as a fraction of stature, e.g. 0.92 for a head close-up; null = auto).
 //   - update() keeps the user's yaw / pitch / zoom (only a pose change animates the camera), and the camera frames
 //     by stature only, so swapping shape (e.g. "now" ↔ "projected" blink) keeps floor, scale and framing fixed.
 //     The last 4 fitted bodies are cached by (shape, bodyFatPct, muscle), so switching back and forth never refits.
 //   - Pure helpers for tests/tools: decodeBodyAsset, fitBody, poseGlobals, skinMatrices, skinPositions,
-//     sliceHull, flexGirthAt, POSE_SPECS, HEAD_REF, headTargets, headDims.
+//     sliceHull, flexGirthAt, POSE_SPECS, HEAD_REF, headTargets, headDims, sideJoints, taubinField, fieldRoughness.
+//     fit.src = posed source before fitting (for smoothness metrics), fit.joints = per-side joints used.
 //   - Flexed poses (front/back double biceps, side chest) bulge the upper arm to the flexed biceps tape
 //     (anthro: arm/forearm tapes are flexed; the hanging rest arm uses the relaxed girth).
 import { bodyGeometry } from '../engine/anthro.js';
@@ -259,7 +268,21 @@ function prepareAsset(A) {
     const hp = n => { const i = bones[B[n]].head; return [base[i * 3], base[i * 3 + 1], base[i * 3 + 2]]; };
     A._front = ['L', 'R'].map(s => { const u = vnorm(vsub(hp('farm1' + s), hp('uarm1' + s))), f = vnorm(vsub(hp('hand' + s), hp('farm1' + s))); return vnorm(vsub(f, vmul(u, vdot(f, u)))); });
   }
-  A.canonNormals = computeNormals(base, A.tris, nMesh);
+  buildTopology(A);
+  A.canonNormals = computeNormals(base, A.tris, nMesh, null, A.weld);
+  // head-bone share of each vertex (skin weights, diffused a little): the head-proportion scale follows the skull
+  // and jaw instead of a height band, so the jaw underside / nape carry the head↔neck transition (no lump below
+  // the ear, no shelf under the chin)
+  {
+    const wh = new Float32Array(nMesh), hb = B.head;
+    for (let i = 0; i < nMesh; i++) for (let k = 0; k < 4; k++) if (skinIdx[i * 4 + k] === hb) wh[i] += skinW[i * 4 + k];
+    A.wHead = smoothScalar(A, wh, 6, 0.5);
+    // foot-bone share: the leg sections' scale fades out over the foot by this weight (not by height: the foot is
+    // nearly horizontal, so a height fade sheared the toes against the sole)
+    const wf = new Float32Array(nMesh), fb = new Set([B.footL, B.footR]);
+    for (let i = 0; i < nMesh; i++) for (let k = 0; k < 4; k++) if (fb.has(skinIdx[i * 4 + k])) wf[i] += skinW[i * 4 + k];
+    A.wFoot = smoothScalar(A, wf, 4, 0.5);
+  }
   // muscle region masks on the default shape (decimetres)
   const P = (i) => [base[i * 3], base[i * 3 + 1], base[i * 3 + 2]];
   const piv = name => P(bones[B[name]].head);
@@ -417,17 +440,93 @@ export function headDims(A, pos) {
   const notch = pos[A.notchV * 3 + 1];
   return { top, chin, height, eyeY: ey, glabellaY: yG, breadth, length: zmax - zmin, circumference, bizygomatic, notch, neck: chin - notch, cz: (zmin + zmax) / 2 };
 }
-function computeNormals(pos, tris, n, out) {
+// Smooth vertex normals (area-weighted face normals). With `weld` (vertex → representative of its position group)
+// duplicated seam vertices share one averaged normal, so UV/part seams never show as lighting seams.
+function computeNormals(pos, tris, n, out, weld) {
   const N = out || new Float32Array(n * 3); N.fill(0);
   for (let k = 0; k < tris.length; k += 3) {
     const a = tris[k] * 3, b = tris[k + 1] * 3, c = tris[k + 2] * 3;
     const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2];
     const vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2];
     const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-    for (const i of [a, b, c]) { N[i] += nx; N[i + 1] += ny; N[i + 2] += nz; }
+    for (const v of [tris[k], tris[k + 1], tris[k + 2]]) { const i = (weld ? weld[v] : v) * 3; N[i] += nx; N[i + 1] += ny; N[i + 2] += nz; }
   }
-  for (let i = 0; i < n; i++) { const l = Math.hypot(N[i * 3], N[i * 3 + 1], N[i * 3 + 2]) || 1; N[i * 3] /= l; N[i * 3 + 1] /= l; N[i * 3 + 2] /= l; }
+  for (let i = 0; i < n; i++) {
+    if (weld && weld[i] !== i) continue;
+    const l = Math.hypot(N[i * 3], N[i * 3 + 1], N[i * 3 + 2]) || 1; N[i * 3] /= l; N[i * 3 + 1] /= l; N[i * 3 + 2] /= l;
+  }
+  if (weld) for (let i = 0; i < n; i++) { const r = weld[i]; if (r !== i) { N[i * 3] = N[r * 3]; N[i * 3 + 1] = N[r * 3 + 1]; N[i * 3 + 2] = N[r * 3 + 2]; } }
   return N;
+}
+// Mesh topology: weld map (duplicate positions → one representative) and a CSR vertex adjacency over the welded mesh.
+function buildTopology(A) {
+  const { nMesh: n, base, tris } = A;
+  const weld = new Int32Array(n), seen = new Map();
+  let dupGroups = 0;
+  for (let i = 0; i < n; i++) {
+    const k = Math.round(base[i * 3] * 1e4) + ',' + Math.round(base[i * 3 + 1] * 1e4) + ',' + Math.round(base[i * 3 + 2] * 1e4);
+    const r = seen.get(k);
+    if (r === undefined) { seen.set(k, i); weld[i] = i; } else { weld[i] = r; dupGroups++; }
+  }
+  const sets = new Array(n);
+  for (let k = 0; k < tris.length; k += 3) for (let e = 0; e < 3; e++) {
+    const a = weld[tris[k + e]], b = weld[tris[k + (e + 1) % 3]];
+    if (a === b) continue;
+    (sets[a] ||= new Set()).add(b); (sets[b] ||= new Set()).add(a);
+  }
+  const off = new Int32Array(n + 1); for (let i = 0; i < n; i++) off[i + 1] = off[i] + (sets[weld[i]] ? sets[weld[i]].size : 0);
+  const idx = new Int32Array(off[n]);
+  for (let i = 0; i < n; i++) { let o = off[i]; if (sets[weld[i]]) for (const j of sets[weld[i]]) idx[o++] = j; }
+  A.weld = weld; A.dupGroups = dupGroups; A.adj = { off, idx };
+  // displacement-smoothing freedom: fingers, thumbs and feet (toes) are fine intentional detail that only moves
+  // rigidly in the fit, so they are held (umbrella smoothing on their tiny, irregular triangles would fold them)
+  const free = new Float32Array(n), B = A.B, held = new Set(['fing1L', 'fing2L', 'thumbL', 'fing1R', 'fing2R', 'thumbR', 'footL', 'footR'].map(k => B[k]));
+  for (let i = 0; i < n; i++) { let h = 0; for (let k = 0; k < 4; k++) if (held.has(A.skinIdx[i * 4 + k])) h += A.skinW[i * 4 + k]; free[i] = A.part[i] === 6 ? 0 : 1 - sstep(0.15, 0.6, h); }
+  A.smoothFree = free;
+}
+/** Mean umbrella-Laplacian magnitude of a per-vertex 3-vector field (inches for a displacement field). */
+export function fieldRoughness(A, d) {
+  const { off, idx } = A.adj; let s = 0, c = 0;
+  for (let i = 0; i < A.nMesh; i++) {
+    const o0 = off[i], o1 = off[i + 1]; if (o1 === o0 || A.part[i] === 6) continue;
+    let x = 0, y = 0, z = 0; for (let o = o0; o < o1; o++) { const j = idx[o] * 3; x += d[j]; y += d[j + 1]; z += d[j + 2]; }
+    const k = 1 / (o1 - o0); s += Math.hypot(x * k - d[i * 3], y * k - d[i * 3 + 1], z * k - d[i * 3 + 2]); c++;
+  }
+  return s / (c || 1);
+}
+// a few Jacobi passes of umbrella smoothing of a per-vertex scalar
+function smoothScalar(A, f, iters, lam) {
+  const { off, idx } = A.adj, n = f.length; let a = Float32Array.from(f), b = new Float32Array(n);
+  for (let it = 0; it < iters; it++) {
+    for (let i = 0; i < n; i++) {
+      const o0 = off[i], o1 = off[i + 1]; if (o1 === o0) { b[i] = a[i]; continue; }
+      let s = 0; for (let o = o0; o < o1; o++) s += a[idx[o]];
+      b[i] = a[i] + lam * (s / (o1 - o0) - a[i]);
+    }
+    [a, b] = [b, a];
+  }
+  return a;
+}
+/**
+ * Taubin (λ|μ) smoothing of a per-vertex 3-vector field, in place: removes high-frequency roughness without the
+ * shrinkage of plain Laplacian smoothing. Used on the fit DISPLACEMENT (fitted − source), never on the base shape,
+ * so the mesh's own detail is kept and only creases introduced by region-wise deformation are ironed out.
+ * `pin` (optional, 0..1 per vertex) holds vertices back (1 = free).
+ */
+export function taubinField(A, d, iters = 8, lam = 0.6, mu = -0.63, pin = null) {
+  const { off, idx } = A.adj, n = A.nMesh, tmp = new Float32Array(n * 3);
+  for (let it = 0; it < iters * 2; it++) {
+    const k = it & 1 ? mu : lam;
+    for (let i = 0; i < n; i++) {
+      const o0 = off[i], o1 = off[i + 1];
+      if (o1 === o0) { tmp[i * 3] = d[i * 3]; tmp[i * 3 + 1] = d[i * 3 + 1]; tmp[i * 3 + 2] = d[i * 3 + 2]; continue; }
+      let sx = 0, sy = 0, sz = 0; for (let o = o0; o < o1; o++) { const j = idx[o] * 3; sx += d[j]; sy += d[j + 1]; sz += d[j + 2]; }
+      const inv = 1 / (o1 - o0), w = k * (pin ? pin[i] : 1);
+      tmp[i * 3] = d[i * 3] + w * (sx * inv - d[i * 3]); tmp[i * 3 + 1] = d[i * 3 + 1] + w * (sy * inv - d[i * 3 + 1]); tmp[i * 3 + 2] = d[i * 3 + 2] + w * (sz * inv - d[i * 3 + 2]);
+    }
+    d.set(tmp);
+  }
+  return d;
 }
 // cavity term: how far a vertex sits below the average of its neighbours, along its normal (0 = flat/convex)
 function computeCavity(pos, nrm, tris, n) {
@@ -611,7 +710,7 @@ export function poseGlobals(ctx, name) {
     const S = posedHead(B['uarm1' + s]);
     const Lu = boneLen(heads, A, 'uarm1' + s, 'farm1' + s), Lf = boneLen(heads, A, 'farm1' + s, 'hand' + s);
     if (!as) { // relaxed: aim at anthro's rest joints
-      const g = ctx.geom.joints;
+      const g = ctx.joints || ctx.geom.joints;
       const gS = g['shoulder' + s], gE = g['elbow' + s], gW = g['wrist' + s];
       u = vnorm([gE.x - gS.x, gE.y - gS.y, gE.z - gS.z]); f = vnorm([gW.x - gE.x, gW.y - gE.y, gW.z - gE.z]);
       palm = [-sg, 0, 0.12];
@@ -665,7 +764,7 @@ export function poseGlobals(ctx, name) {
     const ls = spec['legs' + s] || (spec.legs ? (s === 'L' ? spec.legs : { t: mirrorX(spec.legs.t), s: mirrorX(spec.legs.s) }) : null);
     let t, sh;
     if (!ls) {
-      const g = ctx.geom.joints;
+      const g = ctx.joints || ctx.geom.joints;
       const gH = g['hip' + s], gK = g['knee' + s], gA = g['ankle' + s];
       t = vnorm([gK.x - gH.x, gK.y - gH.y, gK.z - gH.z]); sh = vnorm([gA.x - gK.x, gA.y - gK.y, gA.z - gK.z]);
     } else { t = vnorm(ls.t); sh = vnorm(ls.s); }
@@ -723,7 +822,7 @@ export function skinPositions(A, pos, M, n = A.nMesh, out) {
   }
   return o;
 }
-function unskinPositions(A, posed, M, n = A.nMesh) {
+function unskinPositions(A, posed, M, n = A.nMesh, dirs = false) {
   const o = new Float32Array(n * 3), { skinIdx, skinW } = A, b = new Float64Array(12);
   for (let i = 0; i < n; i++) {
     b.fill(0);
@@ -732,13 +831,14 @@ function unskinPositions(A, posed, M, n = A.nMesh) {
       const m = skinIdx[i * 4 + k] * 16;
       for (let c = 0; c < 4; c++) for (let r = 0; r < 3; r++) b[c * 3 + r] += w * M[m + c * 4 + r];
     }
-    const px = posed[i * 3] - b[9], py = posed[i * 3 + 1] - b[10], pz = posed[i * 3 + 2] - b[11];
+    const px = posed[i * 3] - (dirs ? 0 : b[9]), py = posed[i * 3 + 1] - (dirs ? 0 : b[10]), pz = posed[i * 3 + 2] - (dirs ? 0 : b[11]);
     const a = b[0], d = b[3], g = b[6], bb = b[1], e = b[4], h = b[7], c = b[2], f = b[5], k2 = b[8];
     const det = a * (e * k2 - f * h) - d * (bb * k2 - c * h) + g * (bb * f - c * e) || 1e-9;
     // inverse of [[a d g],[bb e h],[c f k2]]
     o[i * 3] = ((e * k2 - f * h) * px + (g * f - d * k2) * py + (d * h - g * e) * pz) / det;
     o[i * 3 + 1] = ((h * c - bb * k2) * px + (a * k2 - g * c) * py + (g * bb - a * h) * pz) / det;
     o[i * 3 + 2] = ((bb * f - e * c) * px + (d * c - a * f) * py + (a * e - d * bb) * pz) / det;
+    if (dirs) { const l = Math.hypot(o[i * 3], o[i * 3 + 1], o[i * 3 + 2]) || 1; o[i * 3] /= l; o[i * 3 + 1] /= l; o[i * 3 + 2] /= l; }
   }
   return o;
 }
@@ -754,6 +854,52 @@ function geometryFor(shape, bodyFatPct, muscle) {
 }
 
 /**
+ * Per-side joints (CONTRACT §16c). anthro returns per-side joints and joint-centre bone lengths
+ * (geom.bones.upperArmL/R, forearmL/R, thighL/R, shankL/R). When per-side bones are present but the joints do not
+ * honour them (older anthro), each limb chain is re-laid along anthro's own directions with those lengths: arms
+ * from the shoulder down, legs from the ankle up (stature and floor contact are measured, so a longer leg raises its
+ * hip: pelvis tilt). Where joints already match the bones this is a no-op.
+ */
+export function sideJoints(geom) {
+  const J = {}; for (const [k, v] of Object.entries(geom.joints)) J[k] = { ...v };
+  const bn = geom.bones || {};
+  const P = j => [j.x, j.y, j.z], O = p => ({ x: p[0], y: p[1], z: p[2] });
+  const relay = (from, to, len) => {
+    const a = P(J[from]), b = P(J[to]), d = vsub(b, a), L = vlen(d) || 1, nb = vadd(a, vmul(d, len / L));
+    J[to] = O(nb); return vsub(nb, b);
+  };
+  const shift = (k, d) => { if (J[k]) J[k] = O(vadd(P(J[k]), d)); };
+  for (const s of SIDES) {
+    const has = k => num(bn[k + s]) && bn[k + s] > 0;
+    if (has('upperArm')) { const d = relay('shoulder' + s, 'elbow' + s, bn['upperArm' + s]); shift('wrist' + s, d); shift('hand' + s, d); }
+    if (has('forearm')) shift('hand' + s, relay('elbow' + s, 'wrist' + s, bn['forearm' + s]));
+    if (has('shank')) shift('hip' + s, relay('ankle' + s, 'knee' + s, bn['shank' + s]));
+    if (has('thigh')) relay('knee' + s, 'hip' + s, bn['thigh' + s]);
+  }
+  return J;
+}
+// piecewise-linear map through matching knots (ascending xs), linear extrapolation beyond the ends
+function plMap(xs, ys) {
+  return x => {
+    const n = xs.length; let k = 0;
+    while (k < n - 2 && x > xs[k + 1]) k++;
+    const t = (x - xs[k]) / ((xs[k + 1] - xs[k]) || 1e-9);
+    return ys[k] + (ys[k + 1] - ys[k]) * t;
+  };
+}
+/** Limb profile samples with heights moved onto the per-side joints (identity when anthro already did so). */
+function limbProfile(geom, J, part) {
+  const prof = geom.profiles[part], s = part.slice(-1), G0 = geom.joints;
+  const at = name => (prof.find(p => p.name === name) || {}).y;
+  const arm = part.startsWith('arm');
+  const from = arm ? [at('wrist'), at('elbow'), G0['shoulder' + s].y] : [at('ankle'), at('knee'), G0['hip' + s].y];
+  const to = arm ? [J['wrist' + s].y, J['elbow' + s].y, J['shoulder' + s].y] : [J['ankle' + s].y, J['knee' + s].y, J['hip' + s].y];
+  if (from.some(v => !num(v)) || from.every((v, i) => Math.abs(v - to[i]) < 0.02)) return prof;
+  const f = plMap(from, to);
+  return prof.map(p => ({ ...p, y: f(p.y) }));
+}
+
+/**
  * Fit the base mesh to a body. Returns the bind-pose (rest) positions in inches, the bind skeleton, the
  * fitted relaxed-pose positions, and a report of every station.
  */
@@ -761,7 +907,8 @@ export function fitBody(A, opts = {}) {
   const t0 = now();
   const bf = num(opts.bodyFatPct) ?? DEF_BF;
   const geom = opts.geom || geometryFor(opts.shape, bf, opts.muscle);
-  const H = geom.heightIn, LM = geom.landmarks, GJ = geom.joints;
+  const H = geom.heightIn, LM = geom.landmarks, GJ = sideJoints(geom);
+  const prof = { armL: limbProfile(geom, GJ, 'armL'), armR: limbProfile(geom, GJ, 'armR'), legL: limbProfile(geom, GJ, 'legL'), legR: limbProfile(geom, GJ, 'legR') };
   const { nMesh, N, B, bones, part, grp, seg, tris } = A;
   const nb = bones.length;
 
@@ -774,7 +921,7 @@ export function fitBody(A, opts = {}) {
   const frames = restFrames(A, sk0);
 
   // 2. pose the unfitted mesh into anthro's rest pose
-  const ctx0 = { A, rest: sk0.heads, frames, geom };
+  const ctx0 = { A, rest: sk0.heads, frames, geom, joints: GJ };
   const relax = poseGlobals(ctx0, 'relaxed');
   const { M: M0, J: J0 } = skinMatrices(A, sk0.heads, relax);
   const Q = skinPositions(A, P, M0);
@@ -791,16 +938,19 @@ export function fitBody(A, opts = {}) {
   const HT = headTargets(H), chinT = H - HT.height, notchT = chinT - HT.neck;
 
   // 3a. vertical remap anchors (mesh height → anthro height), all in the rest pose
-  const yKnee = Jq[B.shinL][1], yAnk = Jq[B.footL][1], yCr = qy(A.lm.crotchV);
-  const anchors = [
+  // One map per leg (per-side ankle / calf / knee / thigh / hip heights, CONTRACT §16c); they share every anchor
+  // from the hip up, so they agree on the trunk, and each vertex blends them by its left/right share (sideL).
+  const yCr = qy(A.lm.crotchV);
+  const lmY = (s, name, fb) => { const p = prof['leg' + s].find(q => q.name === name); return p ? p.y : fb; };
+  const anchorsFor = s => { const yKnee = Jq[B['shin' + s]][1], yAnk = Jq[B['foot' + s]][1]; return [
     [0, 0],
-    [yAnk, GJ.ankleL.y],
-    [yKnee + A.lm.calfT * (yAnk - yKnee), LM.calf.y],
-    [yKnee, GJ.kneeL.y],
-    [yCr - 0.017 * Hm, LM.thigh.y],
+    [yAnk, GJ['ankle' + s].y],
+    [yKnee + A.lm.calfT * (yAnk - yKnee), lmY(s, 'calf', LM.calf.y)],
+    [yKnee, GJ['knee' + s].y],
+    [yCr - 0.017 * Hm, lmY(s, 'thigh', LM.thigh.y)],
     [yCr, LM.crotch.y],
     [qy(A.lm.buttV), LM.hip.y],
-    [Jq[B.thighL][1], GJ.hipL.y],
+    [Jq[B['thigh' + s]][1], GJ['hip' + s].y],
     [qy(A.lm.navelV), LM.waist.y],
     [qy(A.lm.nippleV), LM.chest.y],
     [Jq[B.uarm1L][1], GJ.shoulderL.y],
@@ -811,11 +961,19 @@ export function fitBody(A, opts = {}) {
     // proportions (eyes ≈ mid head height); without these the cubic stretches the face and squashes the cranium
     ...[0.12, 0.35, 0.6, 0.85].map(f => [mix(qy(A.lm.chinV), Hm, f), mix(chinT, H, f)]),
     [Hm, H],
-  ].sort((a, b) => a[0] - b[0]);
-  const ax = [], ay = [];
-  for (const [m, t] of anchors) if (!ax.length || (m > ax[ax.length - 1] + 0.05 && t > ay[ay.length - 1] + 0.05)) { ax.push(m); ay.push(t); }
-  const ymap = pchip(ax, ay);
-  const Y = y => pchipEval(ymap, y, true);
+  ].sort((a, b) => a[0] - b[0]); };
+  const ymaps = {}, ax = [], ay = [];
+  for (const s of SIDES) {
+    const xs = [], ys = [];
+    for (const [m, t] of anchorsFor(s)) if (!xs.length || (m > xs[xs.length - 1] + 0.05 && t > ys[ys.length - 1] + 0.05)) { xs.push(m); ys.push(t); }
+    ymaps[s] = pchip(xs, ys);
+    if (s === 'L') { ax.push(...xs); ay.push(...ys); }
+  }
+  const Y = (y, wl = 0.5) => { const l = pchipEval(ymaps.L, y, true), r = pchipEval(ymaps.R, y, true); return r + (l - r) * wl; };
+  // left share of every vertex: left limbs 1, right limbs 0, trunk/head by a smooth ramp across the midline
+  const sideL = new Float32Array(nMesh);
+  for (let i = 0; i < nMesh; i++) { const o = i * 6; sideL[i] = clamp(grp[o + 2] + grp[o + 4] + (grp[o] + grp[o + 1]) * sstep(-0.8, 0.8, P[i * 3]), 0, 1); }
+  const boneSide = b => { const g = bones[b].group; return g === 2 || g === 4 ? 1 : g === 3 || g === 5 ? 0 : sstep(-0.8, 0.8, sk0.heads[b][0]); };
   const z0 = (Jq[B.uarm1L][2] + Jq[B.thighL][2]) / 2;
 
   // 3b. arm joint targets (anthro joints; the shoulder keeps the mesh's own depth)
@@ -831,7 +989,7 @@ export function fitBody(A, opts = {}) {
     armT[s] = { src: [Jq[B['uarm1' + s]], Jq[B['farm1' + s]], Jq[B['hand' + s]], tipQ[s]], dst: [S1, E1, W1, T1] };
   }
   if (opts.debug) opts.debug.armT = armT, opts.debug.Jq = Jq;
-  const trunkMap = (x, y, z) => [x * hs, Y(y), (z - z0) * hs];
+  const trunkMap = (x, y, z, wl) => [x * hs, Y(y, wl), (z - z0) * hs];
   const armMap = (s, x, y, z, w0, w1, w2) => {
     const T = armT[s]; let ox = 0, oy = 0, oz = 0; const ws = [w0, w1, w2], sw = w0 + w1 + w2 || 1;
     for (let k = 0; k < 3; k++) {
@@ -847,7 +1005,7 @@ export function fitBody(A, opts = {}) {
   const V1 = new Float32Array(nMesh * 3);
   for (let i = 0; i < nMesh; i++) {
     const x = Q[i * 3], y = Q[i * 3 + 1], z = Q[i * 3 + 2];
-    let px = x * hs, py = Y(y), pz = (z - z0) * hs;
+    let px = x * hs, py = Y(y, sideL[i]), pz = (z - z0) * hs;
     const aL = grp[i * 6 + 2], aR = grp[i * 6 + 3];
     if (aL + aR > 1e-4) {
       const s = aL >= aR ? 'L' : 'R', a = aL + aR;
@@ -860,7 +1018,7 @@ export function fitBody(A, opts = {}) {
   const segOfBone = b => (/^uarm/.test(bones[b].name) ? 0 : /^farm/.test(bones[b].name) ? 1 : /^(hand|fing|thumb)/.test(bones[b].name) ? 2 : -1);
   const J1 = Jq.map((j, b) => {
     const sgb = segOfBone(b);
-    if (sgb < 0) return trunkMap(j[0], j[1], j[2]);
+    if (sgb < 0) return trunkMap(j[0], j[1], j[2], boneSide(b));
     const s = bones[b].name.endsWith('L') ? 'L' : 'R';
     return armMap(s, j[0], j[1], j[2], sgb === 0 ? 1 : 0, sgb === 1 ? 1 : 0, sgb === 2 ? 1 : 0);
   });
@@ -871,10 +1029,11 @@ export function fitBody(A, opts = {}) {
   const stackW = (i, x, y, out = new Float64Array(5)) => {     // weights of [trunk, armL, armR, legL, legR]
     const o6 = i * 6, g4 = grp[o6 + 4], g5 = grp[o6 + 5];
     const up = sstep(yCr1 - 0.6, yCr1 + 1.2, y);
+    // torso-weighted vertices always follow the trunk (scaled about the midline): sending the perineum to the two leg
+    // stacks scaled it about two different centres and folded the crotch
     const torso = grp[o6] + grp[o6 + 1];
-    out[0] = (torso + g4 + g5) * up; out[1] = grp[o6 + 2]; out[2] = grp[o6 + 3];
-    const left = P[i * 3] > 0;
-    out[3] = (g4 + (left ? torso : 0)) * (1 - up); out[4] = (g5 + (left ? 0 : torso)) * (1 - up);
+    out[0] = torso + (g4 + g5) * up; out[1] = grp[o6 + 2]; out[2] = grp[o6 + 3];
+    out[3] = g4 * (1 - up); out[4] = g5 * (1 - up);
     return out;
   };
   const notArm = (a, b, c) => (part[a] < 2 || part[a] === 4 || part[a] === 5) && (part[b] < 2 || part[b] === 4 || part[b] === 5) && (part[c] < 2 || part[c] === 4 || part[c] === 5);
@@ -884,11 +1043,13 @@ export function fitBody(A, opts = {}) {
   const stacks = [
     // upper-torso sections at deltoid/acromion/trap level are torso-only model values (not tapes) and the mesh's
     // part split there is ambiguous; the shoulders tape (loop around both arms) is enforced separately below.
-    { name: 'trunk', ok: notArm, src: [...geom.profiles.torso.filter(s => !TRUNK_SKIP.has(s.name)), ...geom.profiles.neck.filter(s => s.name !== 'neckBase')] },
-    { name: 'armL', ok: isPart(2), src: geom.profiles.armL.filter(s => !ARM_SKIP.has(s.name)), tail: 'hand' },
-    { name: 'armR', ok: isPart(3), src: geom.profiles.armR.filter(s => !ARM_SKIP.has(s.name)), tail: 'hand' },
-    { name: 'legL', ok: legSide(1), src: geom.profiles.legL.filter(s => s.name !== 'legTop'), tail: 'foot' },
-    { name: 'legR', ok: legSide(-1), src: geom.profiles.legR.filter(s => s.name !== 'legTop'), tail: 'foot' },
+    // The neck tape is the top trunk station: the scale holds above it and the head gets its own scale (5b), blended
+    // by the head-bone weight, so the jaw is never squeezed by a neck-sized "chin" section.
+    { name: 'trunk', ok: notArm, src: [...geom.profiles.torso.filter(s => !TRUNK_SKIP.has(s.name)), ...geom.profiles.neck.filter(s => s.name === 'neck')] },
+    { name: 'armL', ok: isPart(2), src: prof.armL.filter(s => !ARM_SKIP.has(s.name)), tail: 'hand' },
+    { name: 'armR', ok: isPart(3), src: prof.armR.filter(s => !ARM_SKIP.has(s.name)), tail: 'hand' },
+    { name: 'legL', ok: legSide(1), src: prof.legL.filter(s => s.name !== 'legTop'), tail: 'foot' },
+    { name: 'legR', ok: legSide(-1), src: prof.legR.filter(s => s.name !== 'legTop'), tail: 'foot' },
   ];
   const touched = new Uint8Array(nMesh), bins = triBins(V1, tris);
   // the neck tape settles on the narrowest neck section between the neck base and the jaw
@@ -901,7 +1062,7 @@ export function fitBody(A, opts = {}) {
     }
   }
   for (const st of stacks) {
-    st.stations = st.src.map(s => ({ name: s.name, y: st.name === 'trunk' && s.name === 'neck' ? neckY : st.name === 'trunk' && s.name === 'chin' ? chinT : s.y, rx: s.rx, rz: s.rz, G: s.girth, cx: 0, cz: 0, kx: 1, kz: 1 })).sort((a, b) => a.y - b.y);
+    st.stations = st.src.map(s => ({ name: s.name, y: st.name === 'trunk' && s.name === 'neck' ? neckY : s.y, rx: s.rx, rz: s.rz, G: s.girth, cx: 0, cz: 0, kx: 1, kz: 1 })).sort((a, b) => a.y - b.y);
     for (const s of st.stations) {
       s.cross = crossings(V1, tris, st.ok, s.y, bins);
       for (const i of s.cross.a) touched[i] = 1; for (const i of s.cross.b) touched[i] = 1;
@@ -913,16 +1074,6 @@ export function fitBody(A, opts = {}) {
     }
     st.stations = st.stations.filter(s => !s.dead);
   }
-  // head pseudo-station: anthro head breadth/length about the head's own centre
-  {
-    const hc = geom.head.center.y; let mx = 0, zmin = Infinity, zmax = -Infinity;
-    for (let i = 0; i < nMesh; i++) if ((part[i] === 1 || part[i] === 6) && V1[i * 3 + 1] > hc - 0.5) {
-      mx = Math.max(mx, Math.abs(V1[i * 3])); zmin = Math.min(zmin, V1[i * 3 + 2]); zmax = Math.max(zmax, V1[i * 3 + 2]);
-    }
-    const tr = stacks[0];
-    const head = { name: 'head', y: hc, rx: geom.head.rx, rz: geom.head.rz, cx: 0, cz: (zmin + zmax) / 2, kx: geom.head.rx / mx, kz: geom.head.rz / ((zmax - zmin) / 2), fixed: true };
-    tr.stations.push(head, { ...head, name: 'top', y: H + 1 });
-  }
   const buildProfiles = () => {
     for (const st of stacks) {
       const ys = st.stations.map(s => s.y);
@@ -933,7 +1084,7 @@ export function fitBody(A, opts = {}) {
   const evalStack = (st, y, out = new Float64Array(4)) => {
     let kx = pchipEval(st.p.kx, y), kz = pchipEval(st.p.kz, y);
     const cx = pchipEval(st.p.cx, y), cz = pchipEval(st.p.cz, y);
-    if (st.tail && y < st.ylo) { const f = sstep(st.ylo - (st.tail === 'hand' ? 1.8 : 1.2), st.ylo, y); kx = mix(1, kx, f); kz = mix(1, kz, f); }
+    if (st.tail === 'hand' && y < st.ylo) { const f = sstep(st.ylo - 3.0, st.ylo, y); kx = mix(1, kx, f); kz = mix(1, kz, f); }
     out[0] = kx; out[1] = kz; out[2] = cx; out[3] = cz;
     return out;
   };
@@ -946,7 +1097,9 @@ export function fitBody(A, opts = {}) {
       let dx = 0, dz = 0;
       for (let s = 0; s < 5; s++) {
         if (w[s] < 1e-5) continue;
-        const e = evalStack(stacks[s], y, ebuf), kx = e[0], kz = e[1], cx = e[2], cz = e[3];
+        const e = evalStack(stacks[s], y, ebuf), cx = e[2], cz = e[3];
+        let kx = e[0], kz = e[1];
+        if (s >= 3) { const f = 1 - A.wFoot[i]; kx = 1 + (kx - 1) * f; kz = 1 + (kz - 1) * f; }
         dx += w[s] * (cx + (x - cx) * kx - x); dz += w[s] * (cz + (z - cz) * kz - z);
       }
       out[i * 3] = x + dx; out[i * 3 + 1] = y; out[i * 3 + 2] = z + dz;
@@ -1012,24 +1165,56 @@ export function fitBody(A, opts = {}) {
     return j;
   });
 
-  // 5b. head proportions: a head-region scale (x about the midline, z about the cranium centre) so breadth,
-  // bizygomatic breadth and length hit headTargets(); faded in across the upper neck (zero at the neck tape's
-  // narrowest section, full just above the chin) so the neck girth is untouched and no seam appears.
-  const hd = headDims(A, V3);
-  const head = { fB: HT.breadth / hd.breadth, fZ: HT.bizygomatic / hd.bizygomatic, fL: HT.length / hd.length, before: hd };
-  if ([head.fB, head.fZ, head.fL].every(f => f > 0.5 && f < 2)) {
-    const y0 = neckY + 0.1, y1 = chinT + 0.6, yz = hd.eyeY, yg = hd.glabellaY, cz = hd.cz;
-    const map = (x, y, z, k = 1) => {
-      const w = sstep(y0, y1, y) * k; if (!(w > 0)) return null;
-      const fx = mix(head.fZ, head.fB, sstep(yz, yg, y));
-      return [x * mix(1, fx, w), y, cz + (z - cz) * mix(1, head.fL, w)];
+  // 5b. head proportions: a head scale (x about the midline, z about the cranium centre) so breadth, bizygomatic
+  // breadth and length hit headTargets(). Its weight is the (diffused) head-bone skin weight, not a height band: the
+  // skull and jaw take it fully, the neck not at all, and the change happens across the jaw underside and the nape
+  // where the surface is nearly horizontal, so no lump appears below the ears and no shelf under the chin.
+  const applyHead = (V, J) => {
+    const hd = headDims(A, V);
+    const f = { fB: HT.breadth / hd.breadth, fZ: HT.bizygomatic / hd.bizygomatic, fL: HT.length / hd.length, before: hd };
+    if (![f.fB, f.fZ, f.fL].every(v => v > 0.5 && v < 2)) return f;
+    const yz = hd.eyeY, yg = hd.glabellaY, cz = hd.cz;
+    const map = (x, y, z, w) => {
+      const fx = mix(f.fZ, f.fB, sstep(yz, yg, y));
+      return [x * mix(1, fx, w), y, cz + (z - cz) * mix(1, f.fL, w)];
     };
     for (let i = 0; i < nMesh; i++) {
-      const k = 1 - grp[i * 6 + 2] - grp[i * 6 + 3];
-      const p = map(V3[i * 3], V3[i * 3 + 1], V3[i * 3 + 2], k); if (p) { V3[i * 3] = p[0]; V3[i * 3 + 2] = p[2]; }
+      const w = A.wHead[i] * (1 - grp[i * 6 + 2] - grp[i * 6 + 3]); if (!(w > 1e-4)) continue;
+      const p = map(V[i * 3], V[i * 3 + 1], V[i * 3 + 2], w); V[i * 3] = p[0]; V[i * 3 + 2] = p[2];
     }
-    for (let b = 0; b < nb; b++) if (bones[b].group <= 1) { const p = map(J3[b][0], J3[b][1], J3[b][2]); if (p) J3[b] = p; }
+    if (J) J[B.head] = map(J[B.head][0], J[B.head][1], J[B.head][2], 1);
+    return f;
+  };
+  const head = applyHead(V3, J3);
+
+  // 5c. smooth the deformation field: Taubin-smooth the displacement (fitted − source, both in the rest pose) so
+  // region seams (head/neck, neck/traps, shoulder/arm, torso/hip, crotch, elbows, knees) cannot crease the surface;
+  // the base mesh's own detail lives in the source and is untouched.
+  const Dsp = new Float32Array(nMesh * 3);
+  for (let i = 0; i < nMesh * 3; i++) Dsp[i] = V3[i] - Q[i];
+  const rough0 = fieldRoughness(A, Dsp);
+  taubinField(A, Dsp, 10, 0.6, -0.63, A.smoothFree);
+  for (let i = 0; i < nMesh * 3; i++) V3[i] = Q[i] + Dsp[i];
+
+  // 5d. constrained: a final smooth station correction (per-stack scale profiles, as in step 4) restores every
+  // girth exactly after smoothing; the head scale is re-trimmed the same way.
+  for (let pass = 0; pass < 1; pass++) {
+    const bins3 = triBins(V3, tris);
+    for (const st of stacks) {
+      for (const s of st.stations) {
+        s.cross = crossings(V3, tris, st.ok, s.y, bins3);
+        const m = hull2(crossPoints(V3, s.cross));
+        const f = m.per > 0 && m.n >= 6 ? s.G / m.per : 1;
+        s.kx = f; s.kz = f; s.cx = st.name === 'trunk' ? 0 : (m.minx + m.maxx) / 2; s.cz = (m.minz + m.maxz) / 2;
+        s.err = m.per > 0 ? m.per / s.G - 1 : 0;
+      }
+    }
+    buildProfiles();
+    const Vc = new Float32Array(V3); deform(Vc, V3);
   }
+  for (const st of stacks) for (const s of st.stations) { const m = hull2(crossPoints(V3, s.cross)); s.err = m.per > 0 ? m.per / s.G - 1 : 0; }
+  head.after = applyHead(V3, null);
+  const rough1 = (() => { const d = new Float32Array(nMesh * 3); for (let i = 0; i < nMesh * 3; i++) d[i] = V3[i] - Q[i]; return fieldRoughness(A, d); })();
 
   // 6. back to the bind pose: bind skeleton with fitted lengths and bind orientations, then inverse skinning
   const heads1 = new Array(nb);
@@ -1040,7 +1225,10 @@ export function fitBody(A, opts = {}) {
   }
   const { M: M1 } = skinMatrices(A, heads1, relax);
   const rest = unskinPositions(A, V3, M1);
-  const restNrm = computeNormals(rest, tris, nMesh);
+  // normals: recomputed on the fitted bind mesh (smooth, area-weighted, welded across duplicate seam vertices) and
+  // skinned with the bones on the GPU. (Normals of the relaxed mesh carried back through the inverse blend matrices
+  // were tried: exact for the relaxed pose but they sharpened the neck/trapezius junction; see test/mesh-smooth.)
+  const restNrm = computeNormals(rest, tris, nMesh, null, A.weld);
   const flare = new Float32Array(nMesh * 3), RS = A.sculptRegions.length, li = A.sculptRegions.indexOf('lats');
   for (let i = 0; i < nMesh; i++) { const o = (i * RS + li) * 3; flare[i * 3] = A.sculpt[o] / 0.2; flare[i * 3 + 1] = A.sculpt[o + 1] / 0.2; flare[i * 3 + 2] = A.sculpt[o + 2] / 0.2; }
   const cavity = computeCavity(rest, restNrm, tris, nMesh);
@@ -1048,7 +1236,8 @@ export function fitBody(A, opts = {}) {
   // flexed-arm bulge amplitude so the flexed biceps section reaches the flexed tape (anthro flex.arm)
   const fit = {
     A, geom, bf, muscle: opts.muscle, rest, restNrm, cavity, flare, heads: heads1, frames, relaxed: V3, relax,
-    sections: {}, neckY, report: { head, stations: [], shoulders: { girth: loopAt(sigma), target: Gsh, sigma }, iters, worst, hs, anchors: ax.map((m, i) => [m, ay[i]]) },
+    sections: {}, neckY, src: Q, joints: GJ,
+    report: { head, stations: [], shoulders: { girth: hull2(crossPoints(V3, shCross)).per, target: Gsh, sigma }, iters, worst, hs, anchors: ax.map((m, i) => [m, ay[i]]), smooth: { roughBefore: rough0, roughAfter: rough1 } },
   };
   for (const st of stacks) for (const s of st.stations) {
     if (s.fixed) continue;
@@ -1139,15 +1328,15 @@ uniform ivec4 uUA;          // uarm1L, uarm2L, uarm1R, uarm2R
 uniform float uLat;         // lat flare (inches at the armpit)
 layout(location=7) in vec3 aFlare;
 uniform vec4 uEyeRef;        // eyeY, eyeX, eyeZ, chinY (canonical dm)
-float hairMask(vec3 c){
+float hairLift(vec3 c){   // hair-cap thickness: same hairline as the fragment mask, ramped over ~1 in (no ledge)
   float ax = abs(c.x), ey = uEyeRef.x, ez = uEyeRef.z;
-  float front = ey + 0.66 - 0.22 * smoothstep(0.3, 0.62, ax);          // forehead hairline, receding at the temples
-  float side = ey + 0.3;                                                // above the ears
-  float backL = uEyeRef.w + 0.5;                                        // nape (back of the head only)
+  float front = ey + 0.66 - 0.22 * smoothstep(0.3, 0.62, ax);
+  float side = ey + 0.3;
+  float backL = uEyeRef.w + 0.5;
   float sideMix = smoothstep(0.45, 0.68, ax);
   float line = mix(front, side, sideMix);
   line = mix(line, backL, smoothstep(ez - 1.2, ez - 1.6, c.z));
-  return smoothstep(line - 0.02, line + 0.05, c.y);
+  return smoothstep(line - 0.02, line + 0.28, c.y);
 }
 out vec3 vW; out vec3 vN; out vec3 vC; out float vPart; out float vCav;
 float ss(float a, float b, float x){ float t = clamp((x-a)/(b-a), 0., 1.); return t*t*(3.-2.*t); }
@@ -1169,7 +1358,7 @@ void main(){
     p += r * amt * bump * wua * bias;
   }
   p += aFlare * uLat;
-  if (aPart > 0.5 && aPart < 1.5) p += aNrm * hairMask(aCanon) * 0.14;
+  if (aPart > 0.5 && aPart < 1.5) p += aNrm * hairLift(aCanon) * 0.12;
   mat4 M = aWeight.x * uBones[j.x] + aWeight.y * uBones[j.y] + aWeight.z * uBones[j.z] + aWeight.w * uBones[j.w];
   vec4 w = M * vec4(p, 1.0);
   vW = w.xyz; vN = mat3(M) * aNrm; vC = aCanon; vPart = aPart; vCav = aCav;
@@ -1246,7 +1435,8 @@ void main(){
   float waistband = uCanon.x - 0.55 - 0.12 * smoothstep(0.0, 1.2, abs(vC.x));
   float hem = uCanon.z - 1.25 + 0.25 * ss(0.4, 1.4, abs(vC.x));
   bool legOrTorso = vPart < 0.5;
-  float shorts = (legOrTorso && vC.y < waistband && vC.y > hem) ? 1.0 : 0.0;
+  float fw = max(fwidth(vC.y), 1e-4);   // anti-aliased fabric edges (a hard step aliased into jaggies at the hem)
+  float shorts = legOrTorso ? ss(hem - fw, hem + fw, vC.y) * (1.0 - ss(waistband - fw, waistband + fw, vC.y)) : 0.0;
   float band = shorts * ss(waistband - 0.16, waistband - 0.12, vC.y);
   // definition: perturb the normal with the gradient of the field (torso front only)
   if (uDef > 0.01 && torso && shorts < 0.5) {
@@ -1259,7 +1449,7 @@ void main(){
   }
   vec3 base = uSkin;
   float rough = 0.42, specK = 0.32;
-  if (shorts > 0.5) { base = mix(vec3(0.028, 0.028, 0.034), vec3(0.95, 0.30, 0.12), band); rough = 0.85; specK = 0.06; }
+  base = mix(base, mix(vec3(0.028, 0.028, 0.034), vec3(0.95, 0.30, 0.12), band), shorts); rough = mix(rough, 0.85, shorts); specK = mix(specK, 0.06, shorts);
   if (vPart > 2.5) { base = uSkin * 0.42; rough = 0.2; specK = 0.8; }
   if (vPart > 0.5 && vPart < 1.5) {
     // short hair cap + brows on the head
@@ -1279,8 +1469,8 @@ void main(){
   for (int i = 0; i < 4; i++) {
     vec3 l = normalize(L[i]);
     float nl = dot(N, l);
-    float wrap = shorts > 0.5 ? max(nl, 0.0) : max((nl + 0.35) / 1.35, 0.0);
-    vec3 sss = shorts > 0.5 ? vec3(0.0) : vec3(0.3, 0.08, 0.03) * ss(0.3, -0.05, nl) * ss(-0.5, 0.0, nl);
+    float wrap = mix(max((nl + 0.35) / 1.35, 0.0), max(nl, 0.0), shorts);
+    vec3 sss = (1.0 - shorts) * vec3(0.3, 0.08, 0.03) * ss(0.3, -0.05, nl) * ss(-0.5, 0.0, nl);
     vec3 hv = normalize(l + V);
     float nh = max(dot(N, hv), 0.0);
     float a2 = rough * rough * rough * rough;
@@ -1295,7 +1485,7 @@ void main(){
   col *= mix(1.0, ao, 0.8);
   // rim fresnel
   float fr = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-  col += vec3(0.9, 0.7, 0.55) * fr * 0.18 * (shorts > 0.5 ? 0.3 : 1.0);
+  col += vec3(0.9, 0.7, 0.55) * fr * 0.18 * mix(1.0, 0.3, shorts);
   col = aces(col * 0.85);
   frag = vec4(pow(col, vec3(1.0 / 2.2)), 1.0);
 }`;
@@ -1426,7 +1616,7 @@ export function mountBody3D(el, opts = {}) {
       if (ghostFit && gl && !lost) uploadFit(ghostFit, 'ghost');
     }
   }
-  function ctxOf(f) { return { A, rest: f.heads, frames: f.frames, geom: f.geom, sections: f.sections }; }
+  function ctxOf(f) { return { A, rest: f.heads, frames: f.frames, geom: f.geom, sections: f.sections, joints: f.joints }; }
   function poseState(f, name) {
     const g = poseGlobals(ctxOf(f), name);
     return { q: g.q, scale: g.scale, flex: g.flex, lat: g.lat };
@@ -1517,7 +1707,7 @@ export function mountBody3D(el, opts = {}) {
     const halfH = H * 0.56, halfW = H * 0.36;
     const dist = Math.max(halfH / tanV, halfW / (tanV * aspect)) / cam.zoom;
     const zt = clamp(cam.zoom - 1, 0, 1.5) / 1.5;
-    const target = [0, H * mix(0.5, 0.7, zt), 0];
+    const target = [0, H * (cam.focus ?? mix(0.5, 0.7, zt)), 0];
     const cp = Math.cos(cam.pitch);
     eye = vadd(target, [Math.sin(cam.yaw) * cp * dist, Math.sin(cam.pitch) * dist, Math.cos(cam.yaw) * cp * dist]);
     const V = lookAt(eye, target, [0, 1, 0]), P = perspective(fov, aspect, dist * 0.2, dist * 3);
@@ -1710,7 +1900,9 @@ export function mountBody3D(el, opts = {}) {
     },
     setPose,
     getPose: () => poseName,
-    setView(yaw, pitch = cam.pitch) { camAnim = null; cam.yaw = yaw; cam.pitch = pitch; cam.vy = cam.vp = 0; requestRender(); },
+    setView(yaw, pitch = cam.pitch, zoom = cam.zoom, focus = null) {
+      camAnim = null; cam.yaw = yaw; cam.pitch = pitch; cam.zoom = clamp(zoom, 0.8, 6); cam.focus = focus; cam.vy = cam.vp = 0; requestRender();
+    },
     stats: () => ({ fitMs: fit ? fit.ms : 0, frameMs, verts: A ? A.nMesh : 0, tris: A ? A.tris.length / 3 : 0, ready: !!fit, report: fit && fit.report }),
     destroy() {
       dead = true; if (raf) cancelAnimationFrame(raf); raf = 0;

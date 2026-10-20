@@ -43,6 +43,66 @@
 //   crossSectionAt(geom, y, part): part ∈ torso | neck | head | armL | armR | legL | legR (aliases:
 //     thighL/calfL/kneeL/shankL → legL, upperArmL/forearmL/elbowL → armL, same for R). y is the rest-pose
 //     height; returns { y, rx, rz, n, cx, cz, girth } or null outside the part.
+//
+// CONTRACT-NOTE (§16c, ANTHRO-2) — per-side segment lengths:
+//   Input `lengths: { upperArmL, upperArmR, forearmL, forearmR, thighL, thighR, shankL, shankR }` (inches,
+//     TAPE lengths between surface landmarks, exactly what Forge's Measurements form asks for; the
+//     `lenUpperArmL`-style store keys are accepted too). Also read from `shape.lengths`.
+//       upperArm = acromion → bottom of the olecranon, elbow bent 90° (ANSUR "shoulder-elbow length")
+//       forearm  = olecranon → ulnar styloid, elbow bent 90°
+//       thigh    = top of the greater trochanter → lateral knee joint line
+//       shank    = lateral knee joint line → centre of the lateral malleolus
+//   Each tape is converted to a joint-centre bone: bone = tape − LANDMARK_OFFSETS[seg] × H (below).
+//   Output (always present; symmetric ratio values when nothing is measured):
+//     joints.{shoulder,elbow,wrist,hand,hip,knee,ankle,heel,toe}{L,R}  per side (x+ = subject's left)
+//     bones.{upperArm,forearm,hand,thigh,shank}{L,R}                  joint-centre lengths per side; the
+//       unsuffixed bones.upperArm/forearm/thigh/shank are now the L/R average (identical when symmetric)
+//     lengths{upperArmL…shankR}  tape lengths used (measured, mirrored, or implied by the ratio skeleton)
+//     lengthSource{…}            'measured' | 'mirrored' (copied from the other side) | 'ratio'
+//     asymmetry[{ segment:'upperArm'|'forearm'|'thigh'|'shank'|'leg', left, right, diffIn (R − L),
+//       longer:'left'|'right', note }]  for measured pairs differing by > 0.25 in
+//     pelvis{ obliquityIn (hipL.y − hipR.y), tiltDeg (+ = left hip higher), kneeFlexIn{L,R} (forward
+//       knee shift absorbing a leg difference beyond the obliquity limit), legScale (≠ 1 when the legs
+//       had to be scaled to fit the stature) }
+//     landmarkOffsets{ upperArm, forearm, thigh, shank }  (tape − bone, inches, for this stature)
+//   Missing side ← the measured other side (listed in `estimated` as e.g. 'upperArmR'); missing pair ←
+//   the ratio skeleton (listed in `estimated` only when at least one length was given, so the plain
+//   girth-only call keeps estimated = []). Standing height is fixed: measured legs move the hip joints,
+//   and the trunk + neck between the hip joints and the chin is stretched/compressed to keep the
+//   stature (head unchanged). Hip height is limited to 0.49–0.585 H (ANSUR trochanterion 0.1–99.9 pct +
+//   the model's hip offset); beyond that the legs are scaled to fit and a warning is added. Shoulders stay
+//   level (spinal compensation). Per-side leg differences tilt the pelvis up to 0.8 in (2 cm); any excess
+//   is taken up by flexing the longer knee (bone lengths stay honoured). segments{} stays the pure
+//   Drillis–Contini ratio table; rig from joints/bones.
+//
+// Segment length sources ([AN2] = computed from the ANSUR II public male file, n = 4,082, median stature
+//   1755 mm / 69.1 in; Gordon CC et al. 2014, NATICK/TR-15/007; data via Penn State OPEN Lab):
+//     shoulder-elbow length   median 363 mm (14.29 in) = 0.2070 H, 0.1–99.9 pct 0.187–0.227 H
+//     radiale-stylion length  median 267 mm (10.51 in) = 0.1521 H, 0.1–99.9 pct 0.136–0.174 H
+//     trochanterion − tibiale height  median 431 mm (16.97 in) = 0.2456 H, 0.211–0.285 H
+//     tibiale − lateral malleolus height  median 395 mm (15.55 in) = 0.2247 H, 0.201–0.253 H
+//     trochanterion height 0.512 H, tibiale height 0.266 H, lateral malleolus height 0.0415 H, acromial
+//     height 0.821 H.
+//   Landmark → joint-centre offsets (fractions of H; tape − bone), anatomical rationale + calibration so
+//   that the ratio skeleton reproduces the ANSUR II medians at median stature:
+//     upperArm +0.0452: acromion's superior surface sits 0.0262 H (≈ 4.6 cm) above the glenohumeral centre
+//       (HEIGHTS acromion − shoulderJoint; cf. Meskers et al. 1998 J Biomech 31:93 GH-centre regressions,
+//       ≈ 4–5 cm); the lateral offset ([NY], ≈ 0.6 cm) is negligible along the tape. With the elbow at 90°
+//       the under-surface of the olecranon is 0.0190 H (≈ 3.3 cm: trochlear radius ≈ 1.1 cm + ulna below
+//       the trochlear notch + skin) below the elbow flexion axis. 0.2070 − 0.1618 [DL] = 0.0452.
+//     forearm  +0.0130: the olecranon tip projects ≈ 2.3 cm behind the elbow joint centre along the forearm
+//       (olecranon process); the ulnar styloid sits at the model's wrist level (ANSUR wrist height 0.4825 H
+//       ≈ D&C wrist 0.485 H). Check: radiale-stylion 0.1521 H − radial styloid overhang (≈ 1 cm) + olecranon
+//       2.3 cm → olecranon-ulnar styloid ≈ 0.159 H ≈ 11.0 in at 69.1 in.
+//     thigh    +0.0006: D&C's hip joint (0.530 H) is 0.018 H above ANSUR trochanterion (0.512 H) and the
+//       D&C knee centre (0.285 H, femoral epicondyle / flexion-axis level) is 0.0186 H above the tibial
+//       joint line (tibiale 0.266 H, ≈ 3 cm), so the two offsets nearly cancel. (Radiographically the
+//       trochanter tip is roughly level with the femoral-head centre; the residual is a D&C convention.)
+//     shank    −0.0211: knee centre 0.0186 H above the joint line + ankle centre 0.0025 H below the lateral
+//       malleolus prominence (D&C ankle 0.039 H vs ANSUR 0.0415 H; the talocrural axis passes just distal
+//       to the malleolar tips, Inman 1976) → bone = tape + 0.0211 H.
+//   Plausibility ranges (LENGTH_NORMS) = ANSUR II 0.1–99.9 pct of length/stature, slightly widened; the
+//   forearm range is radiale-stylion's shifted by +0.0072 H (the olecranon/styloid offsets above).
 
 export const LANDMARKS = ['vertex', 'chin', 'neck', 'shoulder', 'chest', 'underbust', 'waist', 'hip', 'crotch', 'thigh', 'knee', 'calf', 'ankle',
   'arm', 'elbow', 'forearm', 'wrist'];
@@ -323,6 +383,76 @@ function sanity(g, given, H, bf, warnings) {
   if (bf < 3 || bf > 55) warnings.push(`Body fat ${bf}% is outside 3–55%.`);
 }
 
+// ------------------------------------------------------------------ segment lengths (§16c)
+export const LENGTH_FIELDS = ['upperArmL', 'upperArmR', 'forearmL', 'forearmR', 'thighL', 'thighR', 'shankL', 'shankR'];
+export const LENGTH_SEGMENTS = ['upperArm', 'forearm', 'thigh', 'shank'];
+// tape − joint-centre bone, as a fraction of stature (see the header for the derivation).
+export const LANDMARK_OFFSETS = { upperArm: 0.0452, forearm: 0.0130, thigh: 0.0006, shank: -0.0211 };
+// Tape length / stature: ANSUR II male median and plausible range (≈ 0.1–99.9 pct, widened slightly).
+export const LENGTH_NORMS = {
+  upperArm: { median: 0.2070, range: [0.185, 0.229] },
+  forearm: { median: 0.1593, range: [0.142, 0.182] },
+  thigh: { median: 0.2456, range: [0.209, 0.287] },
+  shank: { median: 0.2247, range: [0.199, 0.255] },
+};
+const SEG_TEXT = {
+  upperArm: ['upper arm', 'acromion (bony outer tip of the shoulder) to the point of the elbow, elbow bent 90°'],
+  forearm: ['forearm', 'point of the elbow to the bony bump on the pinky side of the wrist, elbow bent 90°'],
+  thigh: ['thigh', 'bony knob on the side of the hip (greater trochanter) to the outer knee joint line'],
+  shank: ['lower leg', 'outer knee joint line to the centre of the outer ankle bone'],
+};
+const MAX_OBLIQUITY = 0.8;   // in at 69.1 in stature (≈ 2 cm): clinically significant leg-length difference
+const HIP_RANGE = [0.49, 0.585];   // hip-joint height / stature
+export function boneFromTape(segment, tapeIn, heightIn) { return Number(tapeIn) - (LANDMARK_OFFSETS[segment] || 0) * Number(heightIn); }
+export function tapeFromBone(segment, boneIn, heightIn) { return Number(boneIn) + (LANDMARK_OFFSETS[segment] || 0) * Number(heightIn); }
+const fmtIn = x => String(+(Math.round(x * 100) / 100).toFixed(2));
+
+function resolveLengths(raw, H, warnings, estimated) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const given = {};
+  for (const k of LENGTH_FIELDS) {
+    const v = pos(src[k] ?? src['len' + k[0].toUpperCase() + k.slice(1)]);
+    if (v == null) continue;
+    if (v < 4 || v > 40) { warnings.push(`${k} length ${v} in was ignored (outside 4–40 in). Check the units (inches).`); continue; }
+    given[k] = v;
+  }
+  const any = Object.keys(given).length > 0;
+  const tape = {}, source = {};
+  for (const seg of LENGTH_SEGMENTS) {
+    const [lo, hi] = LENGTH_NORMS[seg].range.map(f => f * H);
+    for (const S of ['L', 'R']) {
+      const k = seg + S, o = seg + (S === 'L' ? 'R' : 'L');
+      let v = given[k], s = 'measured';
+      if (v == null && given[o] != null) { v = given[o]; s = 'mirrored'; }
+      if (v == null) { tape[k] = null; source[k] = 'ratio'; if (any) estimated.push(k); continue; }
+      if (s === 'mirrored') estimated.push(k);
+      if (v < lo || v > hi) {
+        if (s === 'measured') warnings.push(`${S === 'L' ? 'Left' : 'Right'} ${SEG_TEXT[seg][0]} length ${fmtIn(v)} in is ${v < lo ? 'short' : 'long'} for a ${fmtIn(H)} in stature (typical ${lo.toFixed(1)}–${hi.toFixed(1)} in, ANSUR II); the model uses ${fmtIn(clamp(v, lo, hi))} in. Check the landmarks: ${SEG_TEXT[seg][1]}.`);
+        v = clamp(v, lo, hi);
+      }
+      tape[k] = v; source[k] = s;
+    }
+  }
+  return { given, any, tape, source };
+}
+
+function lengthAsymmetry(LEN) {
+  const out = [], g = LEN.given, both = seg => g[seg + 'L'] != null && g[seg + 'R'] != null;
+  const push = (segment, left, right, label) => {
+    const d = right - left;
+    if (Math.abs(d) <= 0.25) return;
+    const longer = d > 0 ? 'right' : 'left', other = d > 0 ? 'left' : 'right';
+    const tail = segment === 'leg' || segment === 'thigh' || segment === 'shank'
+      ? ' Up to ~0.4 in (1 cm) is common and within tape error, so re-measure both sides twice. A real leg-length difference over ~0.8 in (2 cm) is worth a professional check; the model tilts the pelvis to match.'
+      : ' Up to ~0.4 in (1 cm) is common (and within tape error); re-measure both sides twice.';
+    out.push({ segment, left, right, diffIn: Math.round(d * 100) / 100, longer,
+      note: `${longer[0].toUpperCase() + longer.slice(1)} ${label} ${fmtIn(Math.abs(d))} in longer than ${other}.${tail}` });
+  };
+  for (const seg of LENGTH_SEGMENTS) if (both(seg)) push(seg, g[seg + 'L'], g[seg + 'R'], SEG_TEXT[seg][0]);
+  if (both('thigh') && both('shank')) push('leg', g.thighL + g.shankL, g.thighR + g.shankR, 'leg (thigh + lower leg)');
+  return out;
+}
+
 // ------------------------------------------------------------------ main
 export function bodyGeometry(input = {}) {
   const a = { ...((input && input.shape) || {}), ...(input || {}) };
@@ -343,7 +473,62 @@ export function bodyGeometry(input = {}) {
   }
   const { g, given } = fillGirths(a, sex, H, bf, estimated);
   sanity(g, given, H, bfRaw, warnings);
-  const hy = k => HEIGHTS[k] * H;
+
+  // ---- segment lengths (§16c): per-side leg chain from the floor up, stature kept fixed.
+  const LEN = resolveLengths(a.lengths || input?.shape?.lengths, H, warnings, estimated);
+  const ankleY0 = HEIGHTS.ankle * H, kneeY0 = HEIGHTS.knee * H, hipY0 = HEIGHTS.hipJoint * H, chinY = HEIGHTS.chin * H;
+  const LX = { hip: JOINT_X.hip * H, knee: JOINT_X.knee * H, ankle: JOINT_X.ankle * H }, LZ = { hip: 0, knee: Z.knee * H, ankle: Z.ankle * H };
+  const vdrop = (B, dx, dz) => Math.sqrt(Math.max(1e-6, B * B - dx * dx - dz * dz));
+  const defLegBone = { shank: Math.hypot(LX.knee - LX.ankle, kneeY0 - ankleY0, LZ.knee - LZ.ankle), thigh: Math.hypot(LX.hip - LX.knee, hipY0 - kneeY0, LZ.hip - LZ.knee) };
+  const legGiven = ['thighL', 'thighR', 'shankL', 'shankR'].some(k => LEN.tape[k] != null);
+  const legBone = {};
+  for (const k of ['thighL', 'thighR', 'shankL', 'shankR']) { const sg = k.slice(0, -1); legBone[k] = LEN.tape[k] != null ? boneFromTape(sg, LEN.tape[k], H) : defLegBone[sg]; }
+  const chainY = (S, kz = 0) => {
+    const kneeZ = LZ.knee + kz, ky = ankleY0 + vdrop(legBone['shank' + S], LX.knee - LX.ankle, kneeZ - LZ.ankle);
+    return { knee: ky, hip: ky + vdrop(legBone['thigh' + S], LX.hip - LX.knee, LZ.hip - kneeZ), kneeZ, kneeFlex: kz };
+  };
+  const legS = { L: { knee: kneeY0, hip: hipY0, kneeZ: LZ.knee, kneeFlex: 0 }, R: { knee: kneeY0, hip: hipY0, kneeZ: LZ.knee, kneeFlex: 0 } };
+  const pelvis = { obliquityIn: 0, tiltDeg: 0, kneeFlexIn: { L: 0, R: 0 }, legScale: 1 };
+  if (legGiven) {
+    const solve = () => { legS.L = chainY('L'); legS.R = chainY('R'); };
+    solve();
+    // Standing height is measured: the hip joints must leave room for a plausible trunk + neck + head.
+    const hip0 = (legS.L.hip + legS.R.hip) / 2, lo = HIP_RANGE[0] * H, hi = HIP_RANGE[1] * H;
+    if (hip0 < lo || hip0 > hi) {
+      const target = clamp(hip0, lo, hi);
+      for (let i = 0; i < 4; i++) {
+        const f = (target - ankleY0) / ((legS.L.hip + legS.R.hip) / 2 - ankleY0);
+        for (const k of Object.keys(legBone)) legBone[k] *= f;
+        pelvis.legScale *= f;
+        solve();
+      }
+      warnings.push(`The leg lengths put the hip joints at ${fmtIn(hip0)} in, ${hip0 > hi ? 'too high' : 'too low'} for a standing height of ${fmtIn(H)} in (plausible ${lo.toFixed(1)}–${hi.toFixed(1)} in). The legs were scaled by ${Math.round(pelvis.legScale * 100)}% to fit; re-check the leg lengths and your height.`);
+    }
+    // Per-side difference → pelvic obliquity, limited; the longer knee flexes slightly for any excess.
+    const maxOb = MAX_OBLIQUITY * s, diff = legS.L.hip - legS.R.hip;
+    if (Math.abs(diff) > maxOb) {
+      const S = diff > 0 ? 'L' : 'R', O = S === 'L' ? 'R' : 'L', target = legS[O].hip + maxOb;
+      let lo2 = 0, hi2 = 0.9 * Math.min(legBone['thigh' + S], legBone['shank' + S]);
+      for (let i = 0; i < 40; i++) { const m = (lo2 + hi2) / 2; if (chainY(S, m).hip > target) lo2 = m; else hi2 = m; }
+      legS[S] = chainY(S, (lo2 + hi2) / 2);
+      warnings.push(`Your ${S === 'L' ? 'left' : 'right'} leg measures ${fmtIn(Math.abs(diff))} in longer (joint centres). Over ~0.8 in (2 cm) is uncommon: the model tilts the pelvis by ${fmtIn(maxOb)} in and bends the longer knee slightly for the rest. Re-measure both legs; a real difference this large is worth a professional check.`);
+    }
+    pelvis.obliquityIn = legS.L.hip - legS.R.hip;
+    pelvis.tiltDeg = Math.atan2(pelvis.obliquityIn, 2 * LX.hip) * 180 / Math.PI;
+    pelvis.kneeFlexIn = { L: legS.L.kneeFlex, R: legS.R.kneeFlex };
+  }
+  const hipAvgY = (legS.L.hip + legS.R.hip) / 2, dHip = hipAvgY - hipY0;
+  const torsoMap = legGiven && Math.abs(dHip) > 1e-9;
+  const kT = (chinY - hipAvgY) / (chinY - hipY0);
+  // Trunk + neck between the hip joints and the chin stretch/compress; the pelvis below translates.
+  const tMap = y => (!torsoMap || y >= chinY ? y : y >= hipY0 ? chinY - (chinY - y) * kT : y + dHip);
+  const hy = k => tMap(HEIGHTS[k] * H);
+  const LJ = {};
+  for (const S of ['L', 'R']) LJ[S] = { id: !legGiven, hip: { x: LX.hip, y: legS[S].hip, z: 0 }, knee: { x: LX.knee, y: legS[S].knee, z: legS[S].kneeZ }, ankle: { x: LX.ankle, y: ankleY0, z: LZ.ankle } };
+  LJ.avg = { id: !legGiven, hip: { x: LX.hip, y: hipAvgY, z: 0 }, knee: { x: LX.knee, y: (legS.L.knee + legS.R.knee) / 2, z: (legS.L.kneeZ + legS.R.kneeZ) / 2 }, ankle: LJ.L.ankle };
+  // Default (ratio-model) leg height → this side's height (linear within each segment).
+  const legMap = J => y0 => (J.id ? y0 : y0 >= hipY0 ? y0 + (J.hip.y - hipY0) : y0 >= kneeY0 ? lerp(J.knee.y, J.hip.y, (y0 - kneeY0) / (hipY0 - kneeY0))
+    : y0 >= ankleY0 ? lerp(J.ankle.y, J.knee.y, (y0 - ankleY0) / (kneeY0 - ankleY0)) : y0);
 
   // ---- arms: flexed tape → relaxed hanging girth. ANSUR: relaxed upper-arm ≈ 0.93 × flexed biceps;
   // the gap grows with arm muscularity. Clenched-fist forearm ≈ 1.03 × relaxed.
@@ -442,22 +627,18 @@ export function bodyGeometry(input = {}) {
   };
   const czOf = Object.fromEntries(Object.entries(ZC).map(([k, [c0, bias]]) => [k, c0 * H + bias * (sec[k].rz - refRz[k])]));
 
-  // ---- legs (per side). Joint line: hip → knee → ankle.
-  const legJ = {
-    hip: { x: JOINT_X.hip * H, y: hy('hipJoint'), z: 0 },
-    knee: { x: JOINT_X.knee * H, y: hy('knee'), z: Z.knee * H },
-    ankle: { x: JOINT_X.ankle * H, y: hy('ankle'), z: Z.ankle * H },
-  };
-  const legLine = y => {
-    const [A, B] = y >= legJ.knee.y ? [legJ.hip, legJ.knee] : [legJ.knee, legJ.ankle];
-    const t = (A.y - y) / (A.y - B.y);
-    return { x: lerp(A.x, B.x, t), z: lerp(A.z, B.z, t) };
-  };
+  // ---- legs (per side). Joint line: hip → knee → ankle (LJ.L / LJ.R / LJ.avg above).
   // Interior samples between tape sites (girth as a fraction of the nearest tape). Knee, ankle, wrist and
   // elbow use the ANSUR ratios above; mid-thigh ≈ 0.88 × upper thigh ([AN] mid-thigh vs thigh circumference);
   // the remaining taper points (lower thigh, upper/lower calf, shin, lower upper-arm, lower forearm) follow a
   // typical adult male limb taper and only shape the curve between measured sites (approximate).
-  const legSamples = (thighG, calfG) => {
+  const legSamples = (thighG, calfG, legJ) => {
+    const mapY = legMap(legJ);
+    const legLine = y => {
+      const [A, B] = y >= legJ.knee.y ? [legJ.hip, legJ.knee] : [legJ.knee, legJ.ankle];
+      const t = (A.y - y) / (A.y - B.y);
+      return { x: lerp(A.x, B.x, t), z: lerp(A.z, B.z, t) };
+    };
     const kneeG = 0.5 * (0.99 * calfG + 0.63 * thighG), ankleG = 0.5 * (0.59 * calfG + 0.131 * H);
     const qd = 0.03 * (mu.quads - 0.5), cv = 0.03 * (mu.calves - 0.5);
     const rows = [   // [name, y/H, girth, aspect, n]
@@ -474,7 +655,7 @@ export function bodyGeometry(input = {}) {
       ['ankle', HEIGHTS.ankle, ankleG, aspect.ankle, N.ankle],
     ];
     const out = rows.map(([name, f, G, k, n]) => {
-      const y = f * H, ss = solveSection(G, k, n), L = legLine(Math.min(y, legJ.hip.y));
+      const y = mapY(f * H), ss = solveSection(G, k, n), L = legLine(Math.min(y, legJ.hip.y));
       return { name, y, rx: ss.rx, rz: ss.rz, n, cx: L.x, cz: L.z, girth: ss.girth };
     });
     // The upper thighs press together and are flattened medially (adductors), so their soft-tissue centre
@@ -494,9 +675,9 @@ export function bodyGeometry(input = {}) {
     if (top.rx > roomTop) { const f = Math.max(roomTop, byName.thigh.rx) / top.rx; top.rx *= f; top.rz *= f; top.girth = perimeter(top.rx, top.rz, top.n); }
     return out.sort((p, q) => p.y - q.y);
   };
-  const legL = legSamples(side('thigh', 'L'), side('calf', 'L'));
-  const legR = legSamples(side('thigh', 'R'), side('calf', 'R'));
-  const legAvg = legSamples(g.thigh, g.calf);
+  const legL = legSamples(side('thigh', 'L'), side('calf', 'L'), LJ.L);
+  const legR = legSamples(side('thigh', 'R'), side('calf', 'R'), LJ.R);
+  const legAvg = legSamples(g.thigh, g.calf, LJ.avg);
 
   // ---- torso profile (cx = 0)
   const neckZ = Z.neck * H;
@@ -538,19 +719,29 @@ export function bodyGeometry(input = {}) {
   const torsoAt = y => interpProfile(torso, y);
 
   // ---- arms (per side). Shoulder joint from the loop; elbow/wrist abducted just enough to clear the torso.
-  const shoulderY = hy('shoulderJoint'), elbowY = hy('elbow'), wristY = hy('wrist');
-  const armSamples = (armFlexG, foreFlexG) => {
+  // Per-side elbow/wrist heights come from the (measured or ratio) bone lengths; J.map moves a default
+  // rest-pose arm height onto this side's segments.
+  const shoulderY = hy('shoulderJoint');
+  const sh0 = HEIGHTS.shoulderJoint * H, el0 = HEIGHTS.elbow * H, wr0 = HEIGHTS.wrist * H;
+  const mkJ = (up, fo, foreLen, id) => {
+    const ey = id ? el0 : shoulderY - up, wy = id ? wr0 : ey - fo;
+    return { id, up, fo, foreLen, sy: shoulderY, ey, wy, wz: Math.sin(8 * Math.PI / 180) * foreLen,   // relaxed elbow ≈ 8° flexed
+      map: y0 => (id ? y0 : y0 >= sh0 ? tMap(y0) : y0 >= el0 ? lerp(shoulderY, ey, (sh0 - y0) / (sh0 - el0))
+        : y0 >= wr0 ? lerp(ey, wy, (el0 - y0) / (el0 - wr0)) : wy - (wr0 - y0)) };
+  };
+  const armSamples = (armFlexG, foreFlexG, J) => {
+    const elbowY = J.ey, wristY = J.wy, axY = J.map(HEIGHTS.axilla * H);
     const armG = armFlexG / flexArm, foreG = foreFlexG / flexFore;
     const elbowG = 0.5 * (0.91 * foreG + 0.78 * armG), wristG = 0.5 * (0.60 * foreG + 0.0995 * H);
     const rows = [   // [name, y, girth|section, aspect, n]
       ['armTop', hy('acromion') + 0.006 * H, null, null, 2.0],   // deltoid cap closes just above the acromion
       ['deltoid', hy('deltoid'), null, null, 2.0],
-      ['axilla', hy('axilla'), armG * (1.03 + 0.03 * (mu.delts - 0.5)), aspect.arm, 2.0],
-      ['arm', 0.725 * H, armG, aspect.arm, N.arm],
-      ['lowerArm', 0.672 * H, armG * 0.88, aspect.arm * 0.97, 2.0],
+      ['axilla', axY, armG * (1.03 + 0.03 * (mu.delts - 0.5)), aspect.arm, 2.0],
+      ['arm', J.map(0.725 * H), armG, aspect.arm, N.arm],
+      ['lowerArm', J.map(0.672 * H), armG * 0.88, aspect.arm * 0.97, 2.0],
       ['elbow', elbowY, elbowG, aspect.elbow, N.elbow],
-      ['forearm', hy('forearm'), foreG, aspect.forearm, N.forearm],
-      ['lowerForearm', 0.535 * H, foreG * 0.78, 1.2, 2.1],
+      ['forearm', J.map(HEIGHTS.forearm * H), foreG, aspect.forearm, N.forearm],
+      ['lowerForearm', J.map(0.535 * H), foreG * 0.78, 1.2, 2.1],
       ['wrist', wristY, wristG, aspect.wrist, N.wrist],
     ];
     const out = rows.map(([name, y, G, k, n]) => {
@@ -565,7 +756,7 @@ export function bodyGeometry(input = {}) {
     const contact = 0.45 * s;
     let ex = c + 0.3 * s;
     for (const p of out) {
-      if (p.y > hy('axilla') + 1e-9 || p.y < elbowY) continue;
+      if (p.y > axY + 1e-9 || p.y < elbowY) continue;
       const t = (shoulderY - p.y) / (shoulderY - elbowY);
       if (t < 0.3) continue;
       const tor = torsoAt(p.y);
@@ -592,7 +783,7 @@ export function bodyGeometry(input = {}) {
     }
     // Relaxed hands hang beside the thighs: the forearm may angle inward (≤ 12°) or outward (≤ 20°).
     wx = clamp(wx, ex - Math.tan(12 * Math.PI / 180) * (elbowY - wristY), ex + Math.tan(20 * Math.PI / 180) * (elbowY - wristY));
-    const ez = 0, wz = Math.sin(8 * Math.PI / 180) * SEGMENT_RATIOS.forearm * H;   // relaxed elbow ≈ 8° flexed
+    const ez = 0, wz = J.wz;
     const lineAt = y => {
       if (y >= shoulderY) return { x: c, z: 0 };
       if (y >= elbowY) { const t = (shoulderY - y) / (shoulderY - elbowY); return { x: lerp(c, ex, t), z: lerp(0, ez, t) }; }
@@ -600,23 +791,40 @@ export function bodyGeometry(input = {}) {
     };
     for (const p of out) { const L = lineAt(p.y); p.cx = L.x; p.cz = L.z; }
     out.sort((p, q) => p.y - q.y);
-    return { samples: out, ex, wx, ez, wz, armG, foreG, elbowG, wristG };
+    return { samples: out, ex, wx, ez, wz, armG, foreG, elbowG, wristG, J };
   };
-  const armLs = armSamples(side('arm', 'L'), g.forearm);
-  const armRs = armSamples(side('arm', 'R'), g.forearm);
-  const armAvg = armSamples(g.arm, g.forearm);
+  // Measured bones are honoured in 3D: the vertical drop is re-solved for the abduction the clearance
+  // logic produces (converges in 2–3 passes; the drop barely moves ex/wx).
+  const armSide = (S, armFlexG) => {
+    const kU = 'upperArm' + S, kF = 'forearm' + S, gU = LEN.tape[kU] != null, gF = LEN.tape[kF] != null;
+    const id = !torsoMap && !gU && !gF;
+    const BU = gU ? boneFromTape('upperArm', LEN.tape[kU], H) : null, BF = gF ? boneFromTape('forearm', LEN.tape[kF], H) : null;
+    let up = sh0 - el0, fo = el0 - wr0;
+    const fl = gF ? BF : SEGMENT_RATIOS.forearm * H;
+    let A = armSamples(armFlexG, g.forearm, mkJ(up, fo, fl, id));
+    for (let i = 0; i < 3 && (gU || gF); i++) {
+      if (gU) up = vdrop(BU, A.ex - c, A.ez);
+      if (gF) fo = vdrop(BF, A.wx - A.ex, A.wz - A.ez);
+      A = armSamples(armFlexG, g.forearm, mkJ(up, fo, fl, id));
+    }
+    return A;
+  };
+  const armLs = armSide('L', side('arm', 'L'));
+  const armRs = armSide('R', side('arm', 'R'));
+  const JL = armLs.J, JR = armRs.J;
+  const armAvg = armSamples(g.arm, g.forearm, mkJ((JL.up + JR.up) / 2, (JL.fo + JR.fo) / 2, (JL.foreLen + JR.foreLen) / 2, JL.id && JR.id));
 
   // ---- joints
   const fingerY = hy('fingertip');
   const mk = (x, y, z) => ({ x, y, z });
   const joints = {
     head: mk(0, 0.915 * H, 0),                    // atlanto-occipital ≈ just below the tragion
-    neck: mk(0, 0.833 * H, Z.neckBase * H),        // C7/T1, base of the neck
+    neck: mk(0, tMap(0.833 * H), Z.neckBase * H),     // C7/T1, base of the neck
     chest: mk(0, hy('chest'), czOf.chest - 0.3 * sec.chest.rz),   // mid-thorax, slightly posterior (near the spine's curve)
     pelvis: mk(0, hy('hipJoint'), 0),
   };
-  for (const [S, sg, A, Lg] of [['L', 1, armLs, legL], ['R', -1, armRs, legR]]) {
-    void Lg;
+  for (const [S, sg, A] of [['L', 1, armLs], ['R', -1, armRs]]) {
+    const elbowY = A.J.ey, wristY = A.J.wy, legJ = LJ[S];
     joints['shoulder' + S] = mk(sg * c, shoulderY, 0);
     joints['elbow' + S] = mk(sg * A.ex, elbowY, A.ez);
     joints['wrist' + S] = mk(sg * A.wx, wristY, A.wz);
@@ -632,11 +840,22 @@ export function bodyGeometry(input = {}) {
   }
   void fingerY;
   const dist = (p, q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
-  const bones = {
-    upperArm: dist(joints.shoulderL, joints.elbowL), forearm: dist(joints.elbowL, joints.wristL), hand: dist(joints.wristL, joints.handL),
-    thigh: dist(joints.hipL, joints.kneeL), shank: dist(joints.kneeL, joints.ankleL), foot: SEGMENT_RATIOS.foot * H,
-    spine: dist(joints.pelvis, joints.neck), neck: dist(joints.neck, joints.head),
-  };
+  const bones = { foot: SEGMENT_RATIOS.foot * H, spine: dist(joints.pelvis, joints.neck), neck: dist(joints.neck, joints.head) };
+  for (const S of ['L', 'R']) {
+    bones['upperArm' + S] = dist(joints['shoulder' + S], joints['elbow' + S]);
+    bones['forearm' + S] = dist(joints['elbow' + S], joints['wrist' + S]);
+    bones['hand' + S] = dist(joints['wrist' + S], joints['hand' + S]);
+    bones['thigh' + S] = dist(joints['hip' + S], joints['knee' + S]);
+    bones['shank' + S] = dist(joints['knee' + S], joints['ankle' + S]);
+  }
+  for (const k of ['upperArm', 'forearm', 'hand', 'thigh', 'shank']) bones[k] = (bones[k + 'L'] + bones[k + 'R']) / 2;
+  // Tape lengths used (measured / mirrored) or implied by the ratio skeleton.
+  const lengths = {};
+  for (const k of LENGTH_FIELDS) {
+    const scaled = pelvis.legScale !== 1 && /^(thigh|shank)/.test(k);
+    lengths[k] = LEN.tape[k] != null && !scaled ? LEN.tape[k] : tapeFromBone(k.slice(0, -1), bones[k], H);
+  }
+  const landmarkOffsets = Object.fromEntries(LENGTH_SEGMENTS.map(k => [k, LANDMARK_OFFSETS[k] * H]));
   const segments = Object.fromEntries(Object.entries(SEGMENT_RATIOS).map(([k, f]) => [k, f * H]));
 
   // ---- landmarks (limbs: left side, averaged tape)
@@ -676,7 +895,9 @@ export function bodyGeometry(input = {}) {
   });
   const mirror = prof => prof.map(p => ({ ...p, cx: -p.cx }));
 
-  const heights = Object.fromEntries(Object.entries(HEIGHTS).map(([k, f]) => [k, f * H]));
+  const heights = Object.fromEntries(Object.entries(HEIGHTS).map(([k, f]) => [k, tMap(f * H)]));
+  for (const k of ['elbow', 'forearm', 'wrist', 'fingertip']) heights[k] = armAvg.J.map(HEIGHTS[k] * H);   // L/R average
+  for (const k of ['thigh', 'knee', 'calf', 'ankle']) heights[k] = legMap(LJ.avg)(HEIGHTS[k] * H);
   heights.nipple = heights.chest; heights.navel = heights.waist; heights.trochanter = heights.hipJoint; heights.neckBase = neckBaseY;
 
   const geom = {
@@ -699,6 +920,7 @@ export function bodyGeometry(input = {}) {
     hands: {}, feet: {},
     profiles: { torso, neck, armL: armLs.samples, armR: mirror(armRs.samples), legL, legR: mirror(legR) },
     sides: { L: sideOut(armLs, legL), R: sideOut(armRs, legR) },
+    lengths, lengthSource: { ...LEN.source }, asymmetry: lengthAsymmetry(LEN), pelvis, landmarkOffsets,
     estimated, warnings,
   };
   for (const [S, sg] of [['L', 1], ['R', -1]]) {
@@ -750,6 +972,8 @@ export function debugTable(geom) {
   lines.push(`segments: upperArm ${f(sg.upperArm)} forearm ${f(sg.forearm)} hand ${f(sg.hand)} thigh ${f(sg.thigh)} shank ${f(sg.shank)} foot ${f(sg.foot)} head ${f(sg.head)}`);
   lines.push(`bones(joint-centre): upperArm ${f(bn.upperArm)} forearm ${f(bn.forearm)} thigh ${f(bn.thigh)} shank ${f(bn.shank)}`);
   const j = geom.joints;
+  if (geom.lengthSource && Object.values(geom.lengthSource).some(v => v !== 'ratio'))
+    lines.push(`bones L/R: upperArm ${f(bn.upperArmL)}/${f(bn.upperArmR)} forearm ${f(bn.forearmL)}/${f(bn.forearmR)} thigh ${f(bn.thighL)}/${f(bn.thighR)} shank ${f(bn.shankL)}/${f(bn.shankR)}  pelvis tilt ${f(geom.pelvis.tiltDeg, 2)}°`);
   lines.push(`joints L: shoulder (${f(j.shoulderL.x)}, ${f(j.shoulderL.y)}) elbow (${f(j.elbowL.x)}, ${f(j.elbowL.y)}) wrist (${f(j.wristL.x)}, ${f(j.wristL.y)}) hip (${f(j.hipL.x)}, ${f(j.hipL.y)}) knee (${f(j.kneeL.x)}, ${f(j.kneeL.y)}) ankle (${f(j.ankleL.x)}, ${f(j.ankleL.y)})`);
   if (geom.warnings.length) lines.push('warnings: ' + geom.warnings.join(' | '));
   return lines.join('\n');

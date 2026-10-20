@@ -5,12 +5,16 @@
 // CONTRACT-NOTE (Phase 3, UI-LAB): thigh/calf are logged per side (thighL/thighR/calfL/calfR); legacy
 //   single `thigh`/`calf` values count as both sides for placeholders, asymmetry and history.
 //   The snapshot mounts the 3D body (fallback SVG). Optional food log + adaptiveTdee status.
+// CONTRACT-NOTE (§16c, ANTHRO-2): optional "Bone lengths" section logs lenUpperArmL/R, lenForearmL/R,
+//   lenThighL/R, lenShankL/R (inches, bony landmarks, 4–40 in) via store.logMeasurement; placeholders show
+//   the last values; the snapshot lists L/R length differences (> 0.25 in flagged, from
+//   baseline.lengthAsymmetry); the 3D snapshot receives them as shape.lengths (projection.js shapeOf).
 import { esc } from './components.js';
 import { ds, fmtShort, addDays } from '../util.js';
 import * as BC from '../engine/bodycomp.js';
 import * as NU from '../engine/nutrition.js';
 import { silhouetteSVG } from './silhouette.js';
-import { lineChart, bindCharts, f1, safe, mount3D, body3d, supports3D, estMuscle, maintenanceEstimate } from './projection.js';
+import { lineChart, bindCharts, f1, safe, mount3D, body3d, supports3D, estMuscle, maintenanceEstimate, shapeOf } from './projection.js';
 const baseline = a => BC.baseline(a);
 
 export function title() { return 'Measurements'; }
@@ -29,7 +33,21 @@ const SITES = [
   { k: 'calfR', label: 'Calf R', tip: 'Same as the left: widest point, standing with weight on both feet.', legacy: 'calf' },
   { k: 'forearm', label: 'Forearm', tip: 'Widest point just below the elbow, fist clenched, arm straight.' },
 ];
-const LABEL = { ...Object.fromEntries(SITES.map(s => [s.k, s.label])), thigh: 'Thigh (both)', calf: 'Calf (both)', arm: 'Arm' };
+// Bone lengths (§16c): tape between bony landmarks, both sides. Optional; they sharpen the 3D model's proportions.
+const LEN_HOW = ' Use a flexible (sewing) tape held straight from point to point (not wrapped around the muscle), or mark both points with a washable pen and have a partner measure. Measure twice and average; do both sides the same way.';
+const LENGTHS = [
+  { seg: 'UpperArm', name: 'Upper arm', short: 'U-arm', pair: 'Upper arm · shoulder → elbow',
+    tip: 'Stand tall, upper arm hanging straight down, elbow bent 90° (forearm level, thumb up). From the acromion (the bony outer tip on top of the shoulder: follow the ridge of the shoulder blade outward until it ends) straight down the back of the arm to the bottom of the elbow point (olecranon).' },
+  { seg: 'Forearm', name: 'Forearm', short: 'F-arm', pair: 'Forearm · elbow → wrist',
+    tip: 'Keep the elbow bent 90°, forearm level, thumb up. From the point of the elbow (olecranon) along the pinky side of the forearm to the bony bump on the pinky side of the wrist (ulnar styloid).' },
+  { seg: 'Thigh', name: 'Thigh length', short: 'Th-len', pair: 'Thigh · hip → knee',
+    tip: 'Stand tall, weight on both feet. From the greater trochanter (the bony knob on the side of the hip, about a hand below the top of the hip bone; it rolls under your fingers when you turn the foot in and out) straight down the outside of the leg to the outer knee joint line (the soft gap between thigh bone and shin bone; easiest to find with the knee slightly bent, then stand straight).' },
+  { seg: 'Shank', name: 'Lower leg', short: 'Sh-len', pair: 'Lower leg · knee → ankle',
+    tip: 'Standing, from the same outer knee joint line straight down the outside of the shin to the centre of the outer ankle bone (lateral malleolus). Keep the tape straight; don\'t follow the calf curve.' },
+];
+const LEN_SITES = LENGTHS.flatMap(L => ['L', 'R'].map(S => ({ k: `len${L.seg}${S}`, label: `${L.name} ${S}`, short: `${L.short} ${S}`,
+  tip: (S === 'L' ? L.tip : `Same as the left: ${L.tip.charAt(0).toLowerCase()}${L.tip.slice(1)}`) + LEN_HOW, pair: S === 'L' ? L.pair : null })));
+const LABEL = { ...Object.fromEntries(SITES.map(s => [s.k, s.label])), ...Object.fromEntries(LEN_SITES.map(s => [s.k, s.label])), thigh: 'Thigh (both)', calf: 'Calf (both)', arm: 'Arm' };
 // Latest value per site, with legacy single thigh/calf filling both sides.
 function latestSites(meas) {
   const last = {};
@@ -38,6 +56,7 @@ function latestSites(meas) {
       if (e[s.k] != null) last[s.k] = e[s.k];
       else if (s.legacy && e[s.legacy] != null) last[s.k] = e[s.legacy];
     }
+    for (const s of LEN_SITES) if (e[s.k] != null) last[s.k] = e[s.k];
     if (e.bodyFat != null) last.bodyFat = e.bodyFat;
   }
   return last;
@@ -93,19 +112,30 @@ function formCard(meas, log) {
     <div class="grid2 mt">
       ${field('weight', 'Weight', 'Morning, after the bathroom, before eating or drinking. Same scale each time.', lastW, true, 'lb')}
       ${SITES.map(s => (s.pair ? `<div class="bd-pairhead">${esc(s.pair)} · left / right</div>` : '') + field(s.k, s.label, s.tip, last[s.k], s.req)).join('')}
+      <div class="bd-pairhead bd-lenhead">Bone lengths (optional, improves the 3D model)<div class="tiny muted" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:2px">Bony landmark to bony landmark, left and right. Measure once; redo only if unsure.</div></div>
+      ${LEN_SITES.map(s => (s.pair ? `<div class="bd-pairhead">${esc(s.pair)} · left / right</div>` : '') + field(s.k, s.label, s.tip, last[s.k], false)).join('')}
       ${field('bodyFat', 'Body fat (optional)', 'Only if you have a reading from a smart scale, calipers or a DEXA scan. DEXA is the most accurate; smart scales swing with hydration. Leave blank to use the tape formula.', last.bodyFat, false, '%')}
     </div>
     <button class="btn btn-primary btn-block" data-savem>Save measurements</button>
   </div>`;
 }
 
-function asymNotes(meas) {
+function asymNotes(meas, b) {
   const last = latestSites(meas), out = [];
   for (const [l, r, name] of [['armL', 'armR', 'arm'], ['thighL', 'thighR', 'thigh'], ['calfL', 'calfR', 'calf']]) {
     const a = last[l], b = last[r]; if (a == null || b == null) continue;
     const d = b - a, pct = Math.abs(d) / ((a + b) / 2) * 100;
     if (Math.abs(d) < 0.05) out.push(`<li><b>${name[0].toUpperCase() + name.slice(1)}s:</b> L ${+a.toFixed(2)} · R ${+b.toFixed(2)}. Even.</li>`);
     else out.push(`<li><b>${d > 0 ? 'Right' : 'Left'} ${name}</b> is ${+Math.abs(d).toFixed(2)}″ bigger (${pct.toFixed(1)}%). ${pct < 3 ? 'Under ~3% is normal.' : 'Worth evening out: start unilateral sets with the smaller side and match its reps on the other.'}</li>`);
+  }
+  // Bone lengths: flagged differences come from the engine (baseline.lengthAsymmetry, > 0.25 in).
+  const flagged = Object.fromEntries((b?.lengthAsymmetry || []).map(a => [a.segment, a]));
+  for (const L of LENGTHS) {
+    const seg = L.seg[0].toLowerCase() + L.seg.slice(1), a = last[`len${L.seg}L`], r = last[`len${L.seg}R`];
+    if (a == null || r == null) continue;
+    const f = flagged[seg], nm = L.name.replace(' length', '').toLowerCase();
+    if (f) out.push(`<li><b>${f.longer === 'right' ? 'Right' : 'Left'} ${esc(nm)} ${+Math.abs(f.diffIn).toFixed(2)} in longer</b> than ${f.longer === 'right' ? 'left' : 'right'}. ${Math.abs(f.diffIn) <= 0.4 ? 'Up to ~0.4 in is common and within tape error; re-measure twice to confirm.' : 'Re-measure both sides twice; if it holds, the 3D model shows it.'}</li>`);
+    else out.push(`<li><b>${esc(L.name.replace(' length', ''))} length:</b> L ${+a.toFixed(2)} · R ${+r.toFixed(2)}. Even (within tape error).</li>`);
   }
   return out.length ? `<div class="bd-asym"><div class="label">Left vs right</div><ul style="margin-top:4px">${out.join('')}</ul></div>` : '';
 }
@@ -144,7 +174,7 @@ function snapshot(b, meas = []) {
       <div class="tiny muted" style="margin-top:6px">${sw ? (sw >= 1.618 ? 'At the "Adonis" golden ratio. 👑' : sw >= 1.5 ? 'Clear V-taper. Wider delts + a smaller waist close the gap.' : 'Side delts and lats widen the top; dropping fat shrinks the waist.') : 'Measure shoulders and waist to see your V-taper.'}</div>
     </div>
     <div class="row between mt"><div class="label">Waist : height</div><div class="num bold">${wh ? wh.toFixed(2) : '—'} <span class="small" style="font-weight:600;color:${wh == null ? 'var(--muted)' : wh < 0.45 ? 'var(--good)' : wh < 0.5 ? 'var(--accent2)' : 'var(--warn)'}">${wh == null ? '' : wh < 0.45 ? 'lean' : wh < 0.5 ? 'healthy' : 'above 0.5'}</span></div></div>
-    ${asymNotes(meas)}
+    ${asymNotes(meas, b)}
     ${miss.length ? `<div class="bd-miss mt"><div class="label">Missing for better accuracy</div><ul>${miss.map(x => `<li><b>${esc(x.label)}</b> <span class="muted">${esc(x.why)}</span></li>`).join('')}</ul></div>` : ''}
   </div>`;
 }
@@ -170,9 +200,10 @@ function history(meas, log) {
   const dates = [...new Set([...meas.map(e => e.d), ...log.map(e => e.d)])].sort().reverse();
   const wBy = Object.fromEntries(log.map(e => [e.d, e.w]));
   const mBy = Object.fromEntries(meas.map(e => [e.d, e]));
-  const cols = ['neck', 'shoulders', 'chest', 'waist', 'hips', 'armL', 'armR', 'thighL', 'thighR', 'thigh', 'calfL', 'calfR', 'calf', 'forearm', 'bodyFat'];
+  const cols = ['neck', 'shoulders', 'chest', 'waist', 'hips', 'armL', 'armR', 'thighL', 'thighR', 'thigh', 'calfL', 'calfR', 'calf', 'forearm', 'bodyFat', ...LEN_SITES.map(s => s.k)];
   const used = cols.filter(c => meas.some(e => e[c] != null));
-  const head = ['Wt', ...used.map(c => ({ armL: 'Arm L', armR: 'Arm R', thighL: 'Thigh L', thighR: 'Thigh R', calfL: 'Calf L', calfR: 'Calf R', thigh: 'Thigh', calf: 'Calf', bodyFat: 'BF%' }[c] || LABEL[c]))];
+  const lenShort = Object.fromEntries(LEN_SITES.map(s => [s.k, s.short]));
+  const head = ['Wt', ...used.map(c => ({ armL: 'Arm L', armR: 'Arm R', thighL: 'Thigh L', thighR: 'Thigh R', calfL: 'Calf L', calfR: 'Calf R', thigh: 'Thigh', calf: 'Calf', bodyFat: 'BF%', ...lenShort }[c] || LABEL[c]))];
   const rows = dates.map(d => `<tr><th>${fmtShort(d)}<div class="tiny muted">${d.slice(0, 4)}</div></th><td>${wBy[d] != null ? f1(wBy[d]) : ''}</td>${used.map(c => `<td>${mBy[d]?.[c] != null ? f1(mBy[d][c]) : ''}</td>`).join('')}<td><button class="bd-del" data-del="${d}" aria-label="Delete ${d}">✕</button></td></tr>`).join('');
   return `<div class="bd-sparks">${charts}</div>
     <div class="section-title">All entries</div>
@@ -217,7 +248,7 @@ export function render(ctx, params = {}) {
   const b = safe(() => baseline({ profile: p, bodyLog: log, measurements: meas, now: new Date() }), null);
   const open = editProfile || params.edit === true;
   const H = b?.heightIn || 69;
-  cur3d = b && b.weightLb ? { shape: { ...(b.shape || b.measurements || {}), heightIn: H }, muscle: b.muscle || estMuscle({ leanLb: b.comp?.leanLb }, H), bodyFatPct: b.bodyFatPct ?? null } : null;
+  cur3d = b && b.weightLb ? { shape: shapeOf({ shape: b.shape, measurements: b.measurements }, H), muscle: b.muscle || estMuscle({ leanLb: b.comp?.leanLb }, H), bodyFatPct: b.bodyFatPct ?? null } : null;
   return `<div class="page-head"><p class="sub">Where you're starting, measured properly.</p></div>
     ${profileCard(p, open)}
     <div class="section-title">Snapshot <button class="link" data-nav="projection">Projection ›</button></div>
@@ -278,7 +309,7 @@ export function bind(root, ctx) {
     root.querySelectorAll('[data-m]').forEach(inp => {
       const v = parseFloat(inp.value); if (!(v > 0)) return;
       const k = inp.dataset.m;
-      const [lo, hi] = k === 'weight' ? [70, 600] : k === 'bodyFat' ? [2, 60] : [5, 80];
+      const [lo, hi] = k === 'weight' ? [70, 600] : k === 'bodyFat' ? [2, 60] : k.startsWith('len') ? [4, 40] : [5, 80];
       if (v < lo || v > hi) bad = bad || k; else vals[k] = v;
     });
     if (bad) { ctx.toast(`${bad === 'weight' ? 'Weight' : LABEL[bad] || 'Body fat'} looks off`); return; }
