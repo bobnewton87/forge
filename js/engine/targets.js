@@ -40,7 +40,7 @@
 //   `capacity` ({ cardio, total, finishers, cardioDays, flex }) and `warnings`.
 // CONTRACT-NOTE: nutrition.phases entries: { label, start:'YYYY-MM-DD', end:'YYYY-MM-DD'|null,
 //   surplus:number|null, calories:number|null } sorted by start (max 12). Consumers may ignore them.
-import { CARDIO, cardioOptions } from '../data/cardio.js';
+import { CARDIO, cardioOptions, estimateCalories } from '../data/cardio.js';
 import { DEFAULT_LOCATIONS, expandEquipment } from '../data/equipment.js';
 import { sessionVolume, groupStatus } from './recovery.js';
 import { GROUPS, REGIONS, VOLUME_UNITS, UNIT_ORDER, MAX_WHY } from '../data/muscles.js';
@@ -48,19 +48,111 @@ import { SCULPT_GOALS } from '../data/sculpt.js';
 import { ds, parseDs, addDays, weekStart } from '../util.js';
 import { BUILTIN_STYLES, STYLE_LIMITS, normalizeCustomStyle, styleOptions, isStyleId, resolveStyle } from './generator.js';
 import { sexOf, BODY } from './sex.js';
+import { lossRateDeficit, KCAL_PER_LB_TREND } from './nutrition.js';
 // CONTRACT-NOTE (§20 Female mode): goals.goalBodyFatPct defaults to 22 for women (15 DXA-equivalent for men, §20b) and is clamped to the
 //   female limits [14, 35] (men keep LIMITS.goalBodyFatPct [5, 30]); goalBodyFatLimits(profile) exposes them for UI steppers.
 //   Weekly set targets are NOT sex-specific: no study supports different targets for women (Roberts 2020: same relative
 //   hypertrophy; Nuzzo 2024: little sex influence on reps at a given %1RM; women are, if anything, less fatigable, Hunter 2014).
+// CONTRACT-NOTE (§23 Weight-loss goal, 2026-10-20): GOALS gains 'weight_loss' ("Lose weight: fat first, lean mass allowed
+//   to follow"), distinct from 'cut' ("get lean, keep muscle"). New profile fields, all optional and all read/written here:
+//     profile.body.goalWeightLb        number|null   scale-weight target the projection aims at
+//     profile.body.goalWeightDate      'YYYY-MM-DD'|null   optional target date (sets the rate instead of lossRate)
+//     profile.body.lossRatePctPerWeek  number|null   % of bodyweight per week (default 0.7); drives the deficit
+//     profile.body.leanProtection      'protect'|'balanced'|'minimal'   preset: protein + training floors
+//     profile.volumePolicy.floors      'evidence'|'maintenance'|'minimum'   weekly-set floors, below-floor ONLY under weight_loss
+//   resolveTargets().goals gains goalWeightLb, goalWeightDate, lossRatePctPerWeek, leanProtection, losing and `plan`
+//   (lossPlan: rate, lb/week, kcal deficit, tier, warnings). resolveTargets().minimums gains `floor`
+//   ({ mode, factor, name, why, allowed, belowFloor }). Extra exports: GOAL_INFO, GOAL_ORDER, LOSS_RATES,
+//   DEFAULT_LOSS_RATE, LEAN_PROTECTION, LEAN_PROTECTION_INFO, VOLUME_FLOORS, FLOOR_INFO, MAINTENANCE_FRACTION,
+//   FLOOR_FACTOR, TARGET_FACTOR, FLOOR_EVIDENCE, LOSS_GOALS, KCAL_PER_LB, goalOf, isLossGoal, priorityLimits,
+//   priorityLimitsFor, volumeFloorOf, leanProtectionOf, lossPlan, goalWeightLimits.
+//   Existing goals are never rewritten and their resolved numbers are unchanged.
 
 export const LIMITS = {
   cardioMin: [0, 900], cardioStep: 15, hardPerWeek: [0, 4], defaultMinutes: [10, 180],
   calories: [1200, 6000], surplus: [-1500, 1500], proteinGPerLb: [0.6, 1.4], fatPct: [15, 40],
   adherence: [0.5, 1], goalBodyFatPct: [5, 30], priority: [0.5, 2],
+  // §23: under the weight-loss goal a muscle group may be driven to zero ("detrain"), so the slider
+  // floor drops from 0.5× to 0×. Every other goal keeps LIMITS.priority.
+  priorityLoss: [0, 2],
+  goalWeightLb: [70, 600], lossRatePctPerWeek: [0.1, 2],
 };
 export const CARDIO_CHIPS = [90, 150, 225, 300];
 export const STYLES = [...BUILTIN_STYLES];   // built-in style ids; custom ones live in profile.customStyles
-export const GOALS = ['recomp', 'lean_bulk', 'cut'];
+// §23. 'cut' = get lean, KEEP muscle. 'weight_loss' = get smaller: fat first, lean mass allowed to follow.
+export const GOALS = ['recomp', 'lean_bulk', 'cut', 'weight_loss'];
+export const GOAL_INFO = {
+  recomp: { name: 'Recomp', blurb: 'Lose fat, build muscle', direction: 'recomp' },
+  lean_bulk: { name: 'Lean bulk', blurb: 'Small surplus, max growth', direction: 'gain' },
+  cut: { name: 'Cut', blurb: 'Get lean, keep muscle', direction: 'lose',
+    long: 'A cut takes fat off while defending every pound of muscle: a moderate deficit, high protein and full lifting volume. Scale weight comes down slowly because you are protecting lean mass.' },
+  weight_loss: { name: 'Lose weight', blurb: 'Fat first, lean mass allowed to follow', direction: 'lose',
+    long: 'For when the number on the scale is the goal: a weight class, a race weight, or simply being smaller. Fat still goes first (your body burns fat before muscle), but Forge stops pretending every pound of lean mass will survive, shows you how much lean you are projected to lose at your chosen rate, and lets you deliberately train and eat for minimum body mass instead of maximum muscle retention.' },
+};
+export const GOAL_ORDER = ['recomp', 'lean_bulk', 'cut', 'weight_loss'];
+export const LOSS_GOALS = ['cut', 'weight_loss'];
+export function goalOf(profile) { return GOALS.includes(profile?.goal) ? profile.goal : DEF.goal; }
+export function isLossGoal(profile) { return goalOf(profile) === 'weight_loss'; }
+
+// ---- §23 rate of loss -------------------------------------------------------------------------
+// Garthe et al. 2011 (Int J Sport Nutr Exerc Metab 21:97, doi:10.1123/ijsnem.21.2.97) randomised 24 elite athletes,
+// all lifting 4×/week, to a 0.7 %/week or a 1.4 %/week weight-loss target. The slow group achieved 0.7 ± 0.8 %/week and
+// LOST 31 ± 3 % of its fat while GAINING 2.1 ± 0.4 % lean mass; the fast group actually achieved 1.0 ± 0.4 %/week, lost
+// only 21 ± 4 % of its fat and went −0.2 ± 0.7 % on lean mass, for the same ≈5.5 % drop in body mass. The follow-up
+// (doi:10.1123/ijsnem.21.5.426) adds upper-body strength +12 ± 2 % (slow) vs +6 ± 2 % (fast) — and that by 12 months
+// neither group's advantage, or weight loss, had held.
+export const DEFAULT_LOSS_RATE = 0.7;
+export const LOSS_RATES = [
+  { id: 'gentle', pctPerWeek: 0.35, label: 'Gentle', tier: 'gentle', note: 'Slower than any of the studies. Lean mass is as safe as it gets; it just takes twice as long.' },
+  { id: 'slow', pctPerWeek: 0.5, label: 'Slow', tier: 'slow', note: 'Inside the range that preserved (or added) lean mass in trained athletes.' },
+  { id: 'steady', pctPerWeek: 0.7, label: 'Steady', tier: 'steady', note: 'Garthe 2011\'s slow arm: fat down 31 %, lean mass UP 2 % in lifting athletes. The best-evidenced rate.' },
+  { id: 'fast', pctPerWeek: 1, label: 'Fast', tier: 'fast', note: 'What Garthe\'s "fast" group actually achieved: same weight off, but a third less of it from fat and no lean gain.' },
+  { id: 'aggressive', pctPerWeek: 1.4, label: 'Aggressive', tier: 'aggressive', note: 'Beyond anything tested in trained athletes. Expect real lean loss, worse training and a hard rebound.' },
+];
+export const KCAL_PER_LB = KCAL_PER_LB_TREND;   // first approximation, shared with nutrition.lossRateDeficit
+// Share of the week's weight loss Forge calls "fast". Tiers drive the warning text, not the model.
+const rateTier = r => (r <= 0.4 ? 'gentle' : r <= 0.6 ? 'slow' : r <= 0.85 ? 'steady' : r <= 1.15 ? 'fast' : 'aggressive');
+
+// ---- §23 lean protection ----------------------------------------------------------------------
+// A PRESET, not a fudge factor: it writes protein and the weekly-set floors, and the projection then
+// predicts the consequences from those real inputs. Nothing in the model reads leanProtection directly.
+export const LEAN_PROTECTION = ['protect', 'balanced', 'minimal'];
+export const LEAN_PROTECTION_INFO = {
+  protect: { name: 'Protect muscle', proteinGPerLb: 1.1, floors: 'evidence',
+    why: 'Full lifting volume and ~1.1 g/lb protein. In a 40 % deficit that was the difference between +1.2 kg and +0.1 kg of lean mass over 4 weeks (Longland 2016).' },
+  balanced: { name: 'Balanced', proteinGPerLb: 0.85, floors: 'maintenance',
+    why: 'Maintenance lifting (about a third of the growth volume) and ~0.85 g/lb protein. Enough to hold most muscle in young adults (Bickel 2011) with less time in the gym.' },
+  minimal: { name: 'Minimum body mass', proteinGPerLb: 0.6, floors: 'minimum',
+    why: 'You accept losing muscle: protein drops to ~0.6 g/lb and set floors go to zero. Expect more of every pound to come off as lean mass, strength to fade, and bone density to fall ~2 % over a year of diet-only loss (Villareal 2006).' },
+};
+
+// ---- §23 weekly-set floors --------------------------------------------------------------------
+// Bickel, Cross & Bamman 2011 (Med Sci Sports Exerc 43:1177, doi:10.1249/MSS.0b013e318207c15d): after 16 weeks of
+// training 3×/week, a ONE-THIRD dose for 32 weeks preserved myofibre hypertrophy in 20–35-year-olds (and added more),
+// and even a one-ninth dose preserved it; in 60–75-year-olds neither dose did. Spiering et al. 2021 (J Strength Cond
+// Res 35:1449, doi:10.1519/JSC.0000000000003964): strength and size held for up to 32 weeks on 1 session/week and 1 set
+// per exercise, PROVIDED the relative load stays high. So 'maintenance' = 1/3 of the growth floor; 'minimum' = 0, which
+// is a deliberate choice to detrain (Bosquet 2013, doi:10.1111/sms.12047: training cessation costs SMD −0.46 maximal
+// force, −0.62 submaximal strength, worse the longer it lasts).
+export const VOLUME_FLOORS = ['evidence', 'maintenance', 'minimum'];
+export const MAINTENANCE_FRACTION = 1 / 3;
+// FLOOR_FACTOR scales the hard minimum the planner must hold; TARGET_FACTOR scales the base target the
+// sliders then multiply. 'minimum' keeps the maintenance-sized target but removes the floor, so a slider
+// at 0 really does drop a muscle group to no planned sets.
+export const FLOOR_FACTOR = { evidence: 1, maintenance: MAINTENANCE_FRACTION, minimum: 0 };
+export const TARGET_FACTOR = { evidence: 1, maintenance: MAINTENANCE_FRACTION, minimum: MAINTENANCE_FRACTION };
+export const FLOOR_INFO = {
+  evidence: { name: 'Growth floors', short: 'Grow', why: 'The normal evidence floors: enough weekly sets per muscle to keep building.' },
+  maintenance: { name: 'Maintenance', short: 'Maintain', why: 'Every target and floor drops to about a third of the growth volume. That dose preserved muscle size for 32 weeks in 20-35 year olds (Bickel 2011) and is deliberately below what builds it: expect to hold what you have, not to grow. Raise a single muscle\'s slider to put it back.' },
+  minimum: { name: 'Minimum / detrain', short: 'Detrain', why: 'Maintenance-sized targets with NO floor, so any muscle whose slider you drag to 0 gets no planned sets at all. You will lose size there, and strength will follow more slowly (Bosquet 2013; strength is readily held for about 4 weeks of nothing, Mujika & Padilla 2001). Choose this only if a smaller body matters more to you than the muscle.' },
+};
+export const FLOOR_EVIDENCE = [
+  { claim: 'Keeping muscle takes about a third of the volume that built it: after 16 weeks of training, a one-third dose held myofibre size for 32 weeks in 20-35 year olds (and even a one-ninth dose held it). In 60-75 year olds neither dose was enough.', source: 'Bickel, Cross & Bamman 2011, Med Sci Sports Exerc 43:1177, doi:10.1249/MSS.0b013e318207c15d' },
+  { claim: 'Strength and muscle size held for up to 32 weeks on as little as 1 session a week and 1 set per exercise, as long as the load stayed heavy. Intensity is what you cannot cut.', source: 'Spiering et al. 2021, J Strength Cond Res 35:1449, doi:10.1519/JSC.0000000000003964' },
+  { claim: 'Stopping altogether costs strength: pooled across 103 studies, training cessation moved submaximal strength −0.62 SD, maximal force −0.46 SD and maximal power −0.20 SD, and the longer the layoff the worse it got. Short layoffs are cheap: strength is readily held for about 4 weeks.', source: 'Bosquet et al. 2013, Scand J Med Sci Sports 23:e140, doi:10.1111/sms.12047; Mujika & Padilla 2001, Med Sci Sports Exerc 33:1297, doi:10.1097/00005768-200108000-00009' },
+  { claim: 'Lifting while dieting is what keeps the weight you lose from being muscle: 81 % of diet-only groups lost 15 % or more of their weight as fat-free mass, against 39 % of diet-plus-exercise groups.', source: 'Weinheimer, Sands & Campbell 2010, Nutr Rev 68:375, doi:10.1111/j.1753-4887.2010.00298.x' },
+  { claim: 'A deficit bigger than about 500 kcal/day stopped lifters gaining lean mass altogether, although strength gains largely survived.', source: 'Murphy & Koehler 2022, Scand J Med Sci Sports 32:125, doi:10.1111/sms.14075' },
+];
 export const MODES = ['off', 'simple', 'cycling'];
 export const VOLUME_MODES = ['extend', 'ask', 'fixed'];
 export const FILL_MODES = ['extend', 'time', 'ask'];
@@ -83,6 +175,60 @@ const DEF_VOLUME = { mode: 'extend', maxMinutes: 90 };
 const DEF = { cardioMin: 120, hardPerWeek: 1, adherence: 0.85, defaultMinutes: 45, style: 'hypertrophy', proteinGPerLb: 1.0, fatPct: 25, goalBodyFatPct: BODY.male.goalBodyFat, goal: 'recomp' };
 export function goalBodyFatLimits(profile) { return sexOf(profile) === 'female' ? BODY.female.goalBfLimits : LIMITS.goalBodyFatPct; }
 const goalBfDefault = profile => (sexOf(profile) === 'female' ? BODY.female.goalBodyFat : DEF.goalBodyFatPct);
+export function goalWeightLimits() { return LIMITS.goalWeightLb; }
+// §23: only the weight-loss goal unlocks sliders below 0.5× (down to 0 = detrain this muscle).
+export function priorityLimits(profile) { return isLossGoal(profile) ? LIMITS.priorityLoss : LIMITS.priority; }
+export function priorityLimitsFor(goal) { return goal === 'weight_loss' ? LIMITS.priorityLoss : LIMITS.priority; }
+// §23: the resolved weekly-set floor mode. A saved below-floor choice is kept in the profile but only takes
+// effect under the weight-loss goal, so switching back to recomp/cut/lean_bulk restores the evidence floors.
+export function volumeFloorOf(profile) {
+  const v = profile?.volumePolicy?.floors;
+  return isLossGoal(profile) && VOLUME_FLOORS.includes(v) ? v : 'evidence';
+}
+export function leanProtectionOf(profile) {
+  const v = profile?.body?.leanProtection;
+  return LEAN_PROTECTION.includes(v) ? v : 'protect';
+}
+
+// §23. One place that turns "lose weight to X by Y" into a rate and a calorie deficit, so Nutrition,
+// Projection, Plan and Body all quote the same numbers. weightLb = current scale weight.
+//   → { goalWeightLb, goalWeightDate, pctPerWeek, lbPerWeek, deficitKcal, toLoseLb, weeks, endDate,
+//       tier, source:'date'|'rate'|'default', warnings:[string] }
+export function lossPlan(profile, { weightLb = null, now = new Date() } = {}) {
+  const body = profile?.body && typeof profile.body === 'object' ? profile.body : {};
+  const W = fin(weightLb) && num(weightLb) > 0 ? num(weightLb) : fin(profile?.bodyweight) && num(profile.bodyweight) > 0 ? num(profile.bodyweight) : null;
+  const goalW = fin(body.goalWeightLb) && num(body.goalWeightLb) > 0 ? clamp(num(body.goalWeightLb), LIMITS.goalWeightLb) : null;
+  const date = isDs(body.goalWeightDate) ? body.goalWeightDate : null;
+  const today = ds(toDate(now));
+  let pct = fin(body.lossRatePctPerWeek) && num(body.lossRatePctPerWeek) > 0 ? clamp(num(body.lossRatePctPerWeek), LIMITS.lossRatePctPerWeek) : null;
+  let source = pct != null ? 'rate' : 'default';
+  const toLose = goalW != null && W != null ? Math.max(0, W - goalW) : null;
+  // A target date wins: it pins the rate the user actually asked for (and we tell them the cost).
+  if (date && date > today && toLose != null && toLose > 0 && W) {
+    const wks = Math.max(1, Math.round((parseDs(date) - parseDs(today)) / 6048e5));
+    pct = clamp((toLose / wks) / W * 100, LIMITS.lossRatePctPerWeek);
+    source = 'date';
+  }
+  if (pct == null) pct = DEFAULT_LOSS_RATE;
+  const lbPerWeek = W != null ? Math.round(W * pct / 100 * 100) / 100 : null;
+  const deficitKcal = lossRateDeficit(W, pct);
+  const weeks = toLose != null && lbPerWeek > 0 ? Math.ceil(toLose / lbPerWeek) : null;
+  const tier = rateTier(pct);
+  const warnings = [];
+  if (tier === 'fast') warnings.push(`${Math.round(pct * 100) / 100} % of bodyweight a week is faster than the rate that protected lean mass in trained athletes (0.7 %/week). Garthe 2011's faster group lost the same weight but a third less of it was fat, and they gained no lean mass.`);
+  if (tier === 'aggressive') warnings.push(`${Math.round(pct * 100) / 100} % of bodyweight a week is beyond anything tested in trained athletes. Expect real lean-mass loss, worse training quality, and a hard rebound: in Garthe's 12-month follow-up both rate groups were back at their starting weight.`);
+  if (deficitKcal != null && deficitKcal > 500) warnings.push(`A ${deficitKcal} kcal/day deficit is past the ~500 kcal/day point where lifters stopped gaining lean mass at all (Murphy & Koehler 2022). Strength holds up better than size.`);
+  // §23: cardio is the other half of a deficit. Minutes/week of easy Zone-2 work that would cover the whole
+  // gap, so the user can move more instead of eating less (and so the Plan screen can say how much).
+  let cardioMinPerWeek = null;
+  if (deficitKcal != null && W != null) {
+    const perMin = estimateCalories('bike', 60, 'easy', W) / 60;
+    if (perMin > 0) cardioMinPerWeek = Math.round(deficitKcal * 7 / perMin / 5) * 5;
+  }
+  return { goalWeightLb: goalW, goalWeightDate: date, pctPerWeek: Math.round(pct * 100) / 100, lbPerWeek, deficitKcal, cardioMinPerWeek,
+    toLoseLb: toLose != null ? Math.round(toLose * 10) / 10 : null, weeks,
+    endDate: weeks != null ? ds(addDays(toDate(now), 7 * weeks)) : null, tier, source, warnings };
+}
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const FINISHER_MODS = ['bike', 'walk_incline', 'elliptical', 'row', 'treadmill', 'run', 'walk', 'spin', 'stairmaster'];
@@ -319,6 +465,9 @@ export function volumePolicyOf(profile) {
     // only) | 'ask'. A 'time' saved before 2026-10-20 without fillTargetsSetAt was never chosen by the
     // user (it was the old default), so it migrates to 'extend'.
     fillTargets: FILL_MODES.includes(v.fillTargets) && !(v.fillTargets === 'time' && !v.fillTargetsSetAt) ? v.fillTargets : 'extend',
+    // §23: the saved weekly-set floor mode. Kept here so an unrelated volumePolicy edit can't wipe it;
+    // whether it is honoured is volumeFloorOf()'s job (weight-loss goal only).
+    ...(VOLUME_FLOORS.includes(v.floors) ? { floors: v.floors } : {}),
     ...(v.fillTargetsSetAt ? { fillTargetsSetAt: v.fillTargetsSetAt } : {}) };
 }
 const minCache = new WeakMap();
@@ -326,11 +475,17 @@ const minCache = new WeakMap();
 export function weeklyMinimums(profile) {
   const key = profile && typeof profile === 'object' ? profile : minCache;
   const hit = minCache.get(key);
-  const sig = JSON.stringify([profile?.groupPriority, profile?.sculptGoals]);
+  const floor = volumeFloorOf(profile);
+  const sig = JSON.stringify([profile?.groupPriority, profile?.sculptGoals, floor]);
   if (hit && hit.sig === sig) return hit.v;
   let gs = {};
   try { gs = groupStatus([], { now: new Date(2026, 0, 5, 12), profile }); } catch (e) { gs = {}; }
-  const v = Object.fromEntries(Object.entries(gs).filter(([g]) => GROUPS[g]).map(([g, x]) => [g, { min: Math.round((x.target?.min || 0) * 10) / 10, max: Math.round((x.target?.max || 0) * 10) / 10 }]));
+  // §23: below-floor modes scale the displayed group minimums the same way unitTargets scales the
+  // enforced ones, so Body/Plan/Today never show a floor the planner is not actually holding.
+  const ff = FLOOR_FACTOR[floor];
+  const v = Object.fromEntries(Object.entries(gs).filter(([g]) => GROUPS[g]).map(([g, x]) => [g, {
+    min: ff === 1 ? Math.round((x.target?.min || 0) * 10) / 10 : Math.round((x.target?.min || 0) * ff * 10) / 10,
+    max: Math.round((x.target?.max || 0) * 10) / 10 }]));
   minCache.set(key, { sig, v });
   return v;
 }
@@ -339,7 +494,9 @@ export function weeklyMinimums(profile) {
 // goals move only the target. → { [unit]: { min, target, max, base, slider, extra, name, group, tier } }
 export function unitTargets(profile) {
   const key = profile && typeof profile === 'object' ? profile : unitCache;
-  const sig = JSON.stringify([profile?.groupPriority, profile?.sculptGoals]);
+  const floor = volumeFloorOf(profile);
+  const lim = priorityLimits(profile);
+  const sig = JSON.stringify([profile?.groupPriority, profile?.sculptGoals, floor, lim[0]]);
   const hit = unitCache.get(key);
   if (hit && hit.sig === sig) return hit.v;
   const extraR = {};
@@ -350,13 +507,23 @@ export function unitTargets(profile) {
     for (const [r, w] of es) extraR[r] = (extraR[r] || 0) + g.extraWeeklySets * w / tot;
   }
   const v = {};
+  const ff = FLOOR_FACTOR[floor], tf = TARGET_FACTOR[floor];
+  const allowZero = lim[0] === 0;
   for (const id of UNIT_ORDER) {
     const u = VOLUME_UNITS[id];
     const p = profile?.groupPriority?.[u.group];
-    const slider = typeof p === 'number' && p > 0 ? p : 1;
+    // §23: a weight-loss profile may park a slider at 0 (detrain). Every other goal keeps the old rule
+    // (a stored 0 or a negative means "not set" → 1×), so their resolved numbers are unchanged.
+    const slider = allowZero
+      ? (typeof p === 'number' && Number.isFinite(p) && p >= 0 ? clamp(p, lim) : 1)
+      : (typeof p === 'number' && p > 0 ? p : 1);
     const extra = u.target > 0 ? Math.round(u.regions.reduce((a, r) => a + (extraR[r] || 0), 0) * 10) / 10 : 0;
-    const target = Math.round(Math.min(u.max, Math.max(u.min, u.target * slider + extra)) * 10) / 10;
-    v[id] = { min: u.min, target, max: u.max, base: u.target, slider, extra, name: u.name, group: u.group, tier: u.tier, big: u.big, sub: u.sub };
+    // §23: below-floor modes scale both the floor and the base target. 'evidence' keeps both exactly as before.
+    const min = ff === 1 ? u.min : Math.round(u.min * ff * 10) / 10;
+    const base = tf === 1 ? u.target : Math.round(u.target * tf * 10) / 10;
+    const target = Math.round(Math.min(u.max, Math.max(min, base * slider + extra)) * 10) / 10;
+    v[id] = { min, target, max: u.max, base, slider, extra, name: u.name, group: u.group, tier: u.tier, big: u.big, sub: u.sub,
+      ...(ff === 1 && tf === 1 ? {} : { growthMin: u.min, growthBase: u.target, floorMode: floor }) };
   }
   unitCache.set(key, { sig, v });
   return v;
@@ -453,6 +620,10 @@ export function resolveTargets(profile = {}, { now = new Date(), sessions } = {}
   const cardioOnLiftish = Math.max(0, Math.min(cardio.minPerWeek, cap.cardio) - cap.cardioDays - cap.classes);
   const stack = activeStack(profile, today);
   const goalBf = num(profile.body?.goalBodyFat ?? profile.goalBodyFatPct);
+  const goal = goalOf(profile);
+  const losing = goal === 'weight_loss';
+  const floorMode = volumeFloorOf(profile);
+  const plan = losing ? lossPlan(profile, { now }) : null;
   const out = {
     cardio,
     training: {
@@ -465,20 +636,36 @@ export function resolveTargets(profile = {}, { now = new Date(), sessions } = {}
       groupPriority: { ...(profile.groupPriority || {}) },
       volumePolicy: volumePolicyOf(profile),
     },
-    minimums: { groups: weeklyMinimums(profile), units: unitTargets(profile), evidence: MINIMUMS_EVIDENCE },
+    minimums: { groups: weeklyMinimums(profile), units: unitTargets(profile), evidence: MINIMUMS_EVIDENCE,
+      // §23: which weekly-set floors are in force, and whether the goal even allows going below them.
+      floor: { mode: floorMode, factor: FLOOR_FACTOR[floorMode], name: FLOOR_INFO[floorMode].name, why: FLOOR_INFO[floorMode].why,
+        allowed: losing, belowFloor: floorMode !== 'evidence', evidence: FLOOR_EVIDENCE } },
     nutrition: nutritionOf(profile),
     adherence: fin(profile.adherence) ? clamp(num(profile.adherence), LIMITS.adherence) : DEF.adherence,
     stack: { active: stack, count: stack.length },
     goals: {
-      goal: GOALS.includes(profile.goal) ? profile.goal : DEF.goal,
+      goal,
       sculptGoals: Array.isArray(profile.sculptGoals) ? [...profile.sculptGoals] : [],
       goalBodyFatPct: Number.isFinite(goalBf) && goalBf > 0 ? clamp(goalBf, goalBodyFatLimits(profile)) : goalBfDefault(profile),
+      // §23 (weight-loss goal). These are resolved for every goal so screens can read them without branching;
+      // `losing` says whether the weight-loss model is actually in force.
+      losing,
+      goalWeightLb: plan ? plan.goalWeightLb : (fin(profile.body?.goalWeightLb) && num(profile.body.goalWeightLb) > 0 ? clamp(num(profile.body.goalWeightLb), LIMITS.goalWeightLb) : null),
+      goalWeightDate: isDs(profile.body?.goalWeightDate) ? profile.body.goalWeightDate : null,
+      lossRatePctPerWeek: plan ? plan.pctPerWeek : (fin(profile.body?.lossRatePctPerWeek) && num(profile.body.lossRatePctPerWeek) > 0 ? clamp(num(profile.body.lossRatePctPerWeek), LIMITS.lossRatePctPerWeek) : null),
+      leanProtection: leanProtectionOf(profile),
+      plan,
     },
     capacity: { cardio: cap.cardio, total: cap.total, finishers: cap.finishers, cardioDays: cap.cardioDays, flex: cap.flex, classes: cap.classes },
     warnings: [],
   };
   if (cardio.minPerWeek > cap.cardio + 5) {
     out.warnings.push(`Your weekly availability fits about ${cap.cardio} cardio min alongside lifting, ${cardio.minPerWeek - cap.cardio} short of ${cardio.minPerWeek}. Add a cardio day or more minutes in Availability.`);
+  }
+  if (plan) {
+    for (const w of plan.warnings) out.warnings.push(w);
+    if (floorMode !== 'evidence') out.warnings.push(`Weekly set floors are on "${FLOOR_INFO[floorMode].name}", deliberately below the volume that builds muscle. ${FLOOR_INFO[floorMode].why}`);
+    if (out.nutrition.proteinGPerLb < 0.7) out.warnings.push(`Protein is ${out.nutrition.proteinGPerLb} g/lb. In a deficit that costs lean mass: 1.0 g/kg (≈0.45 g/lb) lost 1.6 kg of lean in two weeks against 0.3 kg at 2.3 g/kg (≈1.05 g/lb) in the same athletes (Mettler 2010). That is the trade you are making.`);
   }
   if (sessions) out.cardio = { ...cardio, week: cardioWeek(profile, sessions, { now }) };
   return out;
@@ -513,6 +700,9 @@ function cleanPhases(list) {
 export function applyTargetChange(profile, patch = {}) {
   const p = JSON.parse(JSON.stringify(profile || {}));
   patch = patch || {};
+  // §23: the goal decides the priority-slider floor, so resolve it BEFORE the groupPriority clamp below.
+  const goalAfter = GOALS.includes(patch.goals?.goal) ? patch.goals.goal : goalOf(p);
+  const prioLim = priorityLimitsFor(goalAfter);
   const c = patch.cardio || {};
   if ('minPerWeek' in c) { const v = vNum(c.minPerWeek, LIMITS.cardioMin, { step: 5 }); if (v !== undefined) p.cardioTargetMin = v; }
   if ('modalities' in c || 'hardSessionsPerWeek' in c || 'style' in c || 'minSession' in c) {
@@ -557,11 +747,14 @@ export function applyTargetChange(profile, patch = {}) {
     if (VOLUME_MODES.includes(t.volumePolicy.mode)) cur.mode = t.volumePolicy.mode;
     if ('maxMinutes' in t.volumePolicy) { const v = vNum(t.volumePolicy.maxMinutes, [30, 180], { step: 5 }); if (v !== undefined) cur.maxMinutes = v; }
     if (FILL_MODES.includes(t.volumePolicy.fillTargets)) { cur.fillTargets = t.volumePolicy.fillTargets; cur.fillTargetsSetAt = new Date().toISOString(); }
+    // §23: the weekly-set floor mode. Stored for any goal (so it survives a round trip) but only
+    // honoured by volumeFloorOf() under the weight-loss goal.
+    if (VOLUME_FLOORS.includes(t.volumePolicy.floors)) cur.floors = t.volumePolicy.floors;
     p.volumePolicy = cur;
   }
   if (t.groupPriority && typeof t.groupPriority === 'object') {
     const gp = {};
-    for (const [g, v] of Object.entries(t.groupPriority)) { const x = vNum(v, LIMITS.priority, { round: 2 }); if (x !== undefined) gp[g] = x; }
+    for (const [g, v] of Object.entries(t.groupPriority)) { const x = vNum(v, prioLim, { round: 2 }); if (x !== undefined) gp[g] = x; }
     p.groupPriority = gp;
   }
   const n = patch.nutrition;
@@ -586,6 +779,33 @@ export function applyTargetChange(profile, patch = {}) {
   if ('goal' in g && GOALS.includes(g.goal)) p.goal = g.goal;
   if (Array.isArray(g.sculptGoals)) p.sculptGoals = [...new Set(g.sculptGoals.filter(x => typeof x === 'string'))];
   if ('goalBodyFatPct' in g) { const v = vNum(g.goalBodyFatPct, goalBodyFatLimits(p), { round: 1 }); if (v !== undefined) p.body = { ...(p.body || {}), goalBodyFat: v }; }
+  // ---- §23 weight-loss goal fields (all on profile.body; null clears) ----
+  const setBody = (k, v) => { p.body = { ...(p.body || {}), [k]: v }; };
+  if ('goalWeightLb' in g) {
+    if (g.goalWeightLb === null || g.goalWeightLb === '') setBody('goalWeightLb', null);
+    else { const v = vNum(g.goalWeightLb, LIMITS.goalWeightLb, { round: 1 }); if (v !== undefined) setBody('goalWeightLb', v); }
+  }
+  if ('goalWeightDate' in g) setBody('goalWeightDate', isDs(g.goalWeightDate) ? g.goalWeightDate : null);
+  if ('lossRatePctPerWeek' in g) {
+    if (g.lossRatePctPerWeek === null || g.lossRatePctPerWeek === '') setBody('lossRatePctPerWeek', null);
+    else { const v = vNum(g.lossRatePctPerWeek, LIMITS.lossRatePctPerWeek, { round: 2 }); if (v !== undefined) { setBody('lossRatePctPerWeek', v); setBody('goalWeightDate', null); } }
+  }
+  // leanProtection is a PRESET: it writes the protein target and the weekly-set floors, which is what the
+  // model actually reads. The user can still override either afterwards (that just leaves the preset stale).
+  if ('leanProtection' in g && LEAN_PROTECTION.includes(g.leanProtection)) {
+    setBody('leanProtection', g.leanProtection);
+    const pre = LEAN_PROTECTION_INFO[g.leanProtection];
+    if (g.applyPreset !== false) {
+      p.nutrition = { ...(p.nutrition || {}), proteinGPerLb: clamp(pre.proteinGPerLb, LIMITS.proteinGPerLb) };
+      p.volumePolicy = { ...volumePolicyOf(p), floors: pre.floors };
+      if (pre.floors === 'minimum') {
+        // Detrain mode only means anything if the sliders can reach 0; leave raised ones alone.
+        const gp = { ...(p.groupPriority || {}) };
+        for (const k of Object.keys(gp)) if (gp[k] < 0.5) gp[k] = clamp(gp[k], prioLim);
+        p.groupPriority = gp;
+      }
+    }
+  }
   return p;
 }
 
@@ -594,7 +814,8 @@ export function applyTargetChange(profile, patch = {}) {
 export function needsReplan(before, after) {
   const a = resolveTargets(before), b = resolveTargets(after);
   const k = t => JSON.stringify([t.cardio.minPerWeek, t.cardio.modalities, t.cardio.hardSessionsPerWeek, t.cardio.style, t.cardio.minSession, t.training.schedule, t.training.style,
-    t.training.defaultMinutes, t.training.groupPriority, t.training.volumePolicy, t.goals.sculptGoals, usedStyles(t.training)]);
+    t.training.defaultMinutes, t.training.groupPriority, t.training.volumePolicy, t.goals.sculptGoals, usedStyles(t.training),
+    t.minimums.floor.mode]);   // §23: the weekly-set floors change what the planner builds
   return k(a) !== k(b);
 }
 
@@ -622,8 +843,13 @@ export function describeChange(before, after) {
   else if (va.mode !== vb.mode || va.maxMinutes !== vb.maxMinutes) out.push(vb.mode === 'fixed' ? 'fixed workout lengths' : `${vb.mode === 'ask' ? 'ask before lengthening' : 'lengthen workouts'} up to ${vb.maxMinutes}′`);
   if (JSON.stringify(a.nutrition) !== JSON.stringify(b.nutrition)) out.push('nutrition targets');
   if (a.adherence !== b.adherence) out.push(`${Math.round(b.adherence * 100)}% adherence`);
-  if (a.goals.goal !== b.goals.goal) out.push(`goal: ${b.goals.goal.replace('_', ' ')}`);
+  if (a.goals.goal !== b.goals.goal) out.push(`goal: ${GOAL_INFO[b.goals.goal]?.name.toLowerCase() || b.goals.goal.replace('_', ' ')}`);
   if (a.goals.goalBodyFatPct !== b.goals.goalBodyFatPct) out.push(`goal ${b.goals.goalBodyFatPct}% body fat`);
+  if (a.goals.goalWeightLb !== b.goals.goalWeightLb) out.push(b.goals.goalWeightLb ? `goal weight ${b.goals.goalWeightLb} lb` : 'no goal weight');
+  if (a.goals.goalWeightDate !== b.goals.goalWeightDate) out.push(b.goals.goalWeightDate ? `goal date ${b.goals.goalWeightDate}` : 'no goal date');
+  if (a.goals.lossRatePctPerWeek !== b.goals.lossRatePctPerWeek && b.goals.lossRatePctPerWeek) out.push(`${b.goals.lossRatePctPerWeek}%/week loss${b.goals.plan?.lbPerWeek ? ` (${b.goals.plan.lbPerWeek} lb/wk)` : ''}`);
+  if (a.goals.leanProtection !== b.goals.leanProtection) out.push(LEAN_PROTECTION_INFO[b.goals.leanProtection].name.toLowerCase());
+  if (a.minimums.floor.mode !== b.minimums.floor.mode) out.push(`${FLOOR_INFO[b.minimums.floor.mode].name.toLowerCase()} set floors`);
   if (JSON.stringify(a.goals.sculptGoals) !== JSON.stringify(b.goals.sculptGoals)) out.push('sculpt focus');
   return out.join(', ');
 }
