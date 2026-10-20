@@ -1210,7 +1210,117 @@ const LIST = [
   },
 ];
 
+// ============================================================ FEMALE MODE (§20)
+// Per-item overrides for women, merged by itemFor(item, 'female'). Every number cites the study it comes from
+// (docs/research/female-physiology.md). `model.femaleNote` is the text shown for testosterone-shifting items, which
+// model no effect in women (all were studied in men, or found nothing in women).
+const MALE_HPG = 'A male-hypogonadism therapy (it works by pushing the testes to make more testosterone). In women it is used for other things';
+const FEMALE = {
+  creatine: {
+    summary: 'Works for women too, but less lean mass is measurable: in the meta-analysis of randomized trials, lean-mass gain was +1.46 kg in men and +0.29 kg (not significant) in women. Strength and performance benefits are documented in women, including after menopause.',
+    effects: [
+      'Delpino 2022 meta-analysis (35 RCTs): lean mass +1.46 kg in men (95% CI 0.47–2.46) vs +0.29 kg in women (−0.43 to 1.01, not significant).',
+      'Mihic 2000: a 5-day load raised fat-free mass and body mass more in men than in women (less water storage).',
+      'Postmenopausal women with lifting: lean mass +0.37 kg, only at 5 g/day or more (Naddafha 2026 meta-analysis).',
+      'Forge (women): lean-ceiling effect at ~20% of the male value (the ratio of the pooled estimates) and ~1 lb of water instead of ~1.6 lb. These female values are assumptions from those studies.',
+    ],
+    model: { leanCeilingMult: 1.024, waterLb: 1.0 },
+    sources: [
+      'Smith-Ryan AE, et al. Creatine supplementation in women\'s health: a lifespan perspective. Nutrients. 2021;13(3):877. doi:10.3390/nu13030877',
+      'Mihic S, et al. Acute creatine loading increases fat-free mass, but does not affect blood pressure, plasma creatinine, or CK activity in men and women. Med Sci Sports Exerc. 2000;32(2):291-296. doi:10.1097/00005768-200002000-00007',
+      'Naddafha S, et al. Creatine monohydrate for lean mass, strength, and bone density in postmenopausal women: a systematic review and meta-analysis. J Int Soc Sports Nutr. 2026;23(1):2668435. doi:10.1080/15502783.2026.2668435',
+    ],
+  },
+  trt: {
+    status: 'Prescription only (Schedule III). There is no US-approved testosterone product for women: the only evidence-based use is low sexual desire after menopause, dosed to premenopausal levels (Davis 2019 consensus). Gender-affirming therapy is specialist care. WADA prohibited.',
+    summary: 'In women, lean mass rises with the blood level: about +0.6 kg per +100 ng/dL over 24 weeks in the only dose-response trial (Huang 2014, up to ~210 ng/dL), with no change in fat. At male-range levels (trans men), about +3.9 kg lean and −2.6 kg fat over a year. Forge uses your on-therapy level (or estimates it from your dose) against your own natural level.',
+    mechanism: 'Androgen-receptor activation raises muscle protein synthesis. Women normally have about 10–57 ng/dL (Haring 2012), so anything above that is supraphysiologic for a woman.',
+    effects: [
+      'Huang 2014 (71 hysterectomized women, 24 weeks, no training): testosterone enanthate 3 / 6.25 / 12.5 / 25 mg/week → nadir ≈78 / 102 / 128 / 210 ng/dL; lean mass +0.6 kg per +100 ng/dL (95% CI 0.2–1.1), only 25 mg beat placebo (+1.8 kg); no fat change at any dose; chest-press and stair-climb power rose at 25 mg.',
+      'Physiological doses (Islam 2019 meta-analysis, 36 RCTs, 8,480 women): no effect on body composition or muscle; more acne and hair growth.',
+      'Trans men on male-range testosterone for ~1 year: lean +3.9 kg and fat −2.6 kg (Klaver 2016 meta-analysis), muscle +10.4% (Van Caenegem 2015), thigh muscle +15% (Wiik 2020). Grip gains were the same across levels from ~288 to ~1,555 ng/dL (Scharff 2019).',
+      'Forge (women): lean asymptote linear in serum T above your own level (Huang\'s slope), flat above ~600 ng/dL; fat change only above ~230 ng/dL; training ceiling unchanged (no study of testosterone × training in women); the reachable FFMI ceiling rises by the lean mass it adds.',
+    ],
+    risks: [
+      'Above the female range: acne and more body and facial hair (hair score rose at 12.5–25 mg/week in Huang 2014; Islam 2019).',
+      'Male-range levels (as in gender-affirming therapy): voice deepening and clitoral enlargement, which can be permanent; periods usually stop; hematocrit rises into the male range (Endocrine Society guideline, Hembree 2017).',
+      'Contraindicated in pregnancy: it can virilize a female fetus.',
+      'If prescribed: total T at baseline, after 3–6 weeks and every 6 months; stop if there is no benefit by 6 months; pellets, injections and supraphysiologic doses are not recommended for women (Davis 2019).',
+    ],
+    typicalUse: 'Women: only for postmenopausal low sexual desire (HSDD), transdermal, dosed to premenopausal levels (Davis 2019). Gender-affirming therapy under specialist care.',
+    sources: [
+      'Huang G, et al. Testosterone dose-response relationships in hysterectomized women with or without oophorectomy: effects on sexual function, body composition, muscle performance and physical function in a randomized trial. Menopause. 2014;21(6):612-623. doi:10.1097/GME.0000000000000093',
+      'Huang G, et al. Testosterone dose-response relationships with cardiovascular risk markers in androgen-deficient women: a randomized, placebo-controlled trial. J Clin Endocrinol Metab. 2014;99(7):E1287-E1293. doi:10.1210/jc.2013-4160',
+      'Klaver M, et al. Cross-sex hormone therapy in transgender persons affects total body weight, body fat and lean body mass: a meta-analysis. Andrologia. 2017;49(5):e12660. doi:10.1111/and.12660',
+      'Van Caenegem E, et al. Body composition, bone turnover, and bone mass in trans men during testosterone treatment: 1-year follow-up data from a prospective case-controlled study (ENIGI). Eur J Endocrinol. 2015;172(2):163-171. doi:10.1530/EJE-14-0586',
+      'Wiik A, et al. Muscle strength, size, and composition following 12 months of gender-affirming treatment in transgender individuals. J Clin Endocrinol Metab. 2020;105(3). doi:10.1210/clinem/dgz247',
+      'Scharff M, et al. Change in grip strength in trans people and its association with lean body mass and bone density. Endocr Connect. 2019;8(7):1020-1028. doi:10.1530/EC-19-0196',
+      'Islam RM, et al. Safety and efficacy of testosterone for women: a systematic review and meta-analysis of randomised controlled trial data. Lancet Diabetes Endocrinol. 2019;7(10):754-766. doi:10.1016/S2213-8587(19)30189-5',
+      'Davis SR, et al. Global consensus position statement on the use of testosterone therapy for women. J Clin Endocrinol Metab. 2019;104(10):4660-4666. doi:10.1210/jc.2019-01603',
+      'Wierman ME, et al. Androgen therapy in women: a reappraisal: an Endocrine Society clinical practice guideline. J Clin Endocrinol Metab. 2014;99(10):3489-3510. doi:10.1210/jc.2014-2260',
+      'Hembree WC, et al. Endocrine treatment of gender-dysphoric/gender-incongruent persons: an Endocrine Society clinical practice guideline. J Clin Endocrinol Metab. 2017;102(11):3869-3903. doi:10.1210/jc.2017-01658',
+      'Haring R, et al. Age-specific reference ranges for serum testosterone and androstenedione concentrations in women measured by liquid chromatography-tandem mass spectrometry. J Clin Endocrinol Metab. 2012;97(2):408-415. doi:10.1210/jc.2011-2134',
+    ],
+    model: {
+      dose: { unit: 'mg/week', default: 3, label: 'lowest dose in the female dose-response trial (Huang 2014)', studied: [3, 25], note: 'Testosterone enanthate. Only used to estimate your level when no on-therapy lab is entered; above 25 mg/week Forge uses the men\'s dose-level data (no larger doses were studied in women).' },
+      doseToLevel: [[0, 19], [3, 78], [6.25, 102], [12.5, 128], [25, 210], [50, 306], [125, 542], [300, 1345], [600, 2370]],
+      // Display reference at Huang's top dose (natural ≈20 → 210 ng/dL); the engine uses testosteroneEffect({ sex:'female' }).
+      leanCeilingMult: 1, leanDirectLbPerWeek: 0.04, fatDirectLbPerWeek: 0,
+      levelRisks: [
+        { min: 1, text: 'Testosterone isn\'t approved for women in the US; the consensus is to keep levels within the premenopausal range and use it only for postmenopausal low sexual desire (Davis 2019). Never during pregnancy.' },
+        { min: 60, text: 'Above the female range (~57 ng/dL): acne and more body and facial hair become more common (Huang 2014; Islam 2019).' },
+        { min: 200, text: 'At Huang 2014\'s top dose (~210 ng/dL) hemoglobin and hematocrit rose with dose (still within the female range); hair growth increased.' },
+        { min: 300, text: 'Male-range level: expect voice deepening and clitoral enlargement that can be permanent, periods stopping, and hematocrit and blood pressure rising toward male values (Hembree 2017). Needs specialist monitoring.' },
+      ],
+    },
+  },
+  ashwagandha: { model: { femaleNote: 'In women the meta-analysis found no testosterone rise (+5 ng/dL, not significant, vs +57 ng/dL in men; Fornalik 2026), and a trial in perimenopausal women found none (Gopal 2021). Forge models no effect.' },
+    sources: ['Fornalik M, et al. Hormonal modulation with Withania somnifera: systematic review and meta-analysis of randomized-controlled trials. Planta Med. 2026;92(8):790-805. doi:10.1055/a-2802-8363',
+      'Gopal S, et al. Effect of an ashwagandha (Withania somnifera) root extract on climacteric symptoms in women during perimenopause: a randomized, double-blind, placebo-controlled study. J Obstet Gynaecol Res. 2021;47(12):4414-4425. doi:10.1111/jog.15030'] },
+  tongkat_ali: { model: { femaleNote: 'No randomized trial in women: the only female data are a small mixed-sex pilot in seniors (Henkel 2014). Forge models no effect.' } },
+  zma: { model: { femaleNote: 'Correcting a real zinc deficiency matters for health (the female cut-off is ~70 µg/dL, morning fasting; Hotz 2003), but the testosterone evidence is in men. Forge models no muscle effect for women.' } },
+  daa: { model: { femaleNote: 'Only studied in men (and the higher dose lowered their testosterone). Forge models no effect for women.' } },
+  sleep_hygiene: { model: { femaleNote: 'The testosterone part is from young men (Leproult 2011), so Forge adds none for women. Sleep still drives the muscle ceiling and how much lean you keep in a deficit (your "typical sleep" setting).' } },
+  energy_availability: {
+    summary: 'The most important item for women who train hard and diet: below about 30 kcal per kg of fat-free mass a day (food minus exercise), the hormone pulses that drive the menstrual cycle were disrupted within 5 days. Missed periods, stress fractures and stalled progress follow (IOC REDs consensus).',
+    effects: [
+      'Loucks & Thuma 2003 (randomized, 29 regularly menstruating women): LH pulsatility unaffected at 30 kcal/kg lean mass/day, disrupted below it within 5 days.',
+      'Hulmi 2017 (27 female physique competitors, 4-month diet to 12.7% body fat): leptin, T3, estradiol and testosterone fell and 63% had irregular bleeding; T3 and testosterone hadn\'t fully recovered after 3–4 months.',
+      'Halliday 2016 (case, drug-free figure competitor): energy availability fell during a 20-week prep, cycles became irregular in the first month and the last period came at week 11.',
+      'Forge (women): Nutrition and the projection warn when planned intake minus exercise falls under 30 kcal per kg of your lean mass.',
+    ],
+    sources: [
+      'Loucks AB, Thuma JR. Luteinizing hormone pulsatility is disrupted at a threshold of energy availability in regularly menstruating women. J Clin Endocrinol Metab. 2003;88(1):297-311. doi:10.1210/jc.2002-020369',
+      'Mountjoy M, et al. 2023 International Olympic Committee\'s (IOC) consensus statement on Relative Energy Deficiency in Sport (REDs). Br J Sports Med. 2023;57(17):1073-1097. doi:10.1136/bjsports-2023-106994',
+      'Hulmi JJ, et al. The effects of intensive weight reduction on body composition and serum hormones in female fitness competitors. Front Physiol. 2017;7:689. doi:10.3389/fphys.2016.00689',
+      'Halliday TM, Loenneke JP, Davy BM. Dietary intake, body composition, and menstrual cycle changes during competition preparation and recovery in a drug-free figure competitor: a case study. Nutrients. 2016;8(11):740. doi:10.3390/nu8110740',
+    ],
+  },
+  fat_loss: { model: { femaleNote: 'The testosterone rise is a male finding. In women with obesity (often with PCOS) weight loss usually LOWERS excess androgens, which is a health benefit, not a muscle effect. Forge models no testosterone change.' } },
+  endurance_load: {
+    summary: 'In men, years of high-volume endurance training lower resting testosterone. In women the equivalent risk is low energy availability: missed or irregular periods from not eating enough for the training load (see Eating enough).',
+    model: { femaleNote: 'The testosterone drop is a male finding. For women the relevant risk is low energy availability and menstrual disruption (IOC REDs 2023), which Forge warns about in Nutrition and the projection.' },
+  },
+  dhea: { summary: 'In women DHEA is a real source of testosterone, so it does raise it a little (+17.5 ng/dL in elderly women, Hu 2020), but two years of it changed nothing about body composition or strength (Nair 2006, elderly women). The Endocrine Society advises against routine use (Wierman 2014). Banned in drug-tested sport.',
+    sources: ['Hu Q, et al. Impact of dehydroepiandrosterone (DHEA) supplementation on testosterone concentrations and BMI in elderly women: a meta-analysis of randomized controlled trials. Complement Ther Med. 2020;56:102620. doi:10.1016/j.ctim.2020.102620'] },
+  clomiphene: { model: { femaleNote: `${MALE_HPG}: clomiphene is FDA-approved to induce ovulation. It doesn't build muscle in women; Forge models no effect.` } },
+  enclomiphene: { model: { femaleNote: `${MALE_HPG}. It has no muscle or testosterone role in women; Forge models no effect.` } },
+  hcg: { model: { femaleNote: `${MALE_HPG}: hCG triggers ovulation in fertility treatment. Forge models no body-composition effect.` } },
+  aromatase_inhibitor: { model: { femaleNote: `${MALE_HPG}: aromatase inhibitors treat breast cancer and induce ovulation. They lower estrogen, which costs bone. Forge models no muscle effect.` } },
+  tamoxifen: { model: { femaleNote: `${MALE_HPG}: tamoxifen treats and prevents breast cancer. Forge models no muscle effect.` } },
+  cabergoline: { model: { femaleNote: 'In women cabergoline treats high prolactin, which restores periods and fertility. That is a health effect, not a muscle effect; Forge models none.' } },
+};
+for (const s of LIST) if (FEMALE[s.id]) s.female = FEMALE[s.id];
+
 export const SUPPLEMENTS = Object.fromEntries(LIST.map(s => [s.id, s]));
+
+// The catalogue entry as it applies to `sex` (female overrides merged; `sources` appended). Male = the entry itself.
+export function itemFor(s, sex) {
+  if (!s || sex !== 'female' || !s.female) return s;
+  const f = s.female;
+  return { ...s, ...f, female: undefined, model: f.model ? { ...s.model, ...f.model } : s.model,
+    effects: f.effects || s.effects, risks: f.risks || s.risks, sources: f.sources ? [...s.sources, ...f.sources] : s.sources };
+}
 
 export const NOT_MODELED = [
   { name: 'Other anabolic steroids (trenbolone, nandrolone, oral "stacks")', why: 'No dose–response trials in healthy lifters to model from, and liver, heart and lipid risks are serious. (Testosterone itself is modeled from Bhasin\'s trials.) If you\'re considering them, talk to a physician.' },

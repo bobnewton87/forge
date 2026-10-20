@@ -832,6 +832,89 @@ Tests: `test/accounts-store.test.js` (isolation: default keys byte-identical thr
 export/import/_reset scoping, recovery), `test/accounts-cloud.test.js` (fake GoTrue + PostgREST behind a mocked fetch:
 unconfigured, sign-up/in/refresh/sign-out, pull/push/merge/tombstones, first-sign-in choices, clock skew, OAuth fragment,
 deletion), e2e A1–A3 (A3 drives the cloud UI against a route-intercepted fake Supabase). Setup: `docs/accounts-setup.md`.
+## 20. Female mode (2026-10-20)
+Bob (shipping to the App Store): "female metabolic and biology modeling and info. I just want this to be scientific."
+Every female-specific number comes from a study, cited in code comments and in `docs/research/female-physiology.md`.
+Male results are unchanged (male constants are the engines' originals; verified by a golden comparison of male outputs).
+
+Ownership: `js/engine/sex.js` (new), the female branches of `js/engine/{bodycomp,projection,metabolic,nutrition,targets}.js`,
+`js/data/{supplements,sculpt}.js`, `js/ui/female.js` (new) and targeted edits to `js/ui/{measure,settings,supplements,nutrition,projection,body}.js`,
+`test/female.test.js`, e2e test `X1` → **FEMALE**. The female 3D body (`anthro.js`, `body3d*`, `silhouette.js`, mesh assets) belongs to FEMALE-3D.
+
+**Profile** (`profile.body`, all optional; `store.defaultProfile({ sex })`):
+```js
+sex: 'male' | 'female'
+menopause: null | 'pre' | 'peri' | 'post'            // null → inferred from age (<45 pre, 45–54 peri, ≥55 post), flagged as assumed
+contraception: null | 'none' | 'combined' | 'progestin' | 'hormonal_iud' | 'copper_iud' | 'other'
+hormoneTherapy: null | 'none' | 'estrogen' | 'estrogen_progestogen'   // menopausal hormone therapy
+pregnancy: null | 'none' | 'pregnant' | 'postpartum' | 'breastfeeding'
+```
+No cycle-phase field: the evidence doesn't support changing training by phase (McNulty 2020; Colenso-Semple 2023).
+`defaultProfile({ sex: 'female' })` starts with `FEMALE_DEFAULT_SCULPT_GOALS`; `migrate()` gives them only to a female profile
+that has no `sculptGoals` key. Existing goals are never changed silently: switching to female offers the set (Measure/Settings).
+
+**One helper module** (`js/engine/sex.js`, pure):
+```js
+sexOf(profile | body | baseline | string) → 'male' | 'female'      // default male
+femaleStatus(profile, { age }) → { female, menopause, menopauseAssumed, contraception, hormoneTherapy, pregnancy,
+                                   cycling, combinedHormonal, mht, pregnant, postpartum, breastfeeding }
+BODY.{male,female} → { defaultBf, essentialBf, defendedBf, ffmiCeiling, ffmiCeilSd, goalBodyFat, goalBfLimits, ffmiScoreLo, ffmiScoreHi, smmFracOfLean }
+FAT_COEF, SMM_SHARE_RAW_{MALE,FEMALE}, FEMALE_RATE_REF_LEAN_FRAC (0.8)
+bodyFatCategory(bf, { sex, age }), ffmiBand(ffmi, sex), averageTotalTFemale(age, { contraception }), FEMALE_LABS, FEMALE_T_RANGE
+energyAvailability({ intakeKcal, exerciseKcal, leanLb }) → kcal/kg FFM/day; EA_LOW 30, EA_ADEQUATE 45; ironRda(); FEMALE_MODE_INFO
+```
+
+**Engine behaviour for women:**
+- bodycomp: female Navy/RFM/Deurenberg/Mifflin (already present); `baseline` adds `bodyFatCategory` (Gallagher 2000), `femaleStatus`,
+  female missing-info wording; `ratios.waistToHip` for both sexes.
+- projection: lean-rate basis = lean ÷ 0.8 (same relative rate: Roberts 2020, Refalo 2025); female muscle shares (Janssen 2000,
+  `FEMALE_MUSCLE_SHARE`); skeletal-muscle fraction 0.51; natural FFMI ceiling 22 ± 1.5 (+ metabolic `ffmiCeilingDelta`); defended 13 %,
+  floor 10 %; goal default 22 %; female tape coefficients; muscle scores on a female FFMI scale (11.5–20.5); female milestones (abs
+  ~20/~16 rule of thumb, `whr_085`, `wht_05`, `ffmi_185`, `ffmi_20`, `near_ceiling`; no V-taper, no race weight unless she sets both
+  numbers); female assumption text. Extra result fields (women only): `energyAvailability:{ start, min, low, threshold }`,
+  `caution:'postpartum'`; pregnancy returns the empty result with `paused:'pregnancy'`. `energy.exerciseKcal` (both sexes, additive).
+- metabolic: `averageTotalT(age, 'female', { contraception })`; `testosteroneEffect(T, { sex:'female', baselineT, weeksOn })` = Huang 2014
+  slope (+0.6 kg lean per +100 ng/dL, 24 wk) with trans-men checks (Klaver 2016), flat above ~600, plateau past 1,555, fat only above
+  ~230; natural female T never limits the ceiling; `testosteroneFromDose(mg, 'female')`; endogenous-T items and male HPG therapies
+  model nothing for women (`model.femaleNote`); female hormone-panel notes; info factors for contraception, MHT, menopause stage,
+  pregnancy; low-energy-availability warning in a deficit; `modifiersAt()` returns `ffmiCeilingDelta` (women only); `levels.sex`.
+- supplements data: `itemFor(item, sex)` merges per-item `female` overrides (creatine 1.024 / 1.0 lb water; testosterone text, dose
+  mapping and level risks; booster/therapy notes).
+- nutrition: `dailyTargets(profile, { …, leanLb, exerciseKcal })` → `energyAvailability` + warning < 30; pregnancy never plans a
+  deficit; postpartum/breastfeeding caution; `female:{ status, ironMgPerDay }`. `tipsFor(profile)`, `supplementsFor(profile)`.
+  Protein targets unchanged (Morton 2018: no sex effect).
+- targets: women's goal body fat defaults to 22 %, clamped to [14, 35] (`goalBodyFatLimits(profile)`); weekly set targets are not
+  sex-specific (no study supports different targets).
+- sculpt: new goal `glute_shelf`; `goalFor(goal, sex)` (female wording); `FEMALE_DEFAULT_SCULPT_GOALS`, `defaultSculptGoals(sex)`.
+
+**UI:** sex selector + female fields + "what changes" sheet (`ui/female.js`) on Measure's body profile and Settings → Profile. Women see
+female FFMI bands, the Gallagher range, waist:hip instead of the golden ratio, female lab ranges and testosterone chart, female
+nutrition tips (iron, energy availability) and no Bob-specific Adderall prompts. 3D/silhouette options carry `sex` for the renderer.
+
+### 20b. One body-fat scale: DXA-equivalent (2026-10-20)
+Bob: the 3D model looked fatter than him. The number wasn't biased high; the reference scales were mixed. Every body-fat number
+(estimate, milestones, goals, floors, FFMI ceiling, the value passed to the 3D model) is now **DXA-equivalent**, for both sexes.
+Evidence and the before/after numbers for Bob: `docs/research/body-fat-dxa-scale.md`. Owner: FEMALE (bodycomp/projection).
+```js
+// bodycomp.js
+BF_DXA                    // equations, offsets, SDs (below)
+oneSiteBodyFat({ sex, waistIn /* navel */, weightLb, age }) // Taylor 2024 (doi:10.1002/osp4.747): men −27.05 + 2.06·abd − 0.12·wt (−1 at 40+),
+                                                          // women −8.06 + 1.25·abd − 0.004·wt; DXA-referenced
+toDxaScale(kind, value, sex, manualMethod)                // navy +3 men / +1.7 women; rfm −0.5 / −0.9; bmi 0; manual bia +3.5/+4, calipers +3/+3.5, dxa/other 0
+baseline() → bodyFatPct (DXA-equivalent): a DXA entry (method 'dxa' or blank) as-is (±2), else inverse-variance blend of every
+  available DXA-scale estimate (SD one-site 3.4/4.1, RFM 4.2/4.9, Navy 5, Deurenberg 6, BIA 5, calipers 4.5, other 5);
+  bodyFatMethod 'manual'|'onesite'|'navy'|'rfm'|'bmi'|'blend'; bodyFatSources (DXA scale) + bodyFatSourcesRaw; navyBodyFatPct (raw);
+  bodyFatUncertainty = likely ±(max 3.5, blend SD, spread/2), ±2 for DXA; bodyFatRange, bodyFatRange95 (±2×); bodyFatScale 'dxa'
+// measurement entries: bodyFat + bodyFatMethod: 'dxa' | 'bia' | 'calipers' | 'other'   (Measure asks "Measured with")
+```
+Constants on the DXA scale: male natural FFMI ceiling 24.2 (Kouri's skinfold-scale 25 × 0.87/0.90; `FFMI_NATURAL_CEILING`), male
+FFMI bands 17.4/19.3/21.3/22.7/24.2, milestones `ffmi_22`/`ffmi_23` at 21.3/22.2 (ids kept), 3D muscle score FFMI 14.2–23.2 and
+`estMuscle()` 15.2–24.2 (women 12.5–21.5), male abs 15/13 %, female abs 22/18 % (rule of thumb), default male goal 15 % (≈ the
+colloquial 12 %; saved goals untouched, a saved male goal ≤ 13 % gets a note), race-weight default 137 lb at 9.5 %, lean-model
+thresholds `sex.leanModelBf(sex)` (men: surplus pivot 21, recomp 23/15, protection 13). Unchanged and already DXA-consistent:
+essential/defended 5/6 % (men; Friedl 1994 DXA), 10/13 % (women), Gallagher categories, defaults 20/28 %, Forbes' 10.4 kg.
+The UI labels body fat "DXA-equivalent" with a one-line why (Measure, Body, Projection). Renderers receive the canonical value.
+
 ## 21. Female 3D body (2026-10-20)
 Bob: female mode with female models, held to the same bar as the male 3D ("accurate and to scale", realistic poses,
 smooth head-to-neck transition). App Store review risk: the bodies must not read as nude.

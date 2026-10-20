@@ -74,7 +74,8 @@ test('nutritionLab: 15 points, sweet spot ≈ +200…+500, diminishing returns, 
   const lab = nutritionLab({ baseline: B, profile: P, sessions: PLAN, weeks: 12, now: NOW, proteinGPerLb: 1, useStack: false });
   assert.equal(lab.points.length, 15);
   assert.equal(lab.points[0].surplus, -750); assert.equal(lab.points[14].surplus, 1000);
-  inRange(lab.sweetSpot.from, 150, 300, 'from'); inRange(lab.sweetSpot.to, 400, 550, 'to');
+  // §20b: the recomp/partition body-fat thresholds moved to the DXA scale (+3), so the 97 % point can sit at +375.
+  inRange(lab.sweetSpot.from, 150, 300, 'from'); inRange(lab.sweetSpot.to, 350, 550, 'to');
   assert.match(lab.sweetSpot.note, /kcal\/day/);
   // fat rises monotonically with calories; lean saturates
   for (let i = 1; i < lab.points.length; i++) assert.ok(lab.points[i].fatLb >= lab.points[i - 1].fatLb);
@@ -172,7 +173,7 @@ test('stack: leanCeilingMult is not flattened, retention, fatDirect, water, tdee
   // −0.2 lb/week × 12 = −2.4 lb, minus a little energy feedback: since the long-horizon model (Hall 2011) lets fat
   // mass and body weight raise maintenance, less fat means slightly lower burn, so ~0.2 lb comes back.
   assert.ok(Math.abs(fat.summary.fatLb - (base.summary.fatLb - 2.4)) <= 0.35);
-  assert.ok(Math.abs(fat.summary.leanLb - base.summary.leanLb) <= 0.1);
+  assert.ok(Math.abs(fat.summary.leanLb - base.summary.leanLb) <= 0.1 + 1e-9);   // summaries are rounded to 0.1 lb
   // water: scale only, starting after today
   const water = run(intake, { modifiersFn: mods({}), useStack: true });
   const wet = run(intake, { modifiersFn: (p, d) => mods({ waterLb: d > TODAY ? 3 : 0 })() });
@@ -249,7 +250,7 @@ test('series exposes shape (with heightIn), muscle scores, muscleLb, water, L/R 
   assert.ok(pN.limbs.thighL > 22 && pN.limbs.thighR > 22.75);
   assert.ok(Math.abs((pN.limbs.thighR - pN.limbs.thighL) - 0.75) < 0.02);
   assert.equal(p0.measurements.thigh, 22.4);   // 22.375, tape values are shown to 0.1 in
-  assert.ok(r.startBodyFat.uncertainty >= 3 && r.startBodyFat.range.low < 22);
+  assert.ok(r.startBodyFat.uncertainty >= 2 && r.startBodyFat.range.low < 22);   // §20b: a DXA (default) entry is ±2
   assert.ok(r.assumptions.every(a => typeof a === 'string' && a.length > 10 && !/NaN|undefined|null/.test(a)));
   assert.ok(r.assumptions.some(a => /Schoenfeld/.test(a)) && r.assumptions.some(a => /Pelland 2024/.test(a)));
 });

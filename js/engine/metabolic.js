@@ -13,7 +13,15 @@
 //   stackTimeline(profile, { from, weeks, age, bodyweightLb, useStack }) → per-week modifiers + cumulative direct effects.
 // CONTRACT-NOTE: curves are study-bounded (plateau at the highest studied dose/level, direct effects stop or taper
 //   after the studied duration). The final clamps below are wide NaN/sanity guards only.
-import { SUPPLEMENTS } from '../data/supplements.js';
+// CONTRACT-NOTE (§20 Female mode): sex comes from sex.js sexOf(profile). For women: averageTotalT(age, 'female')
+//   gives female population values; testosteroneEffect(totalT, { sex:'female', … }) uses the female dose-response
+//   (Huang 2014 + trans-men cohorts, T_MODEL_F) and natural female T never changes the ceiling; testosteroneFromDose(mg,
+//   'female') maps dose → level; endogenous-T items and male HPG therapies model no effect in women; the hormone panel
+//   uses female cut-offs; status factors (contraception, MHT, menopause stage, pregnancy) are information only.
+//   modifiersAt() adds ffmiCeilingDelta (FFMI points, ≥ 0) for women only, so testosterone's lean effect isn't cut off
+//   at the natural female ceiling; levels gain { sex }. Male outputs are unchanged.
+import { SUPPLEMENTS, itemFor } from '../data/supplements.js';
+import { sexOf, femaleStatus, averageTotalTFemale, FEMALE_TOTAL_PER_FREE_T, FEMALE_T_RANGE, FEMALE_LABS, COC_FREE_T_FACTOR, COC_SHBG_ADD } from './sex.js';
 
 const LB_PER_KG = 2.20462;
 const fin = x => typeof x === 'number' && Number.isFinite(x);
@@ -53,7 +61,10 @@ const fmtSign = (x, dp = 2) => { const t = Math.abs(x).toFixed(dp); return (x >=
 
 // ======================================================================== population defaults
 // Average total T for men by age: ≈600 ng/dL at 30, declining ~1%/yr (MMAS reports 1–1.6%/yr) → ≈550 at 39.
-export function averageTotalT(age) { const a = num(age, 0, 120) ?? 39; return Math.round(Math.max(300, 600 * Math.pow(0.99, Math.max(0, a - 30)))); }
+export function averageTotalT(age, sex = 'male', opts = {}) {
+  if (sexOf(sex) === 'female') return averageTotalTFemale(num(age, 0, 120) ?? 39, opts);
+  const a = num(age, 0, 120) ?? 39; return Math.round(Math.max(300, 600 * Math.pow(0.99, Math.max(0, a - 30))));
+}
 export const AVERAGE_VITD = 27;          // ng/mL, US adult mean 2011–2014 (Herrick 2019)
 export const AVERAGE_SLEEP = 7;
 export const AVERAGE_STRESS = 3;
@@ -80,7 +91,64 @@ export const T_MODEL = {
 // in Bhasin 2005, so only −0.5%/yr past 35 (floor 0.8).
 export function tAgeResponse(age) { const a = num(age, 0, 120); return a == null || a <= 35 ? 1 : Math.max(0.8, 1 - 0.005 * (a - 35)); }
 
-export function testosteroneEffect(totalT, { baselineT = null, weeksOn = 0, age = null } = {}) {
+// ---- female testosterone dose-response (§20)
+// Huang 2014 (Menopause 21:612, doi:10.1097/GME.0000000000000093; JCEM 99:E1287, doi:10.1210/jc.2013-4160): 71
+//   hysterectomized women, testosterone enanthate 0/3/6.25/12.5/25 mg/wk for 24 wk → nadir T 19/78/102/128/210 ng/dL;
+//   lean body mass +0.6 kg per +100 ng/dL (95 % CI 0.2–1.1; only 25 mg beat placebo, +1.8 kg); NO fat-mass change at any dose.
+// Trans men (assigned female at birth) on male-range T for ~1 yr: lean +3.9 kg (3.2–4.5), fat −2.6 kg (Klaver 2016
+//   meta-analysis, Andrologia 49:e12660, doi:10.1111/and.12660); muscle +10.4 % (Van Caenegem 2015, Eur J Endocrinol 172:163,
+//   doi:10.1530/EJE-14-0586); thigh muscle +15 % (Wiik 2020, JCEM 105, doi:10.1210/clinem/dgz247). Grip gains did not differ
+//   across achieved-T tertiles spanning ~288–1,555 ng/dL (Scharff 2019, Endocr Connect 8:1020, doi:10.1530/EC-19-0196).
+// Model: lean asymptote linear in absolute T above her own level (Huang's slope), same saturating time course as the male
+//   model (τ = 12 wk, so the 24-week value is reached at 24 wk). Check: ~20 → 550 ng/dL gives ≈ +3.6 kg at 52 wk vs Klaver's
+//   +3.9. Held flat above ~600 ng/dL (no female lean-vs-level data beyond typical male-range levels; Scharff's flat strength
+//   response), plateau + warning past 1,555 (highest level reported). Fat: none up to ~230 (Huang), rising to −2.6 kg/yr at
+//   ~550 (Klaver). No T × training interaction has been studied in women, so the training ceiling stays ×1 (additive only).
+export const T_MODEL_F = {
+  refWeeks: 24, tauWeeks: 12, leanKgPer100: 0.6, leanPlateau: 600, studiedMax: 1555, floorT: 1,
+  fatStart: 230, fatFull: 550, fatKgAtYear: -2.6, naturalRange: FEMALE_T_RANGE,
+  doseToLevel: [[0, 19], [3, 78], [6.25, 102], [12.5, 128], [25, 210], [50, 306], [125, 542], [300, 1345], [600, 2370]],
+};
+function femaleTestosteroneEffect(totalT, { baselineT = null, weeksOn = 0, age = null } = {}) {
+  const M = T_MODEL_F;
+  const raw = num(totalT, 0.5, 100000), rawBase = num(baselineT, 0.5, 100000);
+  const t0 = raw ?? rawBase ?? averageTotalT(age, 'female');
+  const beyondStudied = t0 > M.studiedMax;
+  const T = clamp(t0, M.floorT, M.studiedMax), B = clamp(rawBase ?? t0, M.floorT, M.studiedMax);
+  const onTherapy = rawBase != null && Math.abs(T - B) > 0.5;
+  const leanT = x => Math.min(x, M.leanPlateau);
+  const fatFrac = x => clamp((Math.min(x, M.fatFull) - M.fatStart) / (M.fatFull - M.fatStart), 0, 1);
+  const sat = 1 - Math.exp(-M.refWeeks / M.tauWeeks), satYear = 1 - Math.exp(-52 / M.tauWeeks);
+  const leanRef = onTherapy ? M.leanKgPer100 * (leanT(T) - leanT(B)) / 100 : 0;       // kg at 24 wk
+  const A = leanRef / sat;
+  const Af = onTherapy ? M.fatKgAtYear * (fatFrac(T) - fatFrac(B)) / satYear : 0;     // asymptotic fat change, kg
+  const w = onTherapy ? Math.max(0, num(weeksOn, 0, 1e4) ?? 0) : 0;
+  const decay = Math.exp(-w / M.tauWeeks);
+  const leanRateKg = onTherapy ? (A / M.tauWeeks) * decay : 0, fatRateKg = onTherapy ? (Af / M.tauWeeks) * decay : 0;
+  const cum = onTherapy ? 1 - decay : 0;
+  const leanDirectLbPerWeek = leanRateKg * LB_PER_KG, fatDirectLbPerWeek = fatRateKg * LB_PER_KG;
+  const [lo, hi] = M.naturalRange;
+  let note;
+  if (onTherapy) {
+    note = `Serum T ${Math.round(T)} vs your natural ${Math.round(B)} ng/dL: ${fmtSign(leanDirectLbPerWeek)} lb/week lean without training at week ${r1(w)} (tapering; ≈${fmtSign(leanRef * LB_PER_KG, 1)} lb over 24 weeks from Huang 2014's +0.6 kg per +100 ng/dL in women${T > M.leanPlateau ? ', held flat above ~600 ng/dL: no study in women shows more lean mass at higher levels' : ''}). ${Math.abs(fatDirectLbPerWeek) >= 0.005 ? `Fat ${fmtSign(fatDirectLbPerWeek)} lb/week (male-range levels: −2.6 kg/yr in trans men, Klaver 2016).` : 'No fat change at this level (none at any dose up to ~210 ng/dL in Huang 2014).'} Training ceiling ×1.00: no study has tested testosterone × training in women.`;
+  } else if (T > hi) {
+    note = `Natural T ${Math.round(T)} ng/dL is above the usual female range (≈${lo}–${hi}, Haring 2012). PCOS is the most common cause; worth a doctor's look. Forge models no muscle effect from a natural level (×1.00).`;
+  } else if (T < lo) {
+    note = `Natural T ${Math.round(T)} ng/dL is below the usual female range (≈${lo}–${hi}); common after removal of the ovaries or on the combined pill. Women build muscle at the same relative rate as men despite far lower T (Roberts 2020), and raising T within the female range didn't change lean mass significantly in Huang 2014, so ×1.00.`;
+  } else {
+    note = `Natural T ${Math.round(T)} ng/dL is in the typical female range (≈${lo}–${hi} ng/dL, Haring 2012). Women build muscle at the same relative rate as men despite ~15× less testosterone (Roberts 2020; Refalo 2025), so ×1.00.`;
+  }
+  if (beyondStudied) note += ` Entered ${Math.round(t0)} ng/dL is beyond any level reported in women or trans men (~${M.studiedMax}): Forge plateaus there and doesn't extrapolate.`;
+  return {
+    leanDirectLbPerWeek, fatDirectLbPerWeek, leanCeilingMult: 1, note, beyondStudied, belowStudied: false,
+    levelUsed: T, baselineUsed: B, onTherapy, ageFactor: 1, sex: 'female', refWeeks: M.refWeeks,
+    lean20Lb: leanRef * LB_PER_KG, fat20Lb: Af * sat * LB_PER_KG, asymptoteLb: A * LB_PER_KG, asymptoteKg: A,
+    cumLeanLb: A * cum * LB_PER_KG, cumFatLb: Af * cum * LB_PER_KG, ceilLowT: 1, ceilAboveNatural: 1,
+  };
+}
+
+export function testosteroneEffect(totalT, { baselineT = null, weeksOn = 0, age = null, sex = 'male' } = {}) {
+  if (sexOf(sex) === 'female') return femaleTestosteroneEffect(totalT, { baselineT, weeksOn, age });
   const M = T_MODEL;
   const raw = num(totalT, 1, 100000);
   const rawBase = num(baselineT, 1, 100000);
@@ -128,8 +196,11 @@ export function testosteroneEffect(totalT, { baselineT = null, weeksOn = 0, age 
   };
 }
 // Bhasin 2001 dose → mean nadir serum T (used only when no on-therapy lab is entered).
-export function testosteroneFromDose(mgPerWeek) {
+// Women (§20): Huang 2014 dose groups up to 25 mg/wk; above that the men's GnRH-suppressed mapping (exogenous T only),
+// which agrees at 25 mg (210 vs 253 ng/dL).
+export function testosteroneFromDose(mgPerWeek, sex = 'male') {
   const d = num(mgPerWeek, 0, 1e5); if (d == null) return null;
+  if (sexOf(sex) === 'female') return Math.round(interp(T_MODEL_F.doseToLevel, d));
   return Math.round(interp(SUPPLEMENTS.trt?.model?.doseToLevel || [[0, 0], [600, 2370]], d));
 }
 
@@ -178,11 +249,96 @@ function ageOf(profile, opts) {
   return { age: 39, assumed: true };
 }
 
+// ---- women (§20): same sleep / age / stress / vitamin D / HbA1c / TSH curves (sex-neutral or studied in both sexes),
+// female testosterone values and cut-offs, and information-only status factors.
+function femaleBaseline(profile, m, { age, ageAssumed, opts, factors, notes, assumptions }) {
+  const fs = femaleStatus(profile, { age });
+  const sl = num(m.sleepHours, 0, 16);
+  const sleepHours = sl ?? AVERAGE_SLEEP;
+  const labT = num(m.totalT, 1, 5000), freeT = num(m.freeT, 0.05, 2000);
+  let totalT, totalTSource;
+  const avg = averageTotalT(age, 'female', { contraception: fs.contraception });
+  if (labT != null) { totalT = labT; totalTSource = 'lab'; }
+  else if (freeT != null) { totalT = freeT * FEMALE_TOTAL_PER_FREE_T; totalTSource = 'freeT'; notes.push(`Total T estimated from free T (${freeT} pg/mL × ${FEMALE_TOTAL_PER_FREE_T} ≈ ${Math.round(totalT)} ng/dL; about 1.2% of a woman's T is free). A total T lab is better.`); }
+  else {
+    totalT = avg; totalTSource = 'assumed';
+    assumptions.push(`Total testosterone: assumed average ≈${avg} ng/dL for a ${age}-year-old woman (LC-MS/MS medians 27 before and 18 after menopause, Kushnir 2010${fs.combinedHormonal ? '; ×0.69 on combined hormonal contraception, Zimmerman 2014' : ''}). Natural female levels don't change the projection.`);
+  }
+  const te0 = testosteroneEffect(totalT, { age, sex: 'female' });
+  factors.push({ id: 'testosterone', label: 'Testosterone', mult: 1, note: te0.note, assumed: totalTSource === 'assumed', level: Math.round(totalT) });
+
+  const hp = hormonePanel(m);
+  const calcFreeT = labT != null && hp.shbg != null ? vermeulenFreeT(labT, hp.shbg) : null;
+  if (calcFreeT != null && freeT == null) notes.push(`Calculated free T ≈${r1(calcFreeT)} pg/mL (Vermeulen formula from total T ${Math.round(labT)} ng/dL and SHBG ${hp.shbg} nmol/L, albumin assumed 4.3 g/dL). Typical for women: ≈0.7–7.3 pg/mL (Haring 2012).`);
+  const L = FEMALE_LABS, hn = [];
+  if (hp.fsh != null && hp.fsh > L.fshPost) hn.push(`FSH ${hp.fsh} IU/L is above ${L.fshPost}: with irregular or absent periods that fits the late menopause transition or postmenopause (STRAW+10). FSH swings across the cycle, so one value isn't a diagnosis.`);
+  if (hp.lh != null && hp.fsh == null && hp.lh > 15 && fs.menopause !== 'post') hn.push(`LH ${hp.lh} IU/L is high outside the mid-cycle surge; drawn on day 2–5 of a cycle with FSH it helps stage menopause.`);
+  if (hp.prolactin != null && hp.prolactin > L.prolactinHigh) hn.push(`Prolactin ${hp.prolactin} ng/mL is above ~${L.prolactinHigh} (typical female upper limit, assay-dependent): it can disturb or stop periods. Repeat it; if confirmed a doctor looks for the cause (medications, pituitary; Melmed 2011 guideline).`);
+  if (hp.estradiol != null && hp.estradiol < L.estradiolLow && fs.menopause === 'pre' && !fs.combinedHormonal && !fs.pregnant) hn.push(`Estradiol ${hp.estradiol} pg/mL is low for a premenopausal woman. With missed periods it can be a sign of low energy availability (IOC REDs consensus, Mountjoy 2023): worth a doctor's look.`);
+  if (hp.zinc != null && hp.zinc < L.zincLow) hn.push(`Zinc ${hp.zinc} µg/dL is below the female cut-off (~${L.zincLow}, morning fasting; Hotz 2003). Worth correcting for health; Forge models no muscle effect.`);
+  if (hp.ferritin != null && hp.ferritin > L.ferritinHigh) hn.push(`Ferritin ${hp.ferritin} ng/mL is high for a woman (WHO 2020: above ~${L.ferritinHigh} suggests iron-overload risk, or inflammation). Worth a doctor's look.`);
+  if (hp.ferritin != null && hp.ferritin < L.ferritinLow) hn.push(`Ferritin ${hp.ferritin} ng/mL is low (under ${L.ferritinLow}, the athlete cut-off; Clénin 2015). Common in menstruating women and female athletes (15–35% of female athlete cohorts, Sim 2019); it hurts energy and training. Women 19–50 need 18 mg iron/day vs 8 mg for men (IOM 2001).`);
+  if (hn.length) factors.push({ id: 'hormones', label: 'Hormone panel', mult: 1, note: hn.join(' ') });
+
+  // status (information only: the evidence doesn't support a modeled body-composition effect)
+  if (fs.combinedHormonal) factors.push({ id: 'contraception', label: 'Combined hormonal contraception', mult: 1,
+    note: `SHBG roughly doubles (+${COC_SHBG_ADD} nmol/L) and free testosterone drops ~${Math.round((1 - COC_FREE_T_FACTOR) * 100)}% (Zimmerman 2014). The effect on muscle gain is unclear: one trial found slightly more quadriceps growth on the pill (Dalgaard 2019), an observational study found less lean gain (Riechman 2022), and performance differences are trivial (Elliott-Sale 2020). Forge models none.` });
+  else if (fs.contraception !== 'none') factors.push({ id: 'contraception', label: 'Contraception', mult: 1, note: 'Progestin-only methods and IUDs have no established effect on muscle gain; Forge models none.' });
+  if (fs.mht) factors.push({ id: 'mht', label: 'Menopausal hormone therapy', mult: 1,
+    note: 'No clear effect on muscle mass (Javed 2019, 12 RCTs: −0.06 kg less lean lost, not significant), about 5% more strength (Greising 2009) and about 7% less abdominal fat (Salpeter 2006). Forge models no lean or fat change.' });
+  if (fs.menopause === 'peri' || fs.menopause === 'post') factors.push({ id: 'menopause', label: fs.menopause === 'peri' ? 'Perimenopause' : 'Postmenopause', mult: 1, assumed: fs.menopauseAssumed,
+    note: `${fs.menopauseAssumed ? `Stage assumed from age ${age} (set it in your body profile). ` : ''}Across the transition fat gain speeds up and lean mass starts to slip, levelling off ~2 years after the final period (SWAN, Greendale 2019). Lifting still builds lean mass after menopause regardless of age (Thomas 2021 meta-analysis). Forge adds no separate drift: intake, training and age drive the projection.` });
+  if (fs.pregnant || fs.postpartum) factors.push({ id: 'pregnancy', label: fs.pregnant ? 'Pregnancy' : fs.breastfeeding ? 'Breastfeeding' : 'Postpartum', mult: 1,
+    note: fs.pregnant ? 'Pregnancy: Forge pauses the body projection and doesn\'t plan a deficit. Energy needs rise ~340 kcal/day in the 2nd and ~450 in the 3rd trimester (Kominiarek 2016); exercise is encouraged in uncomplicated pregnancy (ACOG 2020). Follow your OB or midwife.'
+      : `${fs.breastfeeding ? 'Breastfeeding costs ~500 kcal/day; losing ~0.5–1 kg a month after the first month doesn\'t affect milk (Kominiarek 2016). ' : ''}Postpartum body weight, fluid and hormones change fast for months, so the projection is rough. Check with your provider before a calorie deficit or hard training.` });
+
+  if (sl == null) assumptions.push(`Sleep: assumed average ${AVERAGE_SLEEP} h.`);
+  const sleepMult = interp(SLEEP_CEIL, sleepHours), sleepRet = interp(SLEEP_RETENTION, sleepHours);
+  factors.push({ id: 'sleep', label: 'Sleep', mult: r2(sleepMult), retention: r2(sleepRet), assumed: sl == null,
+    note: sleepHours < 6 ? `${sleepHours} h is short: lower muscle-building ceiling (×${r2(sleepMult)}), and in a deficit ~${Math.round((sleepRet - 1) * 100)}% more lean is lost (Nedeltcheva 2010, men and women: 5.5 h vs 8.5 h shifted diet weight loss from fat to lean).`
+      : sleepHours < 7 ? `${sleepHours} h is a bit short: ceiling ×${r2(sleepMult)}, lean loss in a deficit ×${r2(sleepRet)}. 7–9 h is the baseline.`
+      : sleepHours > 9 ? `${sleepHours} h: fine for recovery. Regularly needing >9 h can signal illness, iron deficiency or overtraining.` : `${sleepHours} h is in the 7–9 h baseline range.` });
+  const ageMult = ageCeiling(age);
+  factors.push({ id: 'age', label: 'Age', mult: r2(ageMult), assumed: ageAssumed,
+    note: ageAssumed ? 'Age unknown (add birth year in Body profile); assuming 39.' : age <= 35 ? `${age}: no age adjustment.` : `${age}: gentle −0.4%/yr past 35 (older lifters still gain well, Peterson 2011; postmenopausal women gain lean mass with training regardless of age, Thomas 2021).` });
+  if (ageAssumed) assumptions.push('Age: assumed 39 (no birth year in your body profile).');
+  const st = num(m.stress, 1, 5), stress = st ?? AVERAGE_STRESS;
+  if (st == null) assumptions.push(`Stress: assumed average ${AVERAGE_STRESS}/5.`);
+  const stressMult = stressCeiling(stress);
+  factors.push({ id: 'stress', label: 'Stress', mult: r2(stressMult), assumed: st == null,
+    note: stress >= 4 ? `High life stress (${stress}/5) slowed strength gains and recovery in trials (Bartholomew 2008; Stults-Kolehmainen 2014): ×${r2(stressMult)}.` : `Stress ${stress}/5: no adjustment.` });
+  const vd = num(m.vitD, 1, 300), vitD = vd ?? AVERAGE_VITD;
+  if (vd == null) assumptions.push(`Vitamin D: assumed US adult average ≈${AVERAGE_VITD} ng/mL.`);
+  const vitDMult = interp(VITD_CEIL, vitD);
+  factors.push({ id: 'vitD', label: 'Vitamin D', mult: r2(vitDMult), assumed: vd == null, level: vitD,
+    note: vitD < 20 ? `${vitD} ng/mL is deficient (<20): small penalty (×${r2(vitDMult)}). Correcting it may help muscle function a little.` : vitD < 30 ? `${vitD} ng/mL: adequate for muscle by most guidelines (some call <30 "insufficient"); no effect modeled.` : vitD > 100 ? `${vitD} ng/mL is high; levels above ~100–150 risk toxicity. Review your dose.` : `${vitD} ng/mL: sufficient.` });
+  const a1c = num(m.hba1c, 3, 20), tsh = num(m.tsh, 0.001, 200);
+  let a1cMult = 1;
+  if (a1c != null) {
+    a1cMult = a1c >= 6.5 ? 0.97 : 1;
+    factors.push({ id: 'hba1c', label: 'HbA1c', mult: a1cMult, level: a1c,
+      note: a1c >= 6.5 ? `${a1c}% is in the diabetes range (≥6.5): see a physician; small ceiling penalty.` : a1c >= 5.7 ? `${a1c}% is prediabetes range (5.7–6.4). Lifting and fat loss improve insulin sensitivity; avoid compounds that raise glucose (MK-677, GH).` : `${a1c}%: normal.` });
+  }
+  if (tsh != null) factors.push({ id: 'tsh', label: 'TSH', mult: 1, level: tsh,
+    note: tsh > 10 ? `${tsh} mIU/L suggests an underactive thyroid (more common in women): it lowers calorie burn and energy. See a physician; Forge doesn't adjust for it.` : tsh > 4.5 ? `${tsh} mIU/L is mildly high (subclinical range); recheck. Effect on calorie burn is small.` : tsh < 0.4 ? `${tsh} mIU/L is low (possible overactive thyroid, or over-replacement). See a physician.` : `${tsh} mIU/L: normal.` });
+  const labDate = parseDate(m.labDate), today = parseDate(opts?.date) || new Date();
+  if (labDate && (today - labDate) / 864e5 > 365) notes.push('Your labs are over a year old; values may have changed.');
+  const leanCeilingMult = sleepMult * ageMult * stressMult * vitDMult * a1cMult;
+  return {
+    leanCeilingMult: clamp(leanCeilingMult, 0.4, 1.2), leanRetentionMult: clamp(sleepRet, 0.5, 2.5), partitionShift: 0, tdeeDelta: 0,
+    leanDirectLbPerWeek: 0, fatDirectLbPerWeek: 0, factors, notes, assumptions,
+    levels: { totalT: Math.round(totalT * 10) / 10, totalTSource, freeT, calcFreeT: calcFreeT != null ? r1(calcFreeT) : null, vitD, vitDSource: vd == null ? 'assumed' : 'lab', hba1c: a1c, tsh, sleepHours, stress, age, ageAssumed, ...hp, sex: 'female', female: fs },
+    _t: te0, _vitDMult: vitDMult,
+  };
+}
+
 export function metabolicBaseline(profile, opts = {}) {
   profile = profile && typeof profile === 'object' ? profile : {};
   const m = profile.metabolic && typeof profile.metabolic === 'object' ? profile.metabolic : {};
   const { age, assumed: ageAssumed } = ageOf(profile, opts);
   const factors = [], notes = [], assumptions = [];
+  const sex = sexOf(profile);
+  if (sex === 'female') return femaleBaseline(profile, m, { age, ageAssumed, opts, factors, notes, assumptions });
 
   const sl = num(m.sleepHours, 0, 16);
   const sleepHours = sl ?? AVERAGE_SLEEP;
@@ -319,6 +475,7 @@ export function resolveDose(entryDose, model) {
 export function stackAt(profile, date) {
   const list = Array.isArray(profile?.supplements) ? profile.supplements : [];
   const out = new Map();
+  const sex = sexOf(profile);
   for (const e of list) {
     if (!e || typeof e !== 'object' || !SUPPLEMENTS[e.id]) continue;
     if (e.active === false && !e.end) continue;
@@ -333,7 +490,7 @@ export function stackAt(profile, date) {
       const prevWins = prev.phase === 'on' && phase !== 'on' ? true : prev.phase !== 'on' && phase === 'on' ? false : (prev.start || '') <= (start || '');
       if (prevWins) continue;
     }
-    out.set(e.id, { entry: e, item: SUPPLEMENTS[e.id], start, end, phase, weeksOn, weeksOff });
+    out.set(e.id, { entry: e, item: itemFor(SUPPLEMENTS[e.id], sex), start, end, phase, weeksOn, weeksOff });
   }
   return [...out.values()];
 }
@@ -344,6 +501,7 @@ const BOUNDS = { ceil: [0.4, 2.0], ret: [0.4, 2.5], part: [-0.1, 0.1], tdee: [-4
 const ANABOLIC = new Set(['trt', 'enobosarm', 'lgd4033', 'hgh', 'mk677']);
 // Items whose effect is a change in your own serum testosterone; handled together so they combine into one level.
 const T_KINDS = new Set(['tShift', 'tEndogenous']);
+const FEMALE_SHIFT_NOTE = 'Studied in men only: no trial shows it changes testosterone or muscle in women, so Forge models no effect (and raising a woman\'s own testosterone within the female range didn\'t change lean mass in Huang 2014).';
 
 function rampFrac(weeks, rampW) { return rampW > 0 ? clamp(weeks / rampW, 0, 1) : 1; }
 export function bmiOf(profile, bodyweightLb) {
@@ -408,6 +566,9 @@ export function modifiersAt(profile, date, opts = {}) {
   const base = metabolicBaseline(profile, { age: opts?.age, date: dateStr });
   const age = base.levels.age;
   const m = profile.metabolic || {};
+  const female = base.levels.sex === 'female';
+  const sex = female ? 'female' : 'male';
+  let ffmiDelta = 0;             // women only: FFMI points the reachable ceiling rises with exogenous T (see trt branch)
   let ceil = base.leanCeilingMult, ret = base.leanRetentionMult, part = 0, tdee = 0, intake = 0, water = 0;
   let leanD = base.leanDirectLbPerWeek, fatD = base.fatDirectLbPerWeek;
   const contributions = [], warnings = [], risks = [], notes = [...base.notes], assumptions = [...base.assumptions];
@@ -438,6 +599,7 @@ export function modifiersAt(profile, date, opts = {}) {
           note: capped ? `Serum total T ≈${Math.round(tInfo.level)} vs your natural ${Math.round(tInfo.natural)} ng/dL. Forge credits muscle only up to ≈${Math.round(tInfo.leanLevel)} ng/dL: ${fmtSign(applied.leanDirectLbPerWeek)} lb/week lean without training, training ceiling ×${r2(applied.leanCeilingMult)}.` : tInfo.effect.note };
       })(),
       stackUsed: useStack !== false,
+      ...(female ? { ffmiCeilingDelta: Math.round(ffmiDelta * 100) / 100 } : {}),
     };
   };
   if (useStack === false) return finish();
@@ -462,33 +624,55 @@ export function modifiersAt(profile, date, opts = {}) {
     const labOnTherapy = labDate && trtA.start && weeksBetween(trtA.start, labDate) >= 2;
     if (level == null && labOnTherapy && base.levels.totalTSource === 'lab') {
       level = base.levels.totalT; source = 'totalT-on-therapy';
-      natural = averageTotalT(age); naturalSource = 'assumed';
+      natural = averageTotalT(age, sex, { contraception: base.levels.female?.contraception }); naturalSource = 'assumed';
       notes.push(`Your total T lab (${labDate}) was drawn after starting testosterone, so Forge reads it as your on-therapy level and assumes an average natural level (${natural} ng/dL).`);
       assumptions.push(`Natural testosterone: assumed average ≈${natural} ng/dL (your lab was drawn on therapy).`);
     }
     if (level == null && !dose.assumed) {
-      level = testosteroneFromDose(dose.value) ?? 600; source = 'dose';
-      warnings.push(`No on-therapy testosterone lab entered: level estimated from your dose (${+dose.value.toFixed(1)} mg/week ≈ ${level} ng/dL mean nadir, Bhasin 2001 dose groups). Enter your trough lab for accuracy.`);
+      level = testosteroneFromDose(dose.value, sex) ?? (female ? 78 : 600); source = 'dose';
+      warnings.push(female
+        ? `No on-therapy testosterone lab entered: level estimated from your dose (${+dose.value.toFixed(1)} mg/week ≈ ${level} ng/dL nadir; Huang 2014 dose groups in women${dose.value > 25 ? ', and above 25 mg/week the men\'s dose-level data (Bhasin 2001), because no larger doses were studied in women' : ''}). Enter your trough lab for accuracy.`
+        : `No on-therapy testosterone lab entered: level estimated from your dose (${+dose.value.toFixed(1)} mg/week ≈ ${level} ng/dL mean nadir, Bhasin 2001 dose groups). Enter your trough lab for accuracy.`);
     }
     if (level == null) {
-      level = 600; source = 'assumed';
-      warnings.push('No on-therapy testosterone lab or dose entered: assuming a mid-normal replacement level (≈600 ng/dL). Enter your trough lab for accuracy.');
+      if (female) {
+        level = testosteroneFromDose(dose.value, 'female'); source = 'assumed';
+        warnings.push(`No on-therapy testosterone lab or dose entered: assuming the lowest dose in the female dose-response trial (${+dose.value.toFixed(2)} mg/week ≈ ${level} ng/dL, Huang 2014). Enter your trough lab for accuracy.`);
+      } else {
+        level = 600; source = 'assumed';
+        warnings.push('No on-therapy testosterone lab or dose entered: assuming a mid-normal replacement level (≈600 ng/dL). Enter your trough lab for accuracy.');
+      }
     }
     if (naturalSource === 'assumed' && source !== 'totalT-on-therapy') warnings.push(`No natural (pre-therapy) total T entered: assuming the average for your age (≈${natural} ng/dL). Testosterone's effect is measured against your own natural level.`);
-    const te = testosteroneEffect(level, { baselineT: natural, weeksOn: trtA.weeksOn, age });
+    const te = testosteroneEffect(level, { baselineT: natural, weeksOn: trtA.weeksOn, age, sex });
     // swap the natural T factor for the on-therapy one
-    const natTe = naturalSource === base.levels.totalTSource ? te0 : testosteroneEffect(natural, { age });
+    const natTe = naturalSource === base.levels.totalTSource ? te0 : testosteroneEffect(natural, { age, sex });
     ceil = ceil / te0.leanCeilingMult * te.leanCeilingMult;
     leanD = leanD - te0.leanDirectLbPerWeek + te.leanDirectLbPerWeek;
     fatD = fatD - te0.fatDirectLbPerWeek + te.fatDirectLbPerWeek;
-    if (te.beyondStudied) warnings.push(`Testosterone ${Math.round(num(m.onTrtT, 0) ?? level)} ng/dL is beyond the studied range (~${T_MODEL.studiedMax}): extrapolation not modeled, so Forge plateaus there.`);
+    if (female) {
+      // The natural female FFMI ceiling would otherwise cut the testosterone-driven lean mass off: raise the reachable
+      // ceiling by exactly the lean mass the studies show T adds (asymptote, in FFMI points at her height).
+      const hM = (num(profile.body?.heightIn, 48, 90) ?? 64) * 0.0254;
+      ffmiDelta = Math.max(0, te.asymptoteKg || 0) / (hM * hM);
+    }
+    if (te.beyondStudied) warnings.push(female
+      ? `Testosterone ${Math.round(num(m.onTrtT, 0) ?? level)} ng/dL is beyond any level reported in women or trans men (~${T_MODEL_F.studiedMax}): extrapolation not modeled, so Forge plateaus there.`
+      : `Testosterone ${Math.round(num(m.onTrtT, 0) ?? level)} ng/dL is beyond the studied range (~${T_MODEL.studiedMax}): extrapolation not modeled, so Forge plateaus there.`);
     tInfo = { natural, naturalSource, level: te.levelUsed, source, effect: te };
     contributions.push({ id: 'trt', name: trtA.item.name, evidence: trtA.item.evidence, kind: 'stack', dose, rampPct: Math.round(100 * (1 - Math.exp(-trtA.weeksOn / T_MODEL.tauWeeks))),
       assumedAverage: source === 'dose' || source === 'assumed' || naturalSource === 'assumed',
       text: `${te.note} Ceiling vs your natural level ×${r2(te.leanCeilingMult / natTe.leanCeilingMult)}; fat ${fmtSign(te.fatDirectLbPerWeek)} lb/week.${source === 'dose' ? ` Level estimated from dose ${doseText(dose)}.` : ''}` });
     levelRisks(trtA, te.levelUsed);
-    if (shifts.length) notes.push('Testosterone boosters and HPG-axis therapies (ashwagandha, tongkat ali, clomiphene, hCG, aromatase inhibitors) do nothing on testosterone therapy, because your own production is suppressed. Ignored.');
-    for (const s of shifts) contributions.push({ id: s.item.id, name: s.item.name, evidence: s.item.evidence, kind: 'stack', text: 'No effect while on testosterone therapy (your own production is suppressed by it).' });
+    if (shifts.length && !female) notes.push('Testosterone boosters and HPG-axis therapies (ashwagandha, tongkat ali, clomiphene, hCG, aromatase inhibitors) do nothing on testosterone therapy, because your own production is suppressed. Ignored.');
+    for (const s of shifts) contributions.push({ id: s.item.id, name: s.item.name, evidence: s.item.evidence, kind: 'stack', text: female ? (s.item.model?.femaleNote || FEMALE_SHIFT_NOTE) : 'No effect while on testosterone therapy (your own production is suppressed by it).' });
+  } else if (shifts.length && female) {
+    // Women (§20): every endogenous-testosterone item was studied in men (or found nothing in women), and raising a
+    // woman's own T within the female range didn't change lean mass (Huang 2014). No change modeled.
+    for (const s of shifts) {
+      const dose = resolveDose(s.entry.dose, s.item.model);
+      contributions.push({ id: s.item.id, name: s.item.name, evidence: s.item.evidence, kind: 'stack', dose, text: s.item.model?.femaleNote || FEMALE_SHIFT_NOTE });
+    }
   } else if (shifts.length) {
     const ctx = { baselineT: base.levels.totalT, lh: base.levels.lh, bmi: bmiOf(profile, bw), inDeficit, sleepHours: base.levels.sleepHours, zinc: base.levels.zinc, prolactin: base.levels.prolactin };
     const T0 = base.levels.totalT;
@@ -628,7 +812,10 @@ export function modifiersAt(profile, date, opts = {}) {
     if (goal === 'lean_bulk' || num(profile.nutrition?.calories, 500) != null || num(profile.nutrition?.surplus, 1) != null) warnings.push('Adderall blunts appetite: a planned surplus usually fails on medication days. Eat breakfast before the dose, drink calories midday, and make dinner big (Nutrition → Eating on Adderall).');
     if (base.levels.sleepHours < 7) warnings.push('Stimulant timing and short sleep: an earlier dose and no afternoon caffeine protect sleep, and sleep protects muscle.');
   }
-  if (inDeficit && base.levels.totalTSource === 'assumed') {
+  if (female && inDeficit && base.levels.female?.cycling) {
+    warnings.push('A big, long deficit plus hard training is how low energy availability happens. Below ~30 kcal per kg of fat-free mass a day (food minus exercise), the hormone pulses that drive your cycle were disrupted within 5 days (Loucks & Thuma 2003). Missed or irregular periods are a red flag (IOC REDs consensus, Mountjoy 2023): keep the deficit moderate, protein high, and talk to a doctor if your cycle changes.');
+  }
+  if (!female && inDeficit && base.levels.totalTSource === 'assumed') {
     warnings.push('A big, long deficit is the fastest way to push your own testosterone down: in Ranger-school-type studies (Friedl 2000) men on ~1,000 kcal/day deficits with heavy training reached near-castrate levels, and a bodybuilder prepping to 4.5% body fat fell from 922 to 227 ng/dL (Rossow 2013). It recovers within days to weeks of eating normally again. Keep the deficit moderate and protein high.');
   }
   if (isOn('caffeine')) {

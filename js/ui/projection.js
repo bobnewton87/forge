@@ -17,7 +17,12 @@
 //   Apply writes through targets.setTargets (nutrition incl. the dated phases list; cardio target with re-plan;
 //   adherence). The full repeating phase plan is also kept in profile.nutrition.phasePlan (setTargets only stores
 //   the dated list), which the engine prefers when present.
+// CONTRACT-NOTE (§20 Female mode): estMuscle(p, heightIn, sex) uses the female FFMI scale; opts3D/mount3D options carry
+//   `sex` (from the baseline) so a renderer can draw the female body; a paused projection (pregnancy) shows its own
+//   card; women see waist:hip (WHO 0.85) in the key numbers and table instead of the V-taper; energy availability
+//   below 30 kcal/kg lean mass is flagged on the end card.
 import { esc } from './components.js';
+import { BODY } from '../engine/sex.js';
 import { ds, fmtShort, parseDs, addDays, daysBetween } from '../util.js';
 import * as BC from '../engine/bodycomp.js';
 import * as PJ from '../engine/projection.js';
@@ -77,10 +82,13 @@ export function mount3D(key, root, host, opts) {
   });
 }
 // Rough 0..1 development scores when the engine doesn't provide series[i].muscle (from FFMI).
-export function estMuscle(p, heightIn = 69) {
+export function estMuscle(p, heightIn = 69, sex = 'male') {
   const lean = Number(p?.leanLb) || 0; if (!lean) return null;
   const m = heightIn * 0.0254, ffmi = lean / 2.20462 / (m * m);
-  const v = clampN((ffmi - 16) / 9, 0, 1);
+  // DXA scale (§20b): FFMI 15.2 → 0, 24.2 → 1 for men (was 16 → 25 on the skinfold scale; −0.8 so the same body keeps the same
+  // score); women 12.5 → 21.5 (female DXA-scale data, 3.5 below the original male anchor).
+  const lo = sex === 'female' ? 12.5 : 15.2;
+  const v = clampN((ffmi - lo) / 9, 0, 1);
   return { chest: v, delts: v, lats: v, arms: v, abs: v, quads: v + 0.08 > 1 ? 1 : v + 0.08, calves: v, traps: v };
 }
 // §16c: measured bone lengths { upperArmL, … } (finite, > 0 only) from a series point's shape, a baseline's
@@ -98,7 +106,7 @@ export function shapeOf(p, heightIn) {
   return sh;
 }
 export function opts3D(p, heightIn, extra = {}) {
-  return { shape: shapeOf(p, heightIn), muscle: p?.muscle || estMuscle(p, heightIn), bodyFatPct: p?.bodyFatPct ?? null, ...extra };
+  return { shape: shapeOf(p, heightIn), muscle: p?.muscle || estMuscle(p, heightIn, extra.sex), bodyFatPct: p?.bodyFatPct ?? null, ...extra };
 }
 
 // ---------------- macros (engine macrosFor with fallback) ----------------
@@ -419,7 +427,7 @@ function compute(store, o) {
   const today = ds(I.now), end = ds(addDays(I.now, weeks * 7 - 1));
   const planned = I.sessions.filter(s => s.status === 'planned' && s.date >= today && s.date <= end && !(s.plan && s.plan.kind === 'rest' && !(s.blocks || []).length));
   const nutritionOn = I.profile.nutrition && I.profile.nutrition.mode && I.profile.nutrition.mode !== 'off';
-  const goalBf = Number(I.targets?.goals?.goalBodyFatPct) || Number(I.profile.body?.goalBodyFat) || 12;
+  const goalBf = Number(I.targets?.goals?.goalBodyFatPct) || Number(I.profile.body?.goalBodyFat) || (I.b?.sex === 'female' ? BODY.female.goalBodyFat : BODY.male.goalBodyFat);
   return { ...I, res, weeks, planned, nutritionOn, end, kcal, maint, pg, fatPct, plan, adherence: adhOf(I, o), cmod: cmodOf(I, o), goalBf };
 }
 
@@ -428,7 +436,9 @@ export function nutritionContext(store, { weeks = 12, pg = null, fatPct = null }
   const o = { ...getOpts(store), kcal: null, pg, fatPct, cdelta: 0, until: null, weeks, ph: null };
   const D = compute(store, o);
   if (!D.res || !D.b?.weightLb) return null;
-  return { maint: D.maint, intake: D.kcal, weight: D.b.weightLb, pg: D.pg, fatPct: D.fatPct, weeks, lab: safe(() => labData(D, o, weeks, D.maint, D.pg, D.fatPct), null) };
+  return { maint: D.maint, intake: D.kcal, weight: D.b.weightLb, pg: D.pg, fatPct: D.fatPct, weeks, lab: safe(() => labData(D, o, weeks, D.maint, D.pg, D.fatPct), null),
+    // §20: for the energy-availability check on Nutrition (lean mass from the baseline, net exercise kcal/day from the projection).
+    leanLb: D.b.comp?.leanLb ?? (D.b.bodyFatPct != null ? D.b.weightLb * (1 - D.b.bodyFatPct / 100) : null), exerciseKcal: D.res?.energy?.exerciseKcal ?? null, sex: D.b.sex || 'male' };
 }
 
 // Formula maintenance (kcal/day) with the current plan, for the food-log status on Measurements.
@@ -441,7 +451,7 @@ export function maintenanceEstimate(store) {
 // ---------------- render pieces ----------------
 const SITE_ROWS = [['waist', 'Waist', 'down'], ['shoulders', 'Shoulders', 'up'], ['chest', 'Chest', 'up'], ['arm', 'Arms', 'up', 'armL', 'armR'], ['forearm', 'Forearm', 'up'], ['neck', 'Neck', 'up'], ['hips', 'Hips', 'down'], ['thigh', 'Thighs', 'up', 'thighL', 'thighR'], ['calf', 'Calves', 'up', 'calfL', 'calfR']];
 
-function keyNums(p, p0, H) {
+function keyNums(p, p0, H, sex = 'male') {
   if (!p) return '';
   const sh = p.shape || p.measurements || {}, sh0 = p0.shape || p0.measurements || {};
   const sw = s => s.ratios?.shoulderToWaist ?? ((s.shape || s.measurements || {}).shoulders && (s.shape || s.measurements || {}).waist ? (s.shape || s.measurements).shoulders / (s.shape || s.measurements).waist : null);
@@ -453,12 +463,20 @@ function keyNums(p, p0, H) {
     return `<div><b class="num">${ok ? (dec === 2 ? v.toFixed(2) : f1(v)) + `<small>${u}</small>` : '—'}</b><span>${l}</span>${!same ? `<em class="num" style="color:${col}">${dl == null || Math.abs(dl) < (dec === 2 ? 0.005 : 0.05) ? '—' : dec === 2 ? (dl > 0 ? '+' : '−') + Math.abs(dl).toFixed(2) : sgn(dl)}</em>` : ''}</div>`;
   };
   const fat = q => q.fatLb ?? (q.weightLb - q.leanLb);
+  const whr = s => s.ratios?.waistToHip ?? ((s.shape || s.measurements || {}).waist && (s.shape || s.measurements || {}).hips ? (s.shape || s.measurements).waist / (s.shape || s.measurements).hips : null);
   return `<div class="bd-keys ${same ? '' : 'delta'}">${cell(p.weightLb, p0.weightLb, 'lb', 'weight', 'none')}${cell(p.bodyFatPct, p0.bodyFatPct, '%', 'body fat', 'down')}${cell(p.leanLb, p0.leanLb, 'lb', 'lean', 'up')}
-    ${cell(fat(p), fat(p0), 'lb', 'fat', 'down')}${cell(sh.waist, sh0.waist, '″', 'waist', 'down')}${cell(sw(p), sw(p0), '', 'V-taper', 'up', 2)}</div>`;
+    ${cell(fat(p), fat(p0), 'lb', 'fat', 'down')}${cell(sh.waist, sh0.waist, '″', 'waist', 'down')}${sex === 'female' ? cell(whr(p), whr(p0), '', 'waist:hip', 'down', 2) : cell(sw(p), sw(p0), '', 'V-taper', 'up', 2)}</div>`;
 }
 
 function setupCard(b, res) {
   const note = res && !(res.series || []).length && res.assumptions && res.assumptions[0];
+  if (res?.paused === 'pregnancy') {
+    return `<div class="card hero center bd-setup" data-paused="pregnancy">
+    <h2>Projection paused</h2>
+    <p class="small muted mt" style="margin-top:6px">${esc(note || 'Projection paused during pregnancy.')}</p>
+    <button class="btn btn-block mt" data-nav="measure">Body profile</button>
+  </div>`;
+  }
   return `<div class="card hero center bd-setup">
     <div class="bd-setup-sil">${silhouetteSVG({}, { bodyFatPct: 18, heightIn: b?.heightIn || 69 })}</div>
     <h2>See where your training takes you</h2>
@@ -470,11 +488,11 @@ function setupCard(b, res) {
 
 function scrubIdx(o, S) { const n = S.length - 1; return o.view === 'now' ? 0 : clampN(o.scrub == null ? n : o.scrub, 0, n); }
 
-function heroSvg(S, i, H) {
+function heroSvg(S, i, H, sex = 'male') {
   const p0 = S[0], p = S[i];
-  if (i === 0) return `<div class="bd-sil-wrap big">${silhouetteSVG(shapeOf(p0, H), { bodyFatPct: p0.bodyFatPct, heightIn: H })}</div>`;
-  return `<div class="bd-pair"><div class="bd-col"><div class="bd-cap">Now</div><div class="bd-sil-wrap">${silhouetteSVG(shapeOf(p0, H), { bodyFatPct: p0.bodyFatPct, heightIn: H })}</div></div><div class="bd-arrow">→</div>
-    <div class="bd-col then"><div class="bd-cap">${esc(whenText(p.week ?? i))}</div><div class="bd-sil-wrap">${silhouetteSVG(shapeOf(p, H), { bodyFatPct: p.bodyFatPct, heightIn: H, compare: { measurements: shapeOf(p0, H) } })}</div></div></div>`;
+  if (i === 0) return `<div class="bd-sil-wrap big">${silhouetteSVG(shapeOf(p0, H), { bodyFatPct: p0.bodyFatPct, heightIn: H, sex })}</div>`;
+  return `<div class="bd-pair"><div class="bd-col"><div class="bd-cap">Now</div><div class="bd-sil-wrap">${silhouetteSVG(shapeOf(p0, H), { bodyFatPct: p0.bodyFatPct, heightIn: H, sex })}</div></div><div class="bd-arrow">→</div>
+    <div class="bd-col then"><div class="bd-cap">${esc(whenText(p.week ?? i))}</div><div class="bd-sil-wrap">${silhouetteSVG(shapeOf(p, H), { bodyFatPct: p.bodyFatPct, heightIn: H, sex, compare: { measurements: shapeOf(p0, H) } })}</div></div></div>`;
 }
 function heroInfo(D, o) {
   const S = D.res.series, i = scrubIdx(o, S), p = S[i], H = D.b.heightIn || 69;
@@ -482,7 +500,7 @@ function heroInfo(D, o) {
   const lbl = i === 0 ? 'Now' : `${whenText(wk)} · ${fmtShort(p.date)}${p.date.slice(0, 4) !== S[0].date.slice(0, 4) ? ' ' + p.date.slice(0, 4) : ''}`;
   const ph = p.phase && i ? `<span class="bd-phtag" style="color:${PHASE_COL[p.phase.goal] || 'var(--muted)'}">${esc(p.phase.atMaintenance ? 'Maintenance' : p.phase.label || '')}</span>` : '';
   return `<div class="row between bd-scrubhead"><div class="bd-cap">${esc(lbl)}${i ? ' <span class="muted">vs now</span>' : ''} ${ph}</div><div class="tiny muted">${esc(horizonText(D.weeks))}</div></div>
-    ${keyNums(p, S[0], H)}`;
+    ${keyNums(p, S[0], H, D.b?.sex)}`;
 }
 
 function horizonGroup(D, o) {
@@ -759,7 +777,7 @@ function outputs(D, o) {
   const shape0 = s0.shape || s0.measurements || b.measurements || {}, shapeN = sN.shape || sN.measurements || shape0;
   const past = bodyLog.filter(e => e.d < s0.date && daysBetween(e.d, s0.date) <= 42).map(e => ({ d: e.d, v: e.w }));
   const mk = key => S.map(p => ({ d: p.date, v: p[key], lo: p.low?.[key], hi: p.high?.[key] }));
-  const goalBf = D.goalBf || profile.body?.goalBodyFat || 12;
+  const goalBf = D.goalBf || profile.body?.goalBodyFat || BODY.male.goalBodyFat;
   const phs = (res.phases || []).filter(ph => ph.endWeek > ph.startWeek);
   const ceil = res.ceiling;
   const charts = `
@@ -767,7 +785,7 @@ function outputs(D, o) {
       <div class="mt">${lineChart({ id: 'pw', data: mk('weightLb'), past, unit: 'lb', today: s0.date, phases: phs })}</div>
       ${waterNote(S) ? `<div class="small bd-water">💧 ${waterNote(S)}</div>` : ''}
       <div class="tiny muted">Shaded = realistic low–high range. Grey dots = recent weigh-ins.</div></div>
-    <div class="card"><div class="row between"><div class="card-title">Body fat</div><div class="small muted num">${f1(s0.bodyFatPct)} → <b style="color:var(--text)">${f1(sN.bodyFatPct)}</b>%</div></div>
+    <div class="card"><div class="row between"><div class="card-title">Body fat <span class="tiny muted" title="Every method is converted to the DXA scan scale so all numbers compare directly">DXA-equivalent</span></div><div class="small muted num">${f1(s0.bodyFatPct)} → <b style="color:var(--text)">${f1(sN.bodyFatPct)}</b>%</div></div>
       <div class="mt">${lineChart({ id: 'pb', data: mk('bodyFatPct'), unit: '%', target: goalBf, targetLabel: `goal ${goalBf}%`, color: 'var(--accent2)', today: s0.date, phases: phs })}</div>
       <div class="label" style="margin-top:10px">What your weight is made of</div>
       <div class="mt" style="margin-top:4px">${compChart(S, 340, 150, phs)}</div>
@@ -793,7 +811,8 @@ function outputs(D, o) {
   const sw0 = s0.ratios?.shoulderToWaist, swN = sN.ratios?.shoulderToWaist;
   const table = `<div class="card" style="padding:6px 14px">
     <table class="bd-ptable num"><thead><tr><th></th><th>Now</th><th>${esc(fmtShort(sN.date))}</th><th>Δ</th></tr></thead><tbody>${rows}
-    ${sw0 && swN ? `<tr><th>Shoulder:waist</th><td>${sw0.toFixed(2)}</td><td>${swN.toFixed(2)}</td><td style="color:${swN > sw0 ? 'var(--good)' : 'var(--muted)'};font-weight:750">${swN - sw0 >= 0.005 ? '+' + (swN - sw0).toFixed(2) : '—'}</td></tr>` : ''}</tbody></table>
+    ${sw0 && swN ? `<tr><th>Shoulder:waist</th><td>${sw0.toFixed(2)}</td><td>${swN.toFixed(2)}</td><td style="color:${swN > sw0 ? 'var(--good)' : 'var(--muted)'};font-weight:750">${swN - sw0 >= 0.005 ? '+' + (swN - sw0).toFixed(2) : '—'}</td></tr>` : ''}
+    ${s0.ratios?.waistToHip && sN.ratios?.waistToHip ? `<tr><th>Waist:hip</th><td>${s0.ratios.waistToHip.toFixed(2)}</td><td>${sN.ratios.waistToHip.toFixed(2)}</td><td style="color:${sN.ratios.waistToHip < s0.ratios.waistToHip ? 'var(--good)' : 'var(--muted)'};font-weight:750">${Math.abs(sN.ratios.waistToHip - s0.ratios.waistToHip) >= 0.005 ? (sN.ratios.waistToHip > s0.ratios.waistToHip ? '+' : '−') + Math.abs(sN.ratios.waistToHip - s0.ratios.waistToHip).toFixed(2) : '—'}</td></tr>` : ''}</tbody></table>
     <p class="tiny muted" style="margin:6px 0 8px">Limbs are projected from the average of left and right.${est.size ? ` "est." = not measured yet; drawn from a typical build. <a href="#/measure">Measure it</a>.` : ''}</p></div>`;
 
   const ms = res.milestones || [];
@@ -821,7 +840,9 @@ function outputs(D, o) {
 
   return `<div class="card bd-endcard"><div class="row between"><div class="label">In ${esc(horizonText(weeks))} · ${esc(fmtShort(sN.date))}${sN.date.slice(0, 4) !== s0.date.slice(0, 4) ? ' ' + sN.date.slice(0, 4) : ''}</div><span class="badge ${confCls}">${conf} confidence</span></div>${deltas}
       ${waterNote(S) ? `<p class="tiny muted" style="margin-top:10px">💧 ${waterNote(S)}</p>` : ''}
-      ${res.bodyFatAssumed ? '<p class="tiny" style="color:var(--warn);margin-top:10px">Body fat was assumed (no height/neck/waist yet), so these numbers are very rough.</p>' : ''}</div>
+      ${res.bodyFatAssumed ? '<p class="tiny" style="color:var(--warn);margin-top:10px">Body fat was assumed (no height/neck/waist yet), so these numbers are very rough.</p>' : ''}
+      ${res.energyAvailability?.low ? `<p class="tiny" style="color:var(--warn);margin-top:10px" data-ea-warn>Energy availability drops to ≈${f1(res.energyAvailability.min)} kcal per kg of lean mass a day (food minus exercise). Under ~30 the hormones that run your cycle are disrupted (Loucks &amp; Thuma 2003; IOC REDs 2023): eat more around training or ease the deficit.</p>` : ''}
+      ${res.caution === 'postpartum' ? '<p class="tiny" style="color:var(--warn);margin-top:10px">Postpartum: this projection is very rough. Check with your provider before a deficit or hard training.</p>' : ''}</div>
     ${labCard(D, o)}
     <div class="section-title">Trends</div>${charts}
     <div class="section-title">Projected measurements</div>${table}
@@ -858,7 +879,7 @@ export function render(ctx) {
   const hero = `<div class="card hero bd-hero">
     <div class="row between"><div class="tabs bd-viewseg" style="flex:0 0 auto">${[['now', 'Now'], ['proj', 'Projected']].map(([v, l]) => `<button class="${(i === 0 ? 'now' : 'proj') === v ? 'active' : ''}" data-view="${v}">${l}</button>`).join('')}</div>
       <span class="badge" id="pjBadge">${esc(horizonText(D.weeks))}</span></div>
-    <div class="bd-stage" id="pjStage" data-h="${H}">${heroSvg(S, i, H)}</div>
+    <div class="bd-stage" id="pjStage" data-h="${H}">${heroSvg(S, i, H, D.b?.sex)}</div>
     <div class="bd-scrub"><input type="range" class="bd-range" id="pjScrub" min="0" max="${S.length - 1}" step="1" value="${i}" style="--pct:${(i / (S.length - 1)) * 100}%" aria-label="Point in time">
       <div class="row between tiny muted" id="pjScrubLbl">${scrubLabels(S)}</div></div>
     <div id="pjStackChips">${stackChips(D, o)}</div>
@@ -902,7 +923,7 @@ export function bind(root, ctx, params = {}) {
     // Blink-compare (Bob's choice): one solid body at a time, no ghost outline. Framing is pinned to the union of
     // the now and end-of-horizon bodies so flipping Now ↔ Projected (or scrubbing) shows true size change.
     const n = S.length - 1;
-    return opts3D(p, H, { compareShape: null, compareMode: 'none', frameShape: [shapeOf(S[0], H), shapeOf(S[n], H)],
+    return opts3D(p, H, { sex: cur.D.b?.sex || 'male', compareShape: null, compareMode: 'none', frameShape: [shapeOf(S[0], H), shapeOf(S[n], H)],
       label: i > 0 ? `${whenText(p.week ?? i)} · ${f1(p.bodyFatPct)}% BF` : `Now · ${f1(p.bodyFatPct)}% BF`, ghostLabel: '' });
   };
   let handle = null, lastUp = 0, upT = 0;
@@ -922,7 +943,7 @@ export function bind(root, ctx, params = {}) {
     const { S, i } = viewPt();
     root.querySelectorAll('[data-view]').forEach(x => x.classList.toggle('active', x.dataset.view === (i === 0 ? 'now' : 'proj')));
     $('#pjHeroInfo').innerHTML = heroInfo(cur.D, o);
-    if (handle) push3D(); else stage.innerHTML = heroSvg(S, i, H);
+    if (handle) push3D(); else stage.innerHTML = heroSvg(S, i, H, cur.D.b?.sex);
   };
   const scrub = $('#pjScrub');
   const syncScrub = () => {

@@ -28,7 +28,7 @@
 
 import { EXERCISES, getEx } from '../data/exercises.js';
 import { REGIONS, GROUPS, PRESETS, regionsFor } from '../data/muscles.js';
-import { SCULPT_GOALS, DEFAULT_SCULPT_GOALS } from '../data/sculpt.js';
+import { SCULPT_GOALS, DEFAULT_SCULPT_GOALS, defaultSculptGoals } from '../data/sculpt.js';
 import { DEFAULT_LOCATIONS, expandEquipment, canDo } from '../data/equipment.js';
 import { suggest } from './progression.js';
 import { recommend, muscleStatus, groupStatus } from './recovery.js';
@@ -795,7 +795,7 @@ export function buildWorkout({
   const def = resolveStyle(style, profile);
   style = def.id;
   const eq = expandEquipment(location.equipment || ['bodyweight']);
-  const activeGoals = (profile.sculptGoals || DEFAULT_SCULPT_GOALS).filter(g => SCULPT_GOALS[g]);
+  const activeGoals = (profile.sculptGoals || defaultSculptGoals(profile)).filter(g => SCULPT_GOALS[g]);   // §20: female default when unset
   const rationale = [];
 
   // --- resolve targets (or ask recovery for a recommendation)

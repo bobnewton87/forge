@@ -16,6 +16,12 @@ import { bodyGeometry } from '../engine/anthro.js';
 import * as NU from '../engine/nutrition.js';
 import { silhouetteSVG } from './silhouette.js';
 import { lineChart, bindCharts, f1, safe, mount3D, body3d, supports3D, estMuscle, maintenanceEstimate, shapeOf } from './projection.js';
+import { ffmiBand, sexOf } from '../engine/sex.js';
+import { sexFieldsHTML, readFemaleFields, showFemaleFields, bindSexInfo, maybeOfferFemaleGoals } from './female.js';
+// CONTRACT-NOTE (§20 Female mode): the body-profile card holds the sex selector (with "what changes" info) and, for
+//   women, optional menopause / pregnancy / contraception / hormone-therapy fields. The snapshot uses female FFMI bands,
+//   the Gallagher healthy body-fat range, and waist:hip (WHO 0.85) instead of the male shoulder:waist golden ratio;
+//   neck/chest tips use female wording.
 const baseline = a => BC.baseline(a);
 
 export function title() { return 'Measurements'; }
@@ -64,13 +70,19 @@ function latestSites(meas) {
 }
 const ACT = [['desk', 'Desk', 'Mostly sitting'], ['light', 'Light', 'On your feet some'], ['active', 'Active', 'On your feet most of the day']];
 const SRC = { manual: 'scale / DEXA', navy: 'Navy tape formula', estimate: 'BMI estimate (rough)' };
+// §20b: one canonical DXA-equivalent body-fat scale; how the number was made, in words.
+const BFM = { manual: 'your entry', onesite: 'Army waist formula', navy: 'Navy tape formula', rfm: 'waist-to-height', bmi: 'BMI (rough)', blend: 'blend of tape formulas' };
+const BF_METHOD_OPTS = [['dxa', 'DXA scan'], ['bia', 'Smart scale (BIA)'], ['calipers', 'Calipers'], ['other', 'Other']];
+const DXA_WHY = 'DXA-equivalent: every method is converted to the DXA scan scale, so tape, smart-scale and scan numbers compare directly and match the milestones and 3D model.';
 let editProfile = false;
 let cur3d = null;
 
-export function ffmiScale(v) {
-  if (v == null) return null;
-  return v < 18 ? ['Below average', 'muted'] : v < 20 ? ['Average', 'muted'] : v < 22 ? ['Above average, athletic', 'good'] : v < 23.5 ? ['Very muscular', 'good'] : v < 25 ? ['Elite natural range', 'accent'] : ['Rare without drugs', 'warn'];
-}
+export function ffmiScale(v, sex = 'male') { return ffmiBand(v, sex); }
+// Female wording for tape tips (§20).
+const FEMALE_TIPS = {
+  neck: 'Just below the larynx (voice box), tape level and snug. Look straight ahead and keep your shoulders relaxed.',
+  chest: 'Around the fullest part of the bust, in a thin non-padded bra, after a normal exhale. Bust size can change a little across your cycle, so compare at the same point when you can.',
+};
 
 function profileCard(p, open) {
   const b = p.body || {};
@@ -78,7 +90,7 @@ function profileCard(p, open) {
   const missing = !b.heightIn || !b.birthYear;
   if (!open && !missing) {
     return `<div class="card tight bd-profrow"><div class="grow"><div class="label">Body profile</div>
-      <div class="small">${ft}′${inch}″ · born ${b.birthYear} · ${esc(b.sex || 'male')} · ${b.trainingMonths ?? 0} mo lifting · ${esc(b.activity || 'desk')}</div></div>
+      <div class="small">${ft}′${inch}″ · born ${b.birthYear} · ${esc(b.sex || 'male')}${b.sex === 'female' && b.pregnancy && b.pregnancy !== 'none' ? ` · ${esc(b.pregnancy)}` : ''} · ${b.trainingMonths ?? 0} mo lifting · ${esc(b.activity || 'desk')}</div></div>
       <button class="btn btn-sm btn-ghost" data-editprof>Edit</button></div>`;
   }
   return `<div class="card ${missing ? 'bd-attn' : ''}" id="bd-prof">
@@ -90,8 +102,7 @@ function profileCard(p, open) {
       <div class="field"><label>Birth year</label><input type="number" inputmode="numeric" id="pBy" value="${b.birthYear ?? ''}" placeholder="1987"></div>
       <div class="field"><label>Months lifting</label><input type="number" inputmode="numeric" id="pTm" value="${b.trainingMonths ?? ''}" placeholder="7"></div>
     </div>
-    <div class="label">Sex</div>
-    <div class="tabs mt" style="margin-top:6px" data-pseg="sex">${[['male', 'Male'], ['female', 'Female']].map(([v, l]) => `<button class="${(b.sex || 'male') === v ? 'active' : ''}" data-v="${v}">${l}</button>`).join('')}</div>
+    ${sexFieldsHTML(b, { prefix: 'msx' })}
     <div class="label mt">Daily activity (outside workouts)</div>
     <div class="tabs" style="margin-top:6px" data-pseg="activity">${ACT.map(([v, l]) => `<button class="${(b.activity || 'desk') === v ? 'active' : ''}" data-v="${v}">${l}</button>`).join('')}</div>
     <p class="tiny muted" style="margin-top:6px" id="pActHint">${esc(ACT.find(a => a[0] === (b.activity || 'desk'))[2])}</p>
@@ -99,7 +110,7 @@ function profileCard(p, open) {
   </div>`;
 }
 
-function formCard(meas, log, heightIn = null) {
+function formCard(meas, log, heightIn = null, sex = 'male') {
   const last = latestSites(meas);
   const lastW = log.length ? log[log.length - 1].w : null;
   const field = (k, label, tip, ph, req, unit = 'in') => `<div class="field bd-field">
@@ -109,13 +120,14 @@ function formCard(meas, log, heightIn = null) {
       <div class="bd-tip tiny" data-tipbox="${k}" hidden>${esc(tip)}</div></div>`;
   return `<div class="card" id="bd-log">
     <div class="row between"><div class="card-title">New entry</div><input type="date" id="mDate" value="${ds()}" max="${ds()}" class="bd-date"></div>
-    <p class="small muted" style="margin-top:6px">Fill in what you have. <span class="bd-req">•</span> Weight, waist and neck are enough for a body-fat estimate. Placeholders show your last values.</p>
+    <p class="small muted" style="margin-top:6px">Fill in what you have. <span class="bd-req">•</span> Weight, waist${sex === 'female' ? ', hips' : ''} and neck are enough for a body-fat estimate. Placeholders show your last values.</p>
     <div class="grid2 mt">
       ${field('weight', 'Weight', 'Morning, after the bathroom, before eating or drinking. Same scale each time.', lastW, true, 'lb')}
-      ${SITES.map(s => (s.pair ? `<div class="bd-pairhead">${esc(s.pair)} · left / right</div>` : '') + field(s.k, s.label, s.tip, last[s.k], s.req)).join('')}
+      ${SITES.map(s => (s.pair ? `<div class="bd-pairhead">${esc(s.pair)} · left / right</div>` : '') + field(s.k, sex === 'female' && s.k === 'chest' ? 'Chest (bust)' : s.label, (sex === 'female' && FEMALE_TIPS[s.k]) || s.tip, last[s.k], s.req || (sex === 'female' && s.k === 'hips'))).join('')}
       <div class="bd-pairhead bd-lenhead">Bone lengths (optional, improves the 3D model)<div class="tiny muted" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:2px">Bony landmark to bony landmark, left and right. Measure once; redo only if unsure.</div></div>
       ${LEN_SITES.map(s => (s.pair ? `<div class="bd-pairhead">${esc(s.pair)} · left / right${typicalLen(s, heightIn) ? `<div class="tiny muted" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:2px">${esc(typicalLen(s, heightIn))}</div>` : ''}</div>` : '') + field(s.k, s.label, s.tip, last[s.k], false)).join('')}
-      ${field('bodyFat', 'Body fat (optional)', 'Only if you have a reading from a smart scale, calipers or a DEXA scan. DEXA is the most accurate; smart scales swing with hydration. Leave blank to use the tape formula.', last.bodyFat, false, '%')}
+      ${field('bodyFat', 'Body fat (optional)', 'Only if you have a reading from a smart scale, calipers or a DXA scan; pick which below. Forge converts it to the DXA scale (smart scales and calipers usually read 3-4 points lower than DXA) and blends it with the tape formulas. Leave blank to use the tape formulas.', last.bodyFat, false, '%')}
+      <div class="field bd-field"><label for="m-bfm">Measured with</label><select id="m-bfm" data-bfm>${BF_METHOD_OPTS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></div>
     </div>
     <button class="btn btn-primary btn-block" data-savem>Save measurements</button>
   </div>`;
@@ -144,7 +156,8 @@ function asymNotes(meas, b) {
 function snapshot(b, meas = []) {
   if (!b || !b.weightLb) return `<div class="card"><div class="empty" style="padding:16px"><div class="big">📏</div><h3>No snapshot yet</h3><p>Log your weight (plus waist and neck) above to see body fat, lean mass and your ratios.</p></div></div>`;
   const c = b.comp || {}, m = b.measurements || {}, r = b.ratios || {};
-  const ff = ffmiScale(c.ffmiNormalized ?? c.ffmi);
+  const sex = sexOf(b);
+  const ff = ffmiScale(c.ffmiNormalized ?? c.ffmi, sex);
   const sw = r.shoulderToWaist;
   const swPct = sw ? Math.min(100, ((sw - 1.2) / (1.75 - 1.2)) * 100) : 0;
   const goldPct = ((1.618 - 1.2) / (1.75 - 1.2)) * 100;
@@ -153,12 +166,14 @@ function snapshot(b, meas = []) {
   const miss = (b.missingInfo || []).filter(x => x.field !== 'weight');
   return `<div class="card hero bd-snap">
     <div class="row bd-snaprow" style="align-items:flex-start;gap:12px">
-      <div class="bd-snap-sil" id="msFig">${silhouetteSVG(m, { bodyFatPct: b.bodyFatPct, heightIn: b.heightIn || 69 })}</div>
+      <div class="bd-snap-sil" id="msFig">${silhouetteSVG(m, { bodyFatPct: b.bodyFatPct, heightIn: b.heightIn || 69, sex })}</div>
       <div class="grow">
         <div class="label">Current · ${fmtShort(b.weightDate || b.date)}</div>
         <div class="bd-big num">${f1(b.weightLb)}<small> lb</small></div>
         <div class="bd-big num" style="color:var(--accent2)">${b.bodyFatPct != null ? f1(b.bodyFatPct) + '<small>% fat</small>' : '<small>body fat ?</small>'}</div>
-        <div class="tiny muted">${b.bodyFatSource ? 'from ' + esc(SRC[b.bodyFatSource] || b.bodyFatSource) : 'add waist + neck + height'}${b.bodyFatSource === 'manual' && b.navyBodyFatPct ? ` · tape says ${f1(b.navyBodyFatPct)}%` : ''}</div>
+        <div class="tiny muted" data-bfdxa>${b.bodyFatPct != null ? `DXA-equivalent · ${esc(BFM[b.bodyFatMethod] || SRC[b.bodyFatSource] || '')}${b.bodyFatRange ? ` · likely ${f1(b.bodyFatRange.low)}–${f1(b.bodyFatRange.high)}%` : ''}` : `add waist + neck${sex === 'female' ? ' + hips' : ''} + height`}${b.bodyFatSource === 'manual' && b.bodyFatSources?.navy != null ? ` · tape ${f1(b.bodyFatSources.navy)}%` : ''}</div>
+        ${b.bodyFatPct != null ? `<div class="tiny muted" style="margin-top:2px">${esc(DXA_WHY)}</div>` : ''}
+        ${b.bodyFatCategory ? `<div class="tiny" style="color:var(--${b.bodyFatCategory.cls === 'good' ? 'good' : 'warn'})" data-bfcat>${esc(b.bodyFatCategory.label)} <span class="muted">(healthy ${b.bodyFatCategory.healthy[0]}–${b.bodyFatCategory.healthy[1]}% for women your age, Gallagher 2000)</span></div>` : ''}
         <div class="grid2 mt" style="gap:8px">
           ${tile(c.leanLb != null ? f1(c.leanLb) : null, 'lb', 'Lean mass')}
           ${tile(c.fatLb != null ? f1(c.fatLb) : null, 'lb', 'Fat mass')}
@@ -169,15 +184,25 @@ function snapshot(b, meas = []) {
       ${tile(c.ffmiNormalized != null ? f1(c.ffmiNormalized) : c.ffmi != null ? f1(c.ffmi) : null, '', 'FFMI', ff ? `<span style="color:var(--${ff[1] === 'muted' ? 'muted' : ff[1]})">${ff[0]}</span>` : 'needs height + BF')}
       ${tile(c.bmi != null ? f1(c.bmi) : null, '', 'BMI', c.bmi != null ? 'Overstates fat in muscular people' : 'needs height')}
     </div>
-    <div class="bd-ratio mt">
+    ${sex === 'female' ? femaleRatio(r) : `<div class="bd-ratio mt">
       <div class="row between"><div class="label">Shoulder : waist</div><div class="num bold">${sw ? sw.toFixed(2) : '—'} <span class="muted small" style="font-weight:600">/ 1.618 ideal</span></div></div>
       <div class="bar mt" style="margin-top:8px"><i style="width:${swPct}%;background:linear-gradient(90deg,var(--accent2),var(--accent))"></i><span class="tick" style="left:${goldPct}%"></span></div>
       <div class="tiny muted" style="margin-top:6px">${sw ? (sw >= 1.618 ? 'At the "Adonis" golden ratio. 👑' : sw >= 1.5 ? 'Clear V-taper. Wider delts + a smaller waist close the gap.' : 'Side delts and lats widen the top; dropping fat shrinks the waist.') : 'Measure shoulders and waist to see your V-taper.'}</div>
-    </div>
+    </div>`}
     <div class="row between mt"><div class="label">Waist : height</div><div class="num bold">${wh ? wh.toFixed(2) : '—'} <span class="small" style="font-weight:600;color:${wh == null ? 'var(--muted)' : wh < 0.45 ? 'var(--good)' : wh < 0.5 ? 'var(--accent2)' : 'var(--warn)'}">${wh == null ? '' : wh < 0.45 ? 'lean' : wh < 0.5 ? 'healthy' : 'above 0.5'}</span></div></div>
     ${asymNotes(meas, b)}
     ${miss.length ? `<div class="bd-miss mt"><div class="label">Missing for better accuracy</div><ul>${miss.map(x => `<li><b>${esc(x.label)}</b> <span class="muted">${esc(x.why)}</span></li>`).join('')}</ul></div>` : ''}
   </div>`;
+}
+
+// Women: waist-to-hip (WHO: ≥0.85 marks higher metabolic risk in women) instead of the male golden-ratio bar (§20).
+function femaleRatio(r) {
+  const whr = r.waistToHip, pct = whr ? Math.min(100, Math.max(0, ((whr - 0.6) / (1.0 - 0.6)) * 100)) : 0, cut = ((0.85 - 0.6) / 0.4) * 100;
+  return `<div class="bd-ratio mt" data-whr>
+      <div class="row between"><div class="label">Waist : hip</div><div class="num bold">${whr ? whr.toFixed(2) : '—'} <span class="muted small" style="font-weight:600">/ under 0.85</span></div></div>
+      <div class="bar mt" style="margin-top:8px"><i style="width:${pct}%;background:linear-gradient(90deg,var(--good),var(--warn))"></i><span class="tick" style="left:${cut}%"></span></div>
+      <div class="tiny muted" style="margin-top:6px">${whr ? (whr < 0.85 ? 'Under the WHO cut-off for women (0.85). Fat loss lowers it; glute growth raises your hips.' : 'At or above the WHO cut-off for women (0.85), linked with higher metabolic risk. Fat loss brings the waist down first.') : 'Measure waist and hips to see your waist-to-hip ratio.'}</div>
+    </div>`;
 }
 
 function avgLR(e, k) {
@@ -249,13 +274,13 @@ export function render(ctx, params = {}) {
   const b = safe(() => baseline({ profile: p, bodyLog: log, measurements: meas, now: new Date() }), null);
   const open = editProfile || params.edit === true;
   const H = b?.heightIn || 69;
-  cur3d = b && b.weightLb ? { shape: shapeOf({ shape: b.shape, measurements: b.measurements }, H), muscle: b.muscle || estMuscle({ leanLb: b.comp?.leanLb }, H), bodyFatPct: b.bodyFatPct ?? null } : null;
+  cur3d = b && b.weightLb ? { shape: shapeOf({ shape: b.shape, measurements: b.measurements }, H), muscle: b.muscle || estMuscle({ leanLb: b.comp?.leanLb }, H, b.sex), bodyFatPct: b.bodyFatPct ?? null, sex: b.sex || 'male' } : null;
   return `<div class="page-head"><p class="sub">Where you're starting, measured properly.</p></div>
     ${profileCard(p, open)}
     <div class="section-title">Snapshot <button class="link" data-nav="projection">Projection ›</button></div>
     ${snapshot(b, meas)}
     <div class="section-title">Log measurements</div>
-    ${formCard(meas, log, p.body?.heightIn || H)}
+    ${formCard(meas, log, p.body?.heightIn || H, sexOf(p))}
     <div class="section-title">History</div>
     ${history(meas, log)}
     <div class="section-title">Food log <span class="tiny muted" style="text-transform:none;letter-spacing:0">optional</span></div>
@@ -275,13 +300,17 @@ export function bind(root, ctx) {
       seg.querySelectorAll('button').forEach(x => x.classList.toggle('active', x === btn));
       segVal[seg.dataset.pseg] = btn.dataset.v;
       if (seg.dataset.pseg === 'activity') prof.querySelector('#pActHint').textContent = ACT.find(a => a[0] === btn.dataset.v)[2];
+      if (seg.dataset.pseg === 'sex') showFemaleFields(prof, btn.dataset.v);
     }));
+    bindSexInfo(prof, ctx);
     prof.querySelector('[data-saveprof]').onclick = () => {
       const ft = parseFloat(prof.querySelector('#pFt').value), inch = parseFloat(prof.querySelector('#pIn').value) || 0;
       const by = parseInt(prof.querySelector('#pBy').value, 10), tm = parseFloat(prof.querySelector('#pTm').value);
       const yr = new Date().getFullYear();
-      const cur = store.getProfile().body || {};
+      const before = store.getProfile();
+      const cur = before.body || {};
       const body = { ...cur, ...segVal };
+      if ((body.sex || 'male') === 'female') Object.assign(body, readFemaleFields(prof));
       if (ft > 0) {
         const h = ft * 12 + inch;
         if (h < 48 || h > 90) { ctx.toast('Height looks off'); return; }
@@ -292,6 +321,7 @@ export function bind(root, ctx) {
       editProfile = false;
       store.updateProfile({ body });
       ctx.toast('Profile saved');
+      maybeOfferFemaleGoals(ctx, before);
     };
   }
 
@@ -317,6 +347,7 @@ export function bind(root, ctx) {
     if (!Object.keys(vals).length) { ctx.toast('Enter at least one value'); return; }
     if (document.activeElement) document.activeElement.blur();
     const { weight, ...rest } = vals;
+    if (rest.bodyFat != null) rest.bodyFatMethod = root.querySelector('[data-bfm]')?.value || 'dxa';   // §20b
     const n = Object.keys(vals).length;
     if (weight) store.logBodyweight(d, weight);
     if (Object.keys(rest).length) store.logMeasurement({ d, ...rest });

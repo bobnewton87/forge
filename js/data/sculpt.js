@@ -10,6 +10,12 @@
 // partials on knee extension), Kassiano et al. 2023 (lengthened-partial calf raises),
 // Vispute et al. 2011 (ab training doesn't burn belly fat). Schoenfeld et al. 2017 is the
 // classic weekly-volume dose-response meta-analysis.
+//
+// CONTRACT-NOTE (§20 Female mode): new goal `glute_shelf` (upper glutes / glute med; tagged on the abduction moves,
+//   single-leg bridge and donkey kick). Goals may carry `female: { summary?, science?, tips? }` overrides (Bob-specific
+//   or male-only wording: running background, "10-12% for most men", Adderall); read them with goalFor(goal, sex).
+//   DEFAULT_SCULPT_GOALS stays Bob's list; FEMALE_DEFAULT_SCULPT_GOALS is for NEW female profiles only, via
+//   defaultSculptGoals(sexOrProfile). Existing profiles' goals are never changed silently (the UI offers a switch).
 
 const G = (id, name, group, regions, summary, science, tips, extraWeeklySets) =>
   ({ id, name, group, regions, emphasisTag: id, summary, science, tips, extraWeeklySets });
@@ -276,6 +282,18 @@ export const SCULPT_GOALS = {
     ],
     2),
 
+  glute_shelf: G('glute_shelf', 'Upper Glutes (Hip Shelf)', 'glutes',
+    { glute_med: 1, glutes: 0.5 },
+    'Fuller upper and side glutes. Add hip abduction (machine, cable, band) to your hip thrusts and squats.',
+    'Hip thrusts and squats grow the glute max well but barely touch the glute med and min on the side of the hip (Plotkin et al. 2023, MRI: medius + minimus essentially unchanged after 9 weeks of either). The first MRI study to compare the two directly (Attarieh et al. 2026, 10 weeks, one leg each) found cable hip abduction grew the UPPER glute max most (upper +10% vs lower +1%) plus the glute med/min (+4%), while hip extension grew mostly the lower glute max (+14% low, +5% high). It is one small, new study, so treat it as promising rather than settled. EMG work points the same way (clams, side steps, single-leg bridges and quadruped hip extensions favour the glute med and upper glute max; Selkowitz et al. 2013), but EMG alone does not predict growth. Hip and pelvis shape (where the "hip dip" sits) is bone structure and fat distribution, which training cannot change; women\'s hip and thigh fat is also the slowest to come off (Karpe & Pinnick 2015).',
+    [
+      'Keep a hip-extension lift (hip thrust, deep squat or split squat) as the base, then add 2-4 sets of hip abduction: machine (lean slightly forward), cable, or band.',
+      'Abduction works well at 12-20 reps taken close to failure; light-to-moderate loads grow muscle as well as heavy ones when sets are hard (Schoenfeld et al. 2017; in women, Stefanaki et al. 2019).',
+      'At home: banded side steps, clamshells, side-lying abduction and single-leg bridges.',
+      'Train it 2-3x per week; it is low-fatigue and pairs well with upper-body work.',
+    ],
+    3),
+
   calves: G('calves', 'Calves', 'calves',
     { calves: 1 },
     'Bigger calves. Very heavily genetic, but stretch-position training gives you the best chance.',
@@ -313,4 +331,68 @@ export const SCULPT_GOALS = {
     2),
 };
 
+// ---- female mode (§20): wording that assumed Bob (a male ex-marathoner) or a male physique.
+const FEMALE_TEXT = {
+  six_pack: {
+    science: 'You cannot spot-reduce belly fat. Vispute et al. (2011) found six weeks of ab exercises did not reduce abdominal fat in men or women, and an MRI study of one-arm training found no local fat loss in women (Kostek et al. 2007). Abs show when overall body fat is low. No study has measured the exact level for either sex; in women it is typically well above men\'s, and female physique competitors average about 13% on stage (DXA; Hulmi et al. 2017), a level that usually costs regular periods. Training still matters: thicker, hypertrophied abs show at a higher body fat. Abs grow best with loaded flexion in moderate rep ranges, not hundreds of crunches. The number and symmetry of visible segments is set by your tendinous intersections, which are genetic.',
+    tips: [
+      'Do 6-10 sets per week of loaded ab work, 2-3x per week: cable crunches, weighted decline crunches, hanging leg raises, ab wheel rollouts.',
+      'Progress like any lift: add load or reps, 8-15 reps, roughly 1-2 reps from failure.',
+      'Make it real spinal flexion. Curl ribcage toward pelvis instead of just bending at the hips.',
+      'Diet sets visibility: a moderate deficit with high protein. Keep food minus exercise above ~30 kcal per kg of lean mass a day; missed periods mean you are under-fuelled.',
+      'Planks are good for bracing but poor for hypertrophy once you can hold 60 s. Load them or progress to ab wheel.',
+    ],
+  },
+  glutes: {
+    summary: 'Bigger, stronger glutes. Deep squats, split squats, hip thrusts and hinges.',
+    science: 'Lifting reliably grows the glute max (meta-analysis: moderate effect, SMD 0.71; Krause Neto et al. 2025). Hip thrusts and back squats grew the glutes about equally in a 9-week MRI study of mostly women (Plotkin et al. 2023); the squat also grew the quads and adductors, so the hip thrust is more glute-specific, not more glute-effective. In well-trained women, squats grew glute thickness more than hip thrusts (Barbalho et al. 2020). Depth matters: full squats grew the glute max about three times more than half squats (Kubo et al. 2019), and full range beats partials (Kassiano et al. 2023). Glute shape (how high or round) is partly bone structure and fat distribution, which training cannot change, and hip and thigh fat is the slowest fat to lose (Karpe & Pinnick 2015).',
+    tips: [
+      'Base: one deep squat pattern (hack squat, leg press, goblet or Bulgarian split squat) plus one hip thrust or bridge, 2x per week.',
+      'Add a hinge (RDL or trap bar deadlift) for the stretched position and hamstrings.',
+      'Go deep: full-range squats and split squats beat half reps for glute growth.',
+      'Hip thrusts: 8-15 reps, 1 s squeeze at the top. Add the Upper Glutes goal for abduction work.',
+    ],
+  },
+  calves: {
+    science: 'Calf size is one of the most genetic body parts because muscle-belly length (high vs low calves) varies a lot. Kassiano et al. (2023) found calf raises done in the bottom (stretched) half produced more gastrocnemius growth than full-range or top-half raises. A deep pause at the bottom is the key cue. Straight-knee raises train the gastrocnemius and bent-knee raises train the soleus. Running and walking build endurance far more than size.',
+    tips: [
+      'Standing or leg-press calf raises: 2 s pause in the deepest stretch, no bouncing, 10-20 reps.',
+      'After failure, add bottom-half partials.',
+      'Seated (bent-knee) raises for soleus, 15-25 reps.',
+      'Train them 2-3x per week. Calves recover quickly.',
+    ],
+  },
+  quad_sweep: {
+    tips: [
+      'Hack squat or leg press with a narrow-ish stance and deep range, 8-12 reps.',
+      'Leg extensions: get full depth at the bottom, and use bottom-half partials after failure. Leaning back stretches the rectus femoris more.',
+      'Heels-elevated goblet squats or cyclist squats at home.',
+      'About 10-16 sets a week grows them; 6-10 maintains.',
+    ],
+  },
+  hamstrings: {
+    tips: [
+      'Prefer seated leg curls over lying ones when both are available, 10-15 reps.',
+      'DB or trap bar RDLs, 8-12 reps, hips back, deep stretch with a neutral spine.',
+      'At home: single-leg RDLs, sliding/towel leg curls, or Nordic curls (eccentric) anchored under a couch.',
+      'About 8-12 sets a week grows them; 4-8 maintains.',
+    ],
+  },
+};
+for (const [id, f] of Object.entries(FEMALE_TEXT)) if (SCULPT_GOALS[id]) SCULPT_GOALS[id].female = f;
+
+// The goal as it reads for `sex` (female wording merged). Numbers (regions, extraWeeklySets) are the same for both.
+export function goalFor(goal, sex) {
+  const g = typeof goal === 'string' ? SCULPT_GOALS[goal] : goal;
+  if (!g || sex !== 'female' || !g.female) return g || null;
+  return { ...g, ...g.female, female: undefined };
+}
+
 export const DEFAULT_SCULPT_GOALS = ['triceps_mass', 'shoulder_width', 'six_pack', 'lat_width', 'upper_chest'];
+// Starting goals for NEW female profiles (a preference default, not a physiological claim): lower-body shape plus
+// shoulders and a strong upper back, the commonly requested female physique goals. Users change them freely.
+export const FEMALE_DEFAULT_SCULPT_GOALS = ['glutes', 'glute_shelf', 'hamstrings', 'shoulder_width', 'back_thickness'];
+export function defaultSculptGoals(sexOrProfile) {
+  const s = typeof sexOrProfile === 'string' ? sexOrProfile : sexOrProfile?.body?.sex ?? sexOrProfile?.sex;
+  return s === 'female' ? [...FEMALE_DEFAULT_SCULPT_GOALS] : [...DEFAULT_SCULPT_GOALS];
+}

@@ -25,10 +25,24 @@
 //   'bmi'|null), bodyFatSources:{ manual, navy, rfm, bmi } (every available value), bodyFatUncertainty
 //   (± points for the chosen value), bodyFatSpread (max − min of the available sources, or null),
 //   bodyFatRange:{ low, high }, bodyFatNote (plain English).
+// CONTRACT-NOTE (§20b DXA-equivalent scale, supersedes the Phase-3 body-fat note): bodyFatPct is DXA-equivalent. A manual
+//   entry's `bodyFatMethod` ('dxa'|'bia'|'calipers'|'other', blank = 'dxa') converts it; a DXA value is used as-is, otherwise
+//   every available DXA-scale estimate (manual, one-site Army, Navy, RFM, Deurenberg) is blended by inverse variance.
+//   bodyFatMethod: 'manual'|'onesite'|'navy'|'rfm'|'bmi'|'blend'; bodyFatSource: 'manual' if a manual value exists, else 'navy' if
+//   neck+waist(+hips) give the Navy estimate, else 'estimate'. bodyFatSources = DXA-scale values { manual, onesite, navy, rfm, bmi },
+//   bodyFatSourcesRaw = formula outputs as computed / entered; navyBodyFatPct stays the raw Hodgdon value. bodyFatUncertainty =
+//   "likely" ±(≥3.5; ±2 for a DXA scan), bodyFatRange (likely) and bodyFatRange95 (±2×); bodyFatScale 'dxa'; bodyFatManualMethod.
+//   Exports BF_DXA, BF_METHODS, oneSiteBodyFat(), toDxaScale().
 // CONTRACT-NOTE: tdee() returns extra { neatFactor, days, sessions } and sessionCalories() counts
 //   GROSS kcal; tdee() subtracts the resting calories already covered by BMR+NEAT during the
 //   session minutes so exercise calories are not double-counted.
+// CONTRACT-NOTE (§20 Female mode): baseline() reads sex through sex.js sexOf(); ratios gain waistToHip (both sexes,
+//   additive), and female profiles get female-specific missingInfo wording (no V-taper, hips for waist:hip) plus
+//   baseline.bodyFatCategory (Gallagher 2000 healthy range for her age) and baseline.femaleStatus (sex.femaleStatus).
+//   The formulas were already sex-aware (Navy, Mifflin-St Jeor, RFM, Deurenberg); Katch-McArdle is sex-neutral
+//   because it runs on lean mass.
 import { estimateCalories } from '../data/cardio.js';
+import { sexOf, bodyFatCategory, femaleStatus } from './sex.js';
 import { ds, parseDs, addDays, daysBetween } from '../util.js';
 
 const LB_PER_KG = 2.20462;
@@ -128,6 +142,13 @@ const MISSING_INFO = {
   thigh: ['Thigh', 'Draws the silhouette and tracks leg size.'],
   bodyFat: ['Body fat %', 'Without a measured or Navy body fat, a waist- or BMI-based estimate is used, which can be off by 4-6 points for muscular or very lean people.'],
 };
+// Female wording where the male text assumes a V-taper physique (§20).
+const MISSING_INFO_FEMALE = {
+  hips: ['Hips', 'Needed for the female Navy body-fat formula and your waist-to-hip ratio (a WHO health marker: under 0.85 for women).'],
+  shoulders: ['Shoulders (around, widest point)', 'Tracks shoulder and upper-back growth on the tape.'],
+  chest: ['Chest (bust)', 'Tracks upper-body change. Breast tissue is mostly fat, so this one also moves with fat loss.'],
+  arm: ['Arms (flexed)', 'Tracks arm muscle (triceps and biceps) and draws the silhouette.'],
+};
 
 function latest(list, key) {
   let best = null;
@@ -137,11 +158,72 @@ function latest(list, key) {
   }
   return best;
 }
+// Most recent entry carrying `key` → { d, v, e } (e = the whole measurement entry).
+function latestEntry(list, key) {
+  let best = null;
+  for (const e of list) {
+    const v = pos(e?.[key]);
+    if (v != null && e.d && (!best || e.d >= best.d)) best = { d: e.d, v, e };
+  }
+  return best;
+}
 // Most recent of several keys (e.g. thighL or legacy thigh).
 function latestOf(list, keys) {
   let best = null;
   for (const k of keys) { const l = latest(list, k); if (l && (!best || l.d > best.d)) best = l; }
   return best;
+}
+
+// ---------------------------------------------------------------- DXA-equivalent scale (§20b)
+// ONE canonical body-fat scale for both sexes: DXA-equivalent. Formulas built on other references are shifted onto it,
+// then blended (docs/research/body-fat-dxa-scale.md). Sources (PubMed):
+//  - One-site Army equations (abdomen at the navel + weight), referenced to DXA, 1,259 men / 643 women, externally
+//    validated: Taylor KM et al. 2024, Obes Sci Pract 10:e747, doi:10.1002/osp4.747 (men RMSE 3.35, bias −0.39, +1.02 at
+//    40+; women RMSE 4.11, bias +0.08). Independent check vs DXA: Florez 2024, Br J Nutr 132:1143, doi:10.1017/S0007114524002216.
+//  - Navy/Army (Hodgdon-type) circumference equations read LOW vs DXA: men −4.8 overall and −3.2 at 40+, women −1.7 overall
+//    and +1.5 at 40+ (Taylor 2024); −6.0 in both sexes in young recruits (Foulis SA et al. 2023, Front Physiol 14:1183836,
+//    doi:10.3389/fphys.2023.1183836) → +3 men (the conservative end), +1.7 women (Taylor's overall bias), wide error.
+//    (Potter AW et al. 2022, doi:10.3389/fphys.2022.868627, tested an abdominal-circumference equation, not Hodgdon: −2.5 men.)
+//  - RFM was fit to NHANES DXA: validation bias +0.5 (men), +0.9 (women) (Woolcott & Bergman 2018, Sci Rep 8:10980,
+//    doi:10.1038/s41598-018-29362-1) → −0.5 / −0.9. (Its waist was taken at the iliac crest, and it is less accurate in lean people.)
+//  - Deurenberg was fit to densitometry (Br J Nutr 1991, doi:10.1079/bjn19910073); no DXA validation by sex was found, and
+//    BMI equations read 1.8–3.2 HIGH vs a 4-compartment model (Nickerson 2018, J Strength Cond Res, doi:10.1519/JSC.0000000000001774)
+//    → offset 0, low weight.
+//  - Manual readings: skinfold equations read low vs DXA/4C (Jackson-Pollock 7-site −4.8 vs 4C, Nickerson 2018; female judokas
+//    ~+2.7 needed, Pineau 2015, PMID 25678207) → +3 men / +3.5 women; 8-point BIA read −3.6 (men) / −4.3 (women) vs DXA in 1,250
+//    adults (Balampanos 2026, Healthcare, doi:10.3390/healthcare14121807) → +3.5 / +4. Both biases are proportional (larger when
+//    lean), so a fixed offset is a simplification.
+export const BF_DXA = {
+  onesite: { male: { a: -27.05, b: 2.06, c: -0.12 }, female: { a: -8.06, b: 1.25, c: -0.004 } },
+  onesiteAgeBias: { male: { from: 40, add: -1.0 }, female: null },     // Taylor 2024: men 40+ read +1.02 high
+  offset: { navy: { male: 3.0, female: 1.7 }, rfm: { male: -0.5, female: -0.9 }, bmi: { male: 0, female: 0 }, onesite: { male: 0, female: 0 } },
+  // ~1 SD error of each DXA-scale estimate (inverse-variance weights): one-site RMSE (Taylor 2024), RFM spread
+  // (Woolcott 2018), Navy SD of differences 3.7–4.8 plus offset uncertainty, Deurenberg SEE 4.1 plus reference mismatch.
+  se: { onesite: { male: 3.4, female: 4.1 }, rfm: { male: 4.2, female: 4.9 }, navy: { male: 5, female: 5 }, bmi: { male: 6, female: 6 } },
+  manual: {
+    dxa: { label: 'DXA scan', offset: { male: 0, female: 0 }, se: 2 },
+    bia: { label: 'smart-scale (BIA)', offset: { male: 3.5, female: 4.0 }, se: 5 },
+    calipers: { label: 'caliper', offset: { male: 3.0, female: 3.5 }, se: 4.5 },
+    other: { label: 'body-fat', offset: { male: 0, female: 0 }, se: 5 },
+  },
+  likelyFloor: 3.5,
+};
+export const BF_METHODS = ['dxa', 'bia', 'calipers', 'other'];
+const manualMethodOf = m => (BF_METHODS.includes(m) ? m : 'dxa');          // unspecified → DXA
+// Abdomen (in, at the navel) + weight (lb). `age` applies Taylor's 40+ bias correction for men.
+export function oneSiteBodyFat({ sex = 'male', waistIn, weightLb, age = null } = {}) {
+  const s = sex === 'female' ? 'female' : 'male', q = BF_DXA.onesite[s], ab = BF_DXA.onesiteAgeBias[s];
+  const w = pos(waistIn), wt = pos(weightLb);
+  if (!q || !w || !wt) return null;
+  const bf = q.a + q.b * w + q.c * wt + (ab && pos(age) != null && pos(age) >= ab.from ? ab.add : 0);
+  return Number.isFinite(bf) && bf >= 3 && bf <= 60 ? r1(bf) : null;
+}
+// Converts a formula output or manual reading to the DXA scale. kind: 'onesite' | 'navy' | 'rfm' | 'bmi' | 'manual'.
+export function toDxaScale(kind, value, sex = 'male', manualMethod = 'dxa') {
+  const v = num(value); if (!Number.isFinite(v)) return null;
+  const s = sex === 'female' ? 'female' : 'male';
+  const off = kind === 'manual' ? BF_DXA.manual[manualMethodOf(manualMethod)].offset[s] : (BF_DXA.offset[kind]?.[s] ?? 0);
+  return Math.max(2, v + off);
 }
 
 // Relative Fat Mass (Woolcott & Bergman 2018): 64 − 20 × height/waist (+12 for women).
@@ -163,7 +245,7 @@ export function bmiBodyFat({ sex = 'male', weightLb, heightIn, age } = {}) {
 export function baseline({ profile = {}, bodyLog = [], measurements = [], now = new Date() } = {}) {
   const today = ds(toDate(now));
   const body = profile?.body || {};
-  const sex = body.sex === 'female' ? 'female' : 'male';
+  const sex = sexOf(body);
   const log = (Array.isArray(bodyLog) ? bodyLog : []).filter(e => e && e.d && e.d <= today && pos(e.w) != null);
   const meas = (Array.isArray(measurements) ? measurements : []).filter(e => e && e.d && e.d <= today);
 
@@ -223,36 +305,53 @@ export function baseline({ profile = {}, bodyLog = [], measurements = [], now = 
   }
   measurementsOut.lengths = lengths;
 
-  // Body fat: manual > navy > estimate (RFM if a waist is known, else Deurenberg BMI formula).
-  const manual = latest(meas, 'bodyFat');
+  // Body fat on ONE scale, DXA-equivalent (§20b). Every formula/measurement is converted to the DXA scale, then:
+  // a DXA scan (or a manual value with no method) is used as-is; otherwise every available DXA-scale estimate is blended
+  // by inverse variance (one-site Army, Navy, RFM, Deurenberg, and a converted smart-scale/caliper reading).
+  const manualE = latestEntry(meas, 'bodyFat');
+  const manualRaw = manualE && manualE.v < 70 ? manualE.v : null;
+  const manualMethod = manualRaw != null ? manualMethodOf(manualE.e.bodyFatMethod) : null;
   const navyBodyFatPct = navyBodyFat({ sex, heightIn, neckIn: measurementsOut.neck, waistIn: measurementsOut.waist, hipsIn: measurementsOut.hips });
   const rfm = rfmBodyFat({ sex, heightIn, waistIn: measurementsOut.waist });
   const bmiEst = bmiBodyFat({ sex, weightLb, heightIn, age });
-  let bodyFatPct = null, bodyFatSource = null, bodyFatDate = null, bodyFatMethod = null;
-  if (manual && manual.v < 70) { bodyFatPct = manual.v; bodyFatSource = 'manual'; bodyFatMethod = 'manual'; bodyFatDate = manual.d; }
-  else if (navyBodyFatPct != null) {
-    bodyFatPct = navyBodyFatPct; bodyFatSource = 'navy'; bodyFatMethod = 'navy';
-    bodyFatDate = [measuredOn.neck, measuredOn.waist, sex === 'female' ? measuredOn.hips : null].filter(Boolean).sort().pop() || null;
-  } else if (rfm != null) {
-    bodyFatPct = rfm; bodyFatSource = 'estimate'; bodyFatMethod = 'rfm'; bodyFatDate = measuredOn.waist || weightDate;
-  } else if (bmiEst != null) {
-    bodyFatPct = bmiEst; bodyFatSource = 'estimate'; bodyFatMethod = 'bmi'; bodyFatDate = weightDate;
+  const oneSite = oneSiteBodyFat({ sex, waistIn: measurementsOut.waist, weightLb, age });
+  const bodyFatSourcesRaw = { manual: manualRaw, onesite: oneSite, navy: navyBodyFatPct, rfm, bmi: bmiEst };
+  const dx = (k, v) => (v == null ? null : r1(toDxaScale(k, v, sex, manualMethod)));
+  const bodyFatSources = { manual: dx('manual', manualRaw), onesite: dx('onesite', oneSite), navy: dx('navy', navyBodyFatPct), rfm: dx('rfm', rfm), bmi: dx('bmi', bmiEst) };
+  const seOf = k => (k === 'manual' ? BF_DXA.manual[manualMethod].se : BF_DXA.se[k][sex]);
+  const avail = Object.entries(bodyFatSources).filter(([, v]) => v != null);
+  let bodyFatPct = null, bodyFatSource = null, bodyFatDate = null, bodyFatMethod = null, blendSE = null;
+  const tapeDate = [measuredOn.neck, measuredOn.waist, sex === 'female' ? measuredOn.hips : null].filter(Boolean).sort().pop() || null;
+  if (manualRaw != null && manualMethod === 'dxa') {
+    bodyFatPct = bodyFatSources.manual; bodyFatMethod = 'manual'; blendSE = BF_DXA.manual.dxa.se;
+  } else if (avail.length) {
+    let w = 0, wx = 0;
+    for (const [k, v] of avail) { const wi = 1 / seOf(k) ** 2; w += wi; wx += wi * v; }
+    bodyFatPct = r1(wx / w); blendSE = 1 / Math.sqrt(w);
+    bodyFatMethod = avail.length === 1 ? avail[0][0] : 'blend';
   }
-  const bodyFatSources = { manual: manual && manual.v < 70 ? manual.v : null, navy: navyBodyFatPct, rfm, bmi: bmiEst };
-  const avail = Object.values(bodyFatSources).filter(v => v != null);
-  const bodyFatSpread = avail.length >= 2 ? r1(Math.max(...avail) - Math.min(...avail)) : null;
-  let bodyFatUncertainty = null, bodyFatRange = null, bodyFatNote = null;
   if (bodyFatPct != null) {
-    const own = BF_ERR[bodyFatMethod];
-    // If the methods disagree a lot, widen the uncertainty (at least half of the disagreement).
-    bodyFatUncertainty = r1(Math.max(own, bodyFatSpread != null ? bodyFatSpread / 2 : 0));
+    bodyFatSource = manualRaw != null ? 'manual' : navyBodyFatPct != null ? 'navy' : 'estimate';
+    bodyFatDate = manualRaw != null ? manualE.d : navyBodyFatPct != null ? tapeDate : (measuredOn.waist || weightDate);
+  }
+  const vals = avail.map(([, v]) => v);
+  const bodyFatSpread = vals.length >= 2 ? r1(Math.max(...vals) - Math.min(...vals)) : null;
+  let bodyFatUncertainty = null, bodyFatRange = null, bodyFatRange95 = null, bodyFatNote = null;
+  if (bodyFatPct != null) {
+    // "Likely" (~1 SD) range: at least ±3.5 for tape/scale estimates (they share the same waist tape, so blending them
+    // doesn't really shrink the error), ±2 for a DXA scan; widened to half the disagreement between methods. 95 % ≈ 2×.
+    const floor = bodyFatMethod === 'manual' && manualMethod === 'dxa' ? BF_DXA.manual.dxa.se : BF_DXA.likelyFloor;
+    bodyFatUncertainty = r1(Math.max(floor, blendSE, bodyFatMethod === 'manual' && manualMethod === 'dxa' || bodyFatSpread == null ? 0 : bodyFatSpread / 2));
     bodyFatRange = { low: r1(Math.max(3, bodyFatPct - bodyFatUncertainty)), high: r1(bodyFatPct + bodyFatUncertainty) };
-    const label = { manual: 'the value you entered', navy: 'the US Navy tape formula', rfm: 'your waist-to-height ratio (Relative Fat Mass formula)', bmi: 'your BMI and age (Deurenberg formula)' }[bodyFatMethod];
-    const others = Object.entries(bodyFatSources).filter(([k, v]) => v != null && k !== bodyFatMethod)
-      .map(([k, v]) => `${{ manual: 'entered', navy: 'Navy tape', rfm: 'waist/height', bmi: 'BMI' }[k]} ${v}%`);
-    bodyFatNote = `Body fat ${bodyFatPct}% from ${label}, about ±${bodyFatUncertainty} points.` +
-      (others.length ? ` Other estimates: ${others.join(', ')}${bodyFatSpread != null && bodyFatSpread > 4 ? '. They disagree by more than 4 points, so treat the starting point as uncertain' : ''}.` : '') +
-      (bodyFatMethod === 'manual' ? ' A DEXA scan is good to ~±2; home bioimpedance scales can be off by 4-5 and swing with hydration.' : '');
+    bodyFatRange95 = { low: r1(Math.max(3, bodyFatPct - 2 * bodyFatUncertainty)), high: r1(bodyFatPct + 2 * bodyFatUncertainty) };
+    const NAME = { manual: `your ${BF_DXA.manual[manualMethod || 'dxa'].label}`, onesite: 'the one-site Army waist formula', navy: 'the US Navy tape formula', rfm: 'waist-to-height (Relative Fat Mass)', bmi: 'BMI and age (Deurenberg)' };
+    const SHORT = { manual: 'entered', onesite: 'Army waist', navy: 'Navy tape', rfm: 'waist/height', bmi: 'BMI' };
+    const label = bodyFatMethod === 'blend' ? `a blend of ${avail.map(([k]) => NAME[k]).join(', ')}` : NAME[bodyFatMethod];
+    const others = avail.filter(([k]) => bodyFatMethod === 'blend' || k !== bodyFatMethod).map(([k, v]) => `${SHORT[k]} ${v}%`);
+    bodyFatNote = `Body fat ${bodyFatPct}% (DXA-equivalent) from ${label}: likely ±${bodyFatUncertainty} points, about ±${r1(2 * bodyFatUncertainty)} at 95%.` +
+      (others.length ? ` ${bodyFatMethod === 'blend' ? 'Each on the DXA scale' : 'Other estimates on the DXA scale'}: ${others.join(', ')}${bodyFatSpread != null && bodyFatSpread > 4 ? '. They disagree by more than 4 points, so treat the starting point as uncertain' : ''}.` : '') +
+      ' Every method is converted to the DXA scale so tape, smart-scale and scan numbers compare directly.' +
+      (manualRaw != null && manualMethod !== 'dxa' ? ` Your ${BF_DXA.manual[manualMethod].label} reading of ${manualRaw}% counts as ${bodyFatSources.manual}% on the DXA scale.` : '');
   }
 
   const comp = weightLb ? bodyComp({ weightLb, heightIn, bodyFatPct, age, sex, waistIn: measurementsOut.waist }) : null;
@@ -263,6 +362,7 @@ export function baseline({ profile = {}, bodyLog = [], measurements = [], now = 
     chestToWaist: ratio(m.chest, m.waist),
     waistToHeight: ratio(m.waist, heightIn),
     armToWaist: ratio(m.arm, m.waist),
+    waistToHip: ratio(m.waist, m.hips),
   };
 
   const missing = [];
@@ -277,14 +377,18 @@ export function baseline({ profile = {}, bodyLog = [], measurements = [], now = 
   if (!m.arm) missing.push('arm');
   if (!m.thigh) missing.push('thigh');
   if (bodyFatSource !== 'manual' && bodyFatSource !== 'navy') missing.push('bodyFat');
-  const missingInfo = missing.map(f => ({ field: f, label: MISSING_INFO[f][0], why: MISSING_INFO[f][1] }));
+  const info = f => (sex === 'female' && MISSING_INFO_FEMALE[f]) || MISSING_INFO[f];
+  const missingInfo = missing.map(f => ({ field: f, label: info(f)[0], why: info(f)[1] }));
+  const femaleExtra = sex === 'female' ? { bodyFatCategory: bodyFatCategory(bodyFatPct, { sex, age }), femaleStatus: femaleStatus(profile, { age }) } : {};
 
   return {
     date: today, weightLb: weightLb != null ? r1(weightLb) : null, weightDate, heightIn: heightIn ?? null, age, sex,
     bodyFatPct, bodyFatSource, bodyFatDate, bodyFatEstimated: bodyFatSource === 'estimate', navyBodyFatPct,
-    bodyFatMethod, bodyFatSources, bodyFatUncertainty, bodyFatSpread, bodyFatRange, bodyFatNote,
+    bodyFatMethod, bodyFatSources, bodyFatSourcesRaw, bodyFatUncertainty, bodyFatSpread, bodyFatRange, bodyFatRange95, bodyFatNote,
+    bodyFatScale: 'dxa', bodyFatManualMethod: manualMethod,
     measurements: measurementsOut, measuredOn, asymmetry, lengthAsymmetry, comp, ratios, missing, missingInfo,
     weighIns30: log.filter(e => e.d >= ds(addDays(parseDs(today), -30))).length, weighInCount: log.length, measurementCount: meas.length,
+    ...femaleExtra,
   };
 }
 

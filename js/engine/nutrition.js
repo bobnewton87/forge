@@ -16,8 +16,19 @@
 //   that trend once it has ≥30 days of history (a fresh EWMA under-reads a moving weight), else the
 //   least-squares slope of the raw weigh-ins in the window.
 // CONTRACT-NOTE: extra exports SUPPLEMENTS, MEAL_IDEAS, KCAL_PER_LB_TREND, ewmaTrend.
+// CONTRACT-NOTE (§20 Female mode): for female profiles (sex.js sexOf):
+//   macrosFor(): the low-fat warning drops the testosterone claim (IOM AMDR 20–35 % applies to everyone).
+//   dailyTargets(profile, { …, leanLb, exerciseKcal }): optional lean mass (lb) and average net exercise kcal/day →
+//     result.energyAvailability (kcal/kg FFM/day, null without leanLb) and a warning under 30 (Loucks & Thuma 2003;
+//     IOC REDs 2023). Pregnancy: no planned deficit (goal/default intake = maintenance) plus a caution; a user-set
+//     intake below maintenance gets a warning. Breastfeeding/postpartum: a caution. Result gains `female` info.
+//   tipsFor(profile) → { nutrition:[…], adderall:[…]|null } (female list: iron, energy availability, cycle-related
+//     water weight; Adderall tips only when Adderall is in her stack); supplementsFor(profile) adds an iron note.
+//   Protein targets are unchanged: sex explained none of the variance in Morton 2018 and female IAAO estimates
+//   (1.41–1.71 g/kg/day) sit at or under its 1.62 g/kg plateau. Male outputs are unchanged.
 
 import { ds, parseDs, addDays, daysBetween } from '../util.js';
+import { sexOf, femaleStatus, energyAvailability, EA_LOW, EA_ADEQUATE, ironRda, PREGNANCY_KCAL } from './sex.js';
 
 const round10 = x => Math.round(x / 10) * 10;
 const fin = x => typeof x === 'number' && Number.isFinite(x);
@@ -77,7 +88,9 @@ export function macrosFor(profile, { calories, bodyweight } = {}) {
     warnings,
   };
   if (kcal > 0) {
-    if (out.fatPct < 20) warnings.push(`Fat is only ${out.fatPct}% of calories. Going below ~20% for long stretches can lower testosterone and makes meals less filling; 20-35% is the usual range.`);
+    if (out.fatPct < 20) warnings.push(sexOf(profile) === 'female'
+      ? `Fat is only ${out.fatPct}% of calories. Below ~20% for long stretches makes meals less filling and fat-soluble vitamins harder to absorb; 20-35% is the recommended range (IOM).`
+      : `Fat is only ${out.fatPct}% of calories. Going below ~20% for long stretches can lower testosterone and makes meals less filling; 20-35% is the usual range.`);
     if (carbs < 100) warnings.push(`Only ${carbs} g of carbs a day. Under ~100 g, hard lifting and cardio usually feel flat because muscle glycogen runs low.`);
   }
   if (bw > 0 && out.proteinGPerLb < 0.7) warnings.push(`Protein is ${out.proteinGPerLb} g/lb. Research (Morton 2018) shows muscle gain is reduced below ~0.7 g/lb; ~1 g/lb covers almost everyone.`);
@@ -101,7 +114,7 @@ function balanceNote(goal, bal) {
 }
 
 // ---------------------------------------------------------------- daily targets
-export function dailyTargets(profile, { dayType = 'lift', bodyweight, tdee: tdeeIn } = {}) {
+export function dailyTargets(profile, { dayType = 'lift', bodyweight, tdee: tdeeIn, leanLb = null, exerciseKcal = null } = {}) {
   const n = profile?.nutrition || {};
   const mode = n.mode || 'off';
   if (mode === 'off') return null;
@@ -111,19 +124,36 @@ export function dailyTargets(profile, { dayType = 'lift', bodyweight, tdee: tdee
   if (CYCLE[goal][dayType] == null) dayType = 'lift';
 
   const tdee = Number(tdeeIn) > 0 ? Math.round(Number(tdeeIn)) : Math.round(bw * 15.5);
+  const female = sexOf(profile) === 'female';
+  const fs = female ? femaleStatus(profile) : null;
+  const userCal = Number(n.calories) > 0, userSur = n.surplus != null && n.surplus !== '' && fin(Number(n.surplus));
   let avg;
-  if (Number(n.calories) > 0) avg = Number(n.calories);
-  else if (n.surplus != null && n.surplus !== '' && fin(Number(n.surplus))) avg = tdee + Number(n.surplus);
-  else avg = tdee - SIMPLE[goal];
+  if (userCal) avg = Number(n.calories);
+  else if (userSur) avg = tdee + Number(n.surplus);
+  else avg = fs?.pregnant ? tdee : tdee - SIMPLE[goal];      // pregnancy: no planned deficit (§20)
   let calories = mode === 'simple' ? avg : avg + SIMPLE[goal] - CYCLE[goal][dayType];
+  if (fs?.pregnant && !userCal && !userSur) calories = mode === 'simple' ? tdee : Math.max(tdee - 150, calories);
   calories = round10(Math.max(1000, calories));
 
   const m = macrosFor(profile, { calories, bodyweight: bw });
   const balNote = balanceNote(goal, avg - tdee);
   const note = mode === 'simple' ? balNote : `${NOTES[dayType]} ${balNote}`;
-  return { calories, protein: m.protein, carbs: m.carbs, fat: m.fat, note, tdee, mode, goal,
+  const out = { calories, protein: m.protein, carbs: m.carbs, fat: m.fat, note, tdee, mode, goal,
     dayType: mode === 'simple' ? null : dayType,
     proteinPct: m.proteinPct, carbPct: m.carbPct, fatPct: m.fatPct, proteinGPerLb: m.proteinGPerLb, warnings: m.warnings };
+  if (!female) return out;
+  // ---- female mode (§20)
+  const warnings = [...m.warnings];
+  const ea = energyAvailability({ intakeKcal: avg, exerciseKcal: Number(exerciseKcal) > 0 ? Number(exerciseKcal) : 0, leanLb });
+  if (ea != null && ea < EA_LOW && !fs.pregnant) warnings.push(`Energy availability ≈${ea} kcal per kg of lean mass a day (food ${Math.round(avg)} minus exercise ≈${Math.round(Number(exerciseKcal) || 0)} kcal). ${fs.menopause === 'post' ? 'Low energy availability costs bone, recovery and training quality at any age (IOC REDs 2023); ~45 is adequate.' : 'Below ~30 the hormone pulses that run the menstrual cycle were disrupted within 5 days (Loucks & Thuma 2003); ~45 is adequate.'} Eat more on training days or ease the deficit${fs.menopause === 'post' ? '' : ', and see a doctor if your periods change (IOC REDs 2023)'}.`);
+  if (fs.pregnant) {
+    warnings.push(`Pregnancy: Forge doesn't plan a deficit. Needs rise about +${PREGNANCY_KCAL[1]} kcal/day in the 2nd trimester and +${PREGNANCY_KCAL[2]} in the 3rd, and pregnancy isn't a time for weight loss (Kominiarek & Rajan 2016; ACOG 2020). Your OB or midwife sets your targets.`);
+    if ((userCal || userSur) && avg < tdee - 50) warnings.push(`Your set intake (${Math.round(avg)} kcal) is below estimated maintenance (${Math.round(tdee)}). Talk to your provider before eating in a deficit while pregnant.`);
+  } else if (fs.postpartum) {
+    warnings.push(fs.breastfeeding ? 'Breastfeeding costs roughly 500 kcal/day; a slow loss of about 0.5-1 kg a month after the first month doesn\'t affect milk supply (Kominiarek & Rajan 2016). Check bigger deficits with your provider.'
+      : 'Postpartum: weight, fluid and hormones change fast for months. Check with your provider before a calorie deficit or hard training.');
+  }
+  return { ...out, warnings, energyAvailability: ea, female: { status: fs, ironMgPerDay: ironRda({ sex: 'female', menopause: fs.menopause, pregnant: fs.pregnant }), eaLow: EA_LOW, eaAdequate: EA_ADEQUATE } };
 }
 
 // ---------------------------------------------------------------- adaptive TDEE
@@ -241,6 +271,34 @@ export const NUTRITION_TIPS = [
   'Alcohol blunts muscle protein synthesis and sleep. Keep it occasional.',
   'Hit 80% consistency on protein and calories and you will make great progress. You do not need perfection.',
 ];
+
+// Female-mode tips (§20). Iron: RDA 18 mg/day for women 19-50 vs 8 for men and after menopause (IOM 2001); iron
+// deficiency in 15-35 % of female athlete cohorts vs 5-11 % of male (Sim 2019, Eur J Appl Physiol,
+// doi:10.1007/s00421-019-04157-y). Cycle: luteal-phase resting burn is slightly higher (Benton 2020, PLoS One,
+// doi:10.1371/journal.pone.0236025; no pooled kcal figure), and water retention moves the scale, so trend weight matters.
+export const FEMALE_NUTRITION_TIPS = [
+  'Protein first: about 1 g per lb of bodyweight a day (a bit more when cutting), split over 4-5 meals. Women need the same protein per kg as men (Morton 2018).',
+  'Iron: 18 mg a day before menopause (8 after). Red meat, beans and lentils, spinach plus vitamin C help. Low ferritin is common in women who train; a blood test tells you if you need a supplement.',
+  'Don\'t under-fuel training: food minus exercise should stay above ~30 kcal per kg of lean mass a day. Missed or irregular periods are a warning sign, not a sign of progress.',
+  'Scale weight can swing 1-3 lb across your cycle from water. Compare trend weight and waist over 2-4 weeks, or the same cycle phase month to month.',
+  'Creatine monohydrate, 3-5 g a day, is safe and helps strength in women too, though the measurable lean-mass gain is smaller than in men.',
+  'Calcium (1,000 mg a day, 1,200 after 50) and vitamin D support bone, which matters more for women, especially in a deficit.',
+  'Judge progress over 2-4 weeks: morning bodyweight average, waist and hips, and the progression log.',
+  'Carbs are training fuel: put most of them around lifts and harder cardio.',
+  'Sleep 7-9 hours. It does more for recovery and fat loss than any supplement.',
+  'Hit 80% consistency on protein and calories and you will make great progress. You do not need perfection.',
+];
+export function tipsFor(profile) {
+  const female = sexOf(profile) === 'female';
+  if (!female) return { nutrition: NUTRITION_TIPS, adderall: ADDERALL_TIPS };
+  const onAdderall = (Array.isArray(profile?.supplements) ? profile.supplements : []).some(e => e && e.id === 'adderall' && e.active !== false && !e.end);
+  return { nutrition: FEMALE_NUTRITION_TIPS, adderall: onAdderall ? ADDERALL_TIPS : null };
+}
+export function supplementsFor(profile) {
+  if (sexOf(profile) !== 'female') return SUPPLEMENTS;
+  const fs = femaleStatus(profile);
+  return [...SUPPLEMENTS, { name: 'Iron (only if low)', dose: `RDA ${ironRda({ sex: 'female', menopause: fs.menopause, pregnant: fs.pregnant })} mg/day from food`, note: 'Supplement only if a blood test shows low ferritin (under ~30 ng/mL); extra iron when stores are full has no benefit and can upset your stomach.' }];
+}
 
 export const SUPPLEMENTS = [
   { name: 'Whey protein', dose: '1-2 scoops/day', note: 'The easiest way to hit protein, especially while appetite is suppressed.' },

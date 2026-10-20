@@ -10,6 +10,9 @@ import { ds } from '../util.js';
 import { macros, macroBar, nutritionContext, safe, f1 } from './projection.js';
 import { resolveTargets } from '../engine/targets.js';
 import { setTargets } from './targets.js';
+// CONTRACT-NOTE (§20 Female mode): tips come from nutrition.tipsFor(profile) (female list; Adderall tips for women only
+//   when Adderall is in the stack) and supplementsFor(profile) (iron note). Today's target passes lean mass and net
+//   exercise kcal so dailyTargets can flag low energy availability; women see an energy-availability line.
 // CONTRACT-NOTE (INTEGRATOR §18): targets are read via resolveTargets(profile).nutrition (same
 //   defaults the projection uses) and saved via setTargets (no re-plan: nutrition doesn't change
 //   the plan, but the projection reads the same profile values).
@@ -93,7 +96,7 @@ export function render(ctx) {
     const sessions = safe(() => ctx.store.getSessions(), []);
     const inferred = inferDayType(sessions);
     const dayType = override || inferred;
-    let t = safe(() => nut.dailyTargets(p, { dayType, bodyweight: bw, tdee: nc?.maint }), null);
+    let t = safe(() => nut.dailyTargets(p, { dayType, bodyweight: bw, tdee: nc?.maint, leanLb: nc?.leanLb, exerciseKcal: nc?.exerciseKcal }), null);
     if (typeof nut.macrosFor !== 'function' && mode === 'simple' && m) t = { ...m, note: t?.note || '' };
     if (t && nc && (Number(n.calories) > 0 || (n.surplus != null && isFinite(n.surplus)))) {
       const avgS = (Number(n.calories) > 0 ? Number(n.calories) : nc.maint + Number(n.surplus)) - nc.maint;
@@ -105,7 +108,9 @@ export function render(ctx) {
     ${t ? `<div class="card hero"><div class="label">Today's target</div>
         <div style="font-size:44px;font-weight:850;letter-spacing:-.03em;line-height:1.1" class="num">${Math.round(t.calories).toLocaleString()}<span class="muted" style="font-size:16px;font-weight:650"> kcal</span></div>
         <div class="mt">${macroBar(t)}</div>
-        ${t.note ? `<p class="small mt" style="color:#cfcfd8">${esc(t.note)}</p>` : ''}</div>`
+        ${t.note ? `<p class="small mt" style="color:#cfcfd8">${esc(t.note)}</p>` : ''}
+        ${t.energyAvailability != null ? `<p class="tiny mt ${t.energyAvailability < 30 ? '' : 'muted'}" style="${t.energyAvailability < 30 ? 'color:var(--warn)' : ''}" data-ea>Energy availability ≈ ${Math.round(t.energyAvailability)} kcal per kg lean mass a day (food minus exercise; under 30 is low, ~45 adequate).</p>` : ''}
+        ${t.female && (t.warnings || []).length ? warnList(t.warnings) : ''}</div>`
       : `<div class="card"><h3>Add your bodyweight</h3><p class="muted small mt">Targets are based on bodyweight.</p><div class="row mt"><input type="number" inputmode="decimal" step="0.1" id="nbw" placeholder="lb" class="grow"><button class="btn btn-primary" data-bw>Save</button></div></div>`}`;
   }
 
@@ -116,9 +121,8 @@ export function render(ctx) {
     ${editor}
     <div class="section-title">Bulking, honestly</div>
     ${whyCard(nc)}
-    ${tips('Eating on Adderall', nut.ADDERALL_TIPS, '💊')}
-    ${tips('Nutrition basics', nut.NUTRITION_TIPS, '📌')}
-    ${Array.isArray(nut.SUPPLEMENTS) && nut.SUPPLEMENTS.length ? `<div class="section-title">💊 Supplements worth it</div><div class="list">${nut.SUPPLEMENTS.map(s => `<div class="list-item" style="align-items:flex-start"><div class="grow"><div class="t">${esc(s.name)} <span class="muted small" style="font-weight:600">· ${esc(s.dose || '')}</span></div><div class="s">${esc(s.note || '')}</div></div></div>`).join('')}</div>` : ''}`;
+    ${(() => { const T = typeof nut.tipsFor === 'function' ? nut.tipsFor(p) : { nutrition: nut.NUTRITION_TIPS, adderall: nut.ADDERALL_TIPS }; return tips('Eating on Adderall', T.adderall, '💊') + tips('Nutrition basics', T.nutrition, '📌'); })()}
+    ${(() => { const SL = typeof nut.supplementsFor === 'function' ? nut.supplementsFor(p) : nut.SUPPLEMENTS; return Array.isArray(SL) && SL.length ? `<div class="section-title">💊 Supplements worth it</div><div class="list">${SL.map(s => `<div class="list-item" style="align-items:flex-start"><div class="grow"><div class="t">${esc(s.name)} <span class="muted small" style="font-weight:600">· ${esc(s.dose || '')}</span></div><div class="s">${esc(s.note || '')}</div></div></div>`).join('')}</div>` : ''; })()}`;
 }
 
 export function bind(root, ctx) {

@@ -1,6 +1,10 @@
 // "More" hub (route 'more') and Settings (route 'settings') (UI-SHELL).
 // CONTRACT-NOTE: params.section on 'settings' (e.g. 'locations') scrolls to that section.
-import { SCULPT_GOALS } from '../data/sculpt.js';
+import { SCULPT_GOALS, goalFor } from '../data/sculpt.js';
+import { sexFieldsHTML, readFemaleFields, showFemaleFields, bindSexInfo, maybeOfferFemaleGoals } from './female.js';
+// CONTRACT-NOTE (§20 Female mode): Settings → Profile has the sex selector (+ female fields and "what changes" info);
+//   it writes profile.body via store.updateProfile and offers the female starting sculpt goals (never silently).
+//   Sculpt-goal info sheets read goalFor(goal, sex) so women don't see male/Bob-specific wording.
 import { GROUPS, GROUP_ORDER, VOLUME_UNITS, UNIT_ORDER } from '../data/muscles.js';
 import { EQUIPMENT } from '../data/equipment.js';
 import { esc } from './components.js';
@@ -175,14 +179,16 @@ function renderSettings(ctx) {
     <p class="small muted mt">${p.nutrition?.mode === 'cycling' ? 'Higher carbs on lift days, lower on rest days.' : p.nutrition?.mode === 'simple' ? 'Same calorie and protein targets every day.' : 'Off. Turn on for daily calorie and macro targets.'}</p>
     <div class="row mt"><div class="grow field" style="margin:0"><label>Bodyweight (lb)</label><input type="number" inputmode="decimal" step="0.1" data-bw value="${p.bodyweight ?? ''}" placeholder="e.g. 165"></div></div></div>
 
-  <div class="section-title">Profile</div>
+  <div class="section-title" id="sec-profile">Profile</div>
   <div class="card"><div class="field" style="margin:0"><label>Name</label><input type="text" data-name value="${esc(p.name || '')}"></div></div>
+  <div class="card" id="st-sex">${sexFieldsHTML(p.body || {}, { prefix: 'ssx', segAttr: 'data-sexseg' })}
+    <button class="btn btn-sm mt" data-savesex>Save</button></div>
   <div class="list"><button class="list-item" data-nav="measure"><span class="ic">📏</span><div class="grow"><div class="t">Body profile</div><div class="s">Height, birth year, activity, measurements</div></div><span class="chev">›</span></button></div>
   ${accountsSectionHTML()}`;
 }
 
 function goalInfoSheet(ctx, id) {
-  const g = SCULPT_GOALS[id]; if (!g) return;
+  const g = goalFor(id, ctx.store.getProfile().body?.sex); if (!g) return;
   const on = (ctx.store.getProfile().sculptGoals || []).includes(id);
   ctx.openSheet(`<div class="label">${esc(GROUPS[g.group]?.name || g.group || '')}</div><h2>${esc(g.name)}</h2>
     ${g.summary ? `<p class="mt" style="font-size:16px;font-weight:600">${esc(g.summary)}</p>` : ''}
@@ -297,6 +303,24 @@ function bindSettings(root, ctx, params) {
   root.querySelector('[data-crunch]').onchange = e => up({ crunch: { ...(ctx.store.getProfile().crunch || {}), club: e.target.value } });
   const bw = root.querySelector('[data-bw]');
   bw.addEventListener('change', () => { const v = parseFloat(bw.value); if (v > 50 && v < 600) { ctx.store.logBodyweight(ds(), v); ctx.toast(`Logged ${v} lb for today`); } });
+  // sex + female fields (§20)
+  const sx = root.querySelector('#st-sex');
+  if (sx) {
+    let pick = null;
+    sx.querySelectorAll('[data-sexseg] button').forEach(b => b.addEventListener('click', () => {
+      sx.querySelectorAll('[data-sexseg] button').forEach(x => x.classList.toggle('active', x === b));
+      pick = b.dataset.v; showFemaleFields(sx, pick);
+    }));
+    bindSexInfo(sx, ctx);
+    sx.querySelector('[data-savesex]').addEventListener('click', () => {
+      const before = ctx.store.getProfile();
+      const body = { ...(before.body || {}), sex: pick || before.body?.sex || 'male' };
+      if (body.sex === 'female') Object.assign(body, readFemaleFields(sx));
+      ctx.store.updateProfile({ body });
+      ctx.toast(body.sex === 'female' ? 'Saved: female mode on' : 'Saved');
+      maybeOfferFemaleGoals(ctx, before);
+    });
+  }
   const nm = root.querySelector('[data-name]');
   nm.addEventListener('change', () => up({ name: nm.value.trim() || 'Bob' }));
   bindAccountsSection(root, ctx);

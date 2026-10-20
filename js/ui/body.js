@@ -122,10 +122,10 @@ function yourBodyCard(store, profile, log) {
   const has = b && b.weightLb;
   const stat = (v, u, l) => `<div><b>${v ?? '—'}${v != null ? `<small>${u}</small>` : ''}</b><span>${l}</span></div>`;
   const H = b?.heightIn || 69;
-  card3d = has ? { shape: shapeOf({ shape: b.shape, measurements: m }, H), muscle: b.muscle || estMuscle({ leanLb: b.comp?.leanLb }, H), bodyFatPct: b.bodyFatPct ?? null } : null;
+  card3d = has ? { shape: shapeOf({ shape: b.shape, measurements: m }, H), muscle: b.muscle || estMuscle({ leanLb: b.comp?.leanLb }, H, b.sex), bodyFatPct: b.bodyFatPct ?? null, sex: b.sex || 'male' } : null;   // §20: sex for the renderer
   return `<div class="card bd-card">
-    <div class="bd-card-sil bd-card-3d" id="bdCard3d" aria-hidden="true">${silhouetteSVG(m, { bodyFatPct: b?.bodyFatPct, heightIn: H })}</div>
-    <div class="grow"><div class="row between"><div class="card-title">Your body</div>${has && b.bodyFatSource ? `<span class="tiny muted">${b.bodyFatSource === 'navy' ? 'tape BF' : b.bodyFatSource === 'manual' ? 'measured BF' : 'est. BF'}</span>` : ''}</div>
+    <div class="bd-card-sil bd-card-3d" id="bdCard3d" aria-hidden="true">${silhouetteSVG(m, { bodyFatPct: b?.bodyFatPct, heightIn: H, sex: b?.sex || 'male' })}</div>
+    <div class="grow"><div class="row between"><div class="card-title">Your body</div>${has && b.bodyFatSource ? `<span class="tiny muted">${b.bodyFatSource === 'navy' ? 'tape BF' : b.bodyFatSource === 'manual' ? 'measured BF' : 'est. BF'} · DXA-equivalent</span>` : ''}</div>
       ${has ? `<div class="bd-stats">${stat(f1(b.weightLb), 'lb', 'weight')}${stat(b.bodyFatPct != null ? f1(b.bodyFatPct) : null, '%', 'body fat')}${stat(m.waist != null ? f1(m.waist) : null, '″', 'waist')}</div>`
         : `<p class="small muted" style="margin-top:4px">Add weight, height and a few tape measurements to see body fat and a projection of where your training is taking you.</p>`}
       <div class="btn-row"><button class="btn" data-bdnav="measure">📏 ${has ? 'Log' : 'Measure'}</button><button class="btn ${has ? 'btn-primary' : ''}" data-bdnav="projection">🔮 Projection</button><button class="btn btn-ghost" data-bdnav="supplements">💊 Supplements &amp; metabolism</button></div>

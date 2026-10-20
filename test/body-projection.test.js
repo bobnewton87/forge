@@ -142,9 +142,10 @@ test('milestones: valid dates, monotonic, in order', () => {
   }
   const le = (a, b) => assert.ok(by[b].date === null || (by[a].date !== null && by[a].date <= by[b].date), `${a} before ${b}`);
   le('abs_upper', 'six_pack'); le('sw_1_5', 'sw_1618'); le('lean_5', 'lean_10');
-  assert.ok(by.abs_upper.date, 'a 52-week cut from 22% should reach ~12%');
-  // milestone date matches the first series point crossing the threshold
-  const first = r.series.find(pt => pt.bodyFatPct <= 12);
+  assert.ok(by.abs_upper.date, 'a 52-week cut from 22% should reach upper abs');
+  // milestone date matches the first series point crossing the threshold (§20b: 15 % DXA-equivalent, was 12 % colloquial)
+  assert.equal(by.abs_upper.target, 15);
+  const first = r.series.find(pt => pt.bodyFatPct <= by.abs_upper.target);
   assert.equal(by.abs_upper.date, first.date);
   // series dates strictly increasing, weekly
   for (let i = 1; i < r.series.length; i++) assert.ok(r.series[i].date > r.series[i - 1].date);

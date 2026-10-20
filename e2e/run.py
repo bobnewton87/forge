@@ -1495,6 +1495,72 @@ def t_accounts_cloud(t, ctx):
     finally:
         app.page.unroute('**/js/config.js*', cfg_route)
         app.page.unroute(FakeSupabase.BASE + '/**', fake.handle)
+@test('X1', 'Female mode: choose Female in Measure, then Body/Measure/Nutrition/Projection/Supplements/Settings')
+def t_female(t, ctx):
+    """CONTRACT §20: a fresh profile set to female through the Measure profile card, smoke-tested on every screen that
+    shows body comp, nutrition, hormones or milestones: no page errors, female text present, male-only text absent."""
+    app = t.app
+    app.load({}, 'measure')
+    t.check(app.has('#bd-prof [data-pseg="sex"] [data-v="female"]'), 'sex selector on Measure', 'Female button', short(app.text(), 120))
+    app.fill('#pFt', 5); app.fill('#pIn', 5); app.fill('#pBy', 1990)
+    app.click('#bd-prof [data-pseg="sex"] [data-v="female"]')
+    vis = app.page.evaluate("() => { const f = document.querySelector('#bd-prof [data-femalefields]'); return !!f && !f.hidden; }")
+    t.check(vis, 'female fields appear', 'menopause/pregnancy/contraception selects visible', vis)
+    app.page.select_option('#msx-meno', 'pre')
+    m = app.toast_mark()
+    app.click('[data-saveprof]')
+    t.check(app.wait_toast('Profile saved', m), 'save profile', 'toast "Profile saved"', app.toasts(m))
+    offered = app.wait_sheet('[data-fg-yes]', timeout=3000)
+    t.sub('X1a', 'Female: switching sex offers (not forces) female sculpt goals', offered, 'goal sheet', 'sheet with "Use these goals"', short(app.text(app.sheet()), 120) if offered else 'no sheet')
+    if offered:
+        app.click('#sheet-root > .sheet:last-child [data-fg-yes]')
+        app.page.wait_for_timeout(500)
+    p = app.profile()
+    body = p.get('body') or {}
+    t.check(body.get('sex') == 'female' and body.get('menopause') == 'pre' and body.get('heightIn') == 65, 'profile stored', 'sex female, menopause pre, 65 in', body)
+    t.sub('X1b', 'Female: sculpt goals switched only after consent', 'glute_shelf' in (p.get('sculptGoals') or []), 'profile.sculptGoals', 'female starting goals', p.get('sculptGoals'))
+    app.store("(store.logBodyweight(ds, 140), store.logMeasurement({ d: ds, neck: 13, waist: 29, hips: 39, shoulders: 40, chest: 35, armL: 11, armR: 11.25, thighL: 22, thighR: 22 }), store.updateProfile({ nutrition: { ...store.getProfile().nutrition, mode: 'simple' } }), 1)")
+    checks = [
+        ('X1c', 'body', [], ['Adonis']),
+        ('X1d', 'measure', [r'Waist : hip', r'healthy \d+–\d+% for women'], [r'Adonis', r'golden']),
+        ('X1e', 'nutrition', [r'Iron', r'Energy availability'], [r'Eating on Adderall', r'marathon']),
+        ('X1f', 'projection', [r'waist:hip', r'Waist:hip under 0\.85'], [r'V-taper', r'Adonis', r'race weight']),
+        ('X1g', 'supplements', [r'Women ≈10–57'], [r'You take Adderall', r'men 19–39']),
+        ('X1h', 'settings', [r'Sex', r'Menopause'], []),
+    ]
+    for sid, route, want, avoid in checks:
+        e0 = len(app.errors)
+        try:
+            app.go(route, settle=450)
+        except Exception as ex:
+            t.sub(sid, f'Female: {route} renders', False, 'navigate', 'route renders', short(str(ex), 120)); continue
+        if route == 'projection':
+            app.wait_text(r'Milestones', timeout=4000)
+            if app.has('details.bd-assume'): app.page.evaluate("() => document.querySelectorAll('details').forEach(d => d.open = true)")
+        txt = app.text()
+        errs = [f'{k}: {short(x, 100)}' for k, x, _ in app.errors[e0:]]
+        miss = [w for w in want if not re.search(w, txt, re.I)]
+        bad = [a for a in avoid if re.search(a, txt, re.I)]
+        t.sub(sid, f'Female: {route} — no errors, female text, no male-only text', not errs and not miss and not bad, route,
+              'no page errors; has ' + ', '.join(want or ['(render)']) + (('; none of ' + ', '.join(avoid)) if avoid else ''),
+              f'errors={errs[:2]} missing={miss} male-only={bad}')
+    # Testosterone detail sheet uses the female studies
+    app.go('supplements', settle=300)
+    app.click('[data-cat="prescription"]'); app.page.wait_for_timeout(250)
+    app.click('[data-detail="trt"]')
+    ok = app.wait_sheet('.sp-tsvg', timeout=3000)
+    st = app.text(app.sheet()) if ok else ''
+    t.sub('X1i', 'Female: testosterone sheet cites the female dose-response (Huang 2014), 24-week chart', ok and 'Huang 2014' in st and '24 weeks' in st,
+          'TRT detail', 'Huang 2014 + 24-week chart', short(st, 160))
+    app.close_sheet()
+    # Pregnancy pauses the projection
+    app.store("(store.updateProfile({ body: { ...store.getProfile().body, pregnancy: 'pregnant' } }), 1)")
+    e0 = len(app.errors)
+    app.go('projection', settle=450)
+    txt = app.text()
+    t.sub('X1j', 'Female: pregnancy pauses the projection', bool(re.search(r'Projection paused', txt)) and not app.errors[e0:], 'projection',
+          '"Projection paused" card, no errors', short(txt, 160))
+    app.store("(store.updateProfile({ body: { ...store.getProfile().body, pregnancy: null } }), 1)")
 
 
 @test('E1', 'No console/page errors during flows')

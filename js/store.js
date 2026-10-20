@@ -7,7 +7,7 @@
 // The registry, the active pointer and per-account sync bookkeeping live under 'fgx_*', outside every
 // account's namespace, so exportAll / importAll / _reset never see them.
 import { DEFAULT_LOCATIONS } from './data/equipment.js';
-import { DEFAULT_SCULPT_GOALS } from './data/sculpt.js';
+import { DEFAULT_SCULPT_GOALS, defaultSculptGoals } from './data/sculpt.js';
 
 const SCHEMA = 1;
 export const DEFAULT_ACCOUNT = 'default';
@@ -62,14 +62,17 @@ function relKey(k) { if (k.startsWith('fg_')) return k.slice(3) || null; const m
 const subs = new Set();
 function notify() { subs.forEach(fn => { try { fn(); } catch (e) { console.error(e); } }); }
 
-export function defaultProfile() {
+// §20 Female mode: defaultProfile({ sex: 'female' }) is for creating a NEW female profile (female starting sculpt goals,
+// body.sex 'female'). Called with no argument it is unchanged (Bob's defaults); migrate() never touches existing goals.
+export function defaultProfile({ sex = 'male' } = {}) {
+  const female = sex === 'female';
   return {
     schema: SCHEMA,
     name: 'Bob',
     units: 'lb',
     bodyweight: null,
     goal: 'recomp',                 // 'recomp' | 'lean_bulk' | 'cut'
-    sculptGoals: [...DEFAULT_SCULPT_GOALS],
+    sculptGoals: female ? defaultSculptGoals('female') : [...DEFAULT_SCULPT_GOALS],
     // User-adjustable multipliers on weekly targets (missing = 1). Bob's baseline priorities
     // (triceps, side delts, abs up; legs maintenance) already live in REGIONS[r].priority/weeklySets.
     groupPriority: {},
@@ -84,7 +87,7 @@ export function defaultProfile() {
     crunch: { club: 'allen' },
     restTimer: { enabled: true, sound: true },
     // Body profile for body-comp math + projections (see CONTRACT §11).
-    body: { sex: 'male', heightIn: null, birthYear: null, trainingMonths: 7, activity: 'desk' },
+    body: { sex: female ? 'female' : 'male', heightIn: null, birthYear: null, trainingMonths: 7, activity: 'desk' },
     // Supplement / therapy stack (CONTRACT §17): [{ id, start:'YYYY-MM-DD', end:null|'YYYY-MM-DD', dose:null|string, active:true }]
     supplements: [],
     // Optional metabolic values (CONTRACT §17). Units: totalT/onTrtT ng/dL, freeT pg/mL, vitD ng/mL, hba1c %, sleepHours h, stress 1-5.
@@ -103,8 +106,9 @@ export function defaultProfile() {
 }
 
 function migrate(p) {
-  const d = defaultProfile();
-  if (!p) return d;
+  if (!p) return defaultProfile();
+  // §20: a female profile that has no sculptGoals key yet gets the female starting goals; existing goals are kept.
+  const d = defaultProfile({ sex: p.body?.sex === 'female' ? 'female' : 'male' });
   // Shallow-merge so new fields get defaults without clobbering user choices.
   const out = { ...d, ...p, nutrition: { ...d.nutrition, ...(p.nutrition || {}) }, restTimer: { ...d.restTimer, ...(p.restTimer || {}) },
     body: { ...d.body, ...(p.body || {}) }, schedule: { ...d.schedule, ...(p.schedule || {}) },
