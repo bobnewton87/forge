@@ -41,7 +41,7 @@ LAUNCH_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swi
 LOCS = ['home', 'crunch', 'travel', 'office']
 ROUTES = ['today', 'session', 'plan', 'history', 'body', 'measure', 'projection', 'supplements',
           'nutrition', 'more', 'settings', 'library', 'exercise?id=db_curl', 'import']
-WEBGL_TESTS = {'F1', 'F2', 'S1', 'S2', 'S3', 'S4'}   # run with real (swiftshader) WebGL; the rest run in lite mode
+WEBGL_TESTS = {'F1', 'F2', 'S1', 'S2', 'S3', 'S4', 'S5'}   # run with real (swiftshader) WebGL; the rest run in lite mode
 CARDIO_GOAL = 225
 KCAL_GOAL = 2650
 BOB_MEAS = {'weight': 164, 'neck': 15, 'waist': 34.5, 'shoulders': 46, 'chest': 39, 'armL': 13.5, 'armR': 13.75,
@@ -622,6 +622,58 @@ def t_female_3d(t, ctx):
     t.check(any(u.split('?')[0].endswith('/assets/body/body-female.bin') for u in reqs), 'female asset fetched', 'body-female.bin', [u.split('/')[-1] for u in reqs if '/assets/body/' in u])
     t.check(not any(u.split('?')[0].endswith('/assets/body/body.bin') for u in reqs), 'male asset not fetched for a female profile', 'no body.bin',
             [u.split('/')[-1] for u in reqs if '/assets/body/' in u])
+
+
+@test('S5', 'Smoke: obese female + obese male profiles (with and without a tape) mount the 3D, sized to their weight (CONTRACT §21b)')
+def t_obese_3d(t, ctx):
+    """§21b: before the fix a 240/300 lb profile with no tape measurements rendered an average-sized body, and the
+    shoulder girdle collapsed on very large bodies. Checks each profile mounts with no page errors and that the
+    fitted geometry is as big as the body is."""
+    app = t.app
+    tape_f = ("neck: 15.5, shoulders: 49, chest: 47, waist: 44, hips: 52, armL: 15, armR: 15, forearm: 11.5, "
+              "thighL: 28, thighR: 28, calfL: 17.5, calfR: 17.5")
+    tape_m = ("neck: 18.5, shoulders: 56, chest: 52, waist: 52, hips: 50, armL: 17, armR: 17, forearm: 13.5, "
+              "thighL: 29, thighR: 29, calfL: 18, calfR: 18")
+    cases = [('obese female, taped', 'female', 64, 240, tape_f), ('obese female, no tape', 'female', 64, 240, None),
+             ('obese male, taped', 'male', 70, 300, tape_m), ('obese male, no tape', 'male', 70, 300, None)]
+    geoms = {}
+    for i, (label, sex, h, w, tape) in enumerate(cases):
+        app.load({}, 'today')
+        meas = f"store.logMeasurement({{ d: ds, {tape} }}), " if tape else ""
+        app.store(f"(store.updateProfile({{ body: {{ ...store.getProfile().body, sex: '{sex}', heightIn: {h}, birthYear: 1985 }} }}), "
+                  f"store.logBodyweight(ds, {w}), {meas}1)")
+        e0 = len(app.errors)
+        app.go('body', settle=300)
+        ok_canvas = app.has('#content canvas', timeout=8000)
+        ready = True
+        try:
+            app.page.wait_for_function("() => { const l = document.querySelector('#content .b3m .b3m-load'); return !!l && l.style.display === 'none'; }",
+                                       timeout=40000, polling=200)
+        except PWTimeout:
+            ready = False
+        errs = app.errors[e0:]
+        t.sub(f'S5{chr(97 + i)}', f'3D mounts for a {label} profile, no page errors', ok_canvas and ready and not errs,
+              'body route', 'canvas mounted, model fitted, no errors',
+              f'canvas={ok_canvas} ready={ready} errors=' + ('; '.join(short(e[1], 80) for e in errs[:2]) or 'none'))
+        geoms[label] = app.page.evaluate(
+            """() => Promise.all([import('/js/engine/anthro.js'), import('/js/engine/bodycomp.js'), import('/js/store.js'), import('/js/ui/projection.js')])
+                 .then(([anthro, bc, s, proj]) => {
+                   const b = bc.baseline({ profile: s.store.getProfile(), bodyLog: s.store.getBodyLog(), measurements: s.store.getMeasurements() });
+                   const g = anthro.bodyGeometry({ ...proj.shapeOf({ measurements: b.measurements, weightLb: b.weightLb }, b.heightIn),
+                                                   bodyFatPct: b.bodyFatPct, sex: b.sex });
+                   return { waist: g.breadths.waist, chest: g.breadths.chest, biacromial: g.breadths.biacromial, bideltoid: g.breadths.bideltoid,
+                            shoulders: g.inputs.shoulders, h: g.heightIn };
+                 })""")
+    # the untaped bodies must be sized from their weight, i.e. close to the taped ones, not to the median adult
+    for sex, lo, hi in [('female', 'obese female, taped', 'obese female, no tape'), ('male', 'obese male, taped', 'obese male, no tape')]:
+        a, b = geoms[lo], geoms[hi]
+        close = a and b and abs(b['waist'] / a['waist'] - 1) < 0.25 and abs(b['chest'] / a['chest'] - 1) < 0.20
+        t.sub('S5' + ('e' if sex == 'female' else 'f'), f'untaped obese {sex} is sized from weight, not the median adult', close,
+              'waist / chest breadth', f"within 25 % of the taped body ({a['waist']:.1f} / {a['chest']:.1f} in)",
+              f"{b['waist']:.1f} / {b['chest']:.1f} in" if b else 'no geometry')
+        wide = b and b['bideltoid'] > b['biacromial'] * 1.06 and 0.19 < b['bideltoid'] / b['h'] < 0.42
+        t.sub('S5' + ('g' if sex == 'female' else 'h'), f'untaped obese {sex} keeps a plausible shoulder girdle', wide,
+              'bideltoid', '1.06-1.5x biacromial, 0.19-0.42 H', f"{b['bideltoid']:.1f} in vs biacromial {b['biacromial']:.1f} in" if b else 'none')
 
 
 # ---------------------------------------------------------------- core flows

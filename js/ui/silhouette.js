@@ -24,16 +24,24 @@ const num = v => (typeof v === 'number' && isFinite(v) && v > 0 ? v : null);
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 let uidN = 0;
 
-export function normalizeMeasurements(m = {}, heightIn = 69, sex = 'male') {
+// CONTRACT §21b: sites the user has not measured are sized from height AND (when known) body weight, exactly as
+// anthro.fillGirths does — girth² ∝ cross-section ∝ weight / height. Without the weight a 300 lb profile with no
+// tape drew the median outline. Returns null (keep the old height-only defaults) when no weight is known.
+function weightScale(weightLb, heightIn, refW, refH) {
+  const w = num(weightLb);
+  return w ? Math.sqrt((w / refW) / (heightIn / refH)) : null;
+}
+export function normalizeMeasurements(m = {}, heightIn = 69, sex = 'male', weightLb = null) {
   m = m || {};
   const arm = num(m.arm) ?? (num(m.armL) && num(m.armR) ? (m.armL + m.armR) / 2 : num(m.armL) ?? num(m.armR));
   const raw = { ...m, arm };
+  const W = num(weightLb) ?? num(m.weightLb);
   const out = {};
   if (sex === 'female') {
-    const hs = heightIn / 64;
+    const hs = heightIn / 64, ws = weightScale(W, heightIn, 140, 64);
     for (const k of Object.keys(DEF_F)) {
       const v = num(raw[k]);
-      out[k] = clamp(v ?? DEF_F[k] * (k === 'neck' || k === 'arm' || k === 'forearm' ? 1 : Math.sqrt(hs)), ...RANGE_F[k]);
+      out[k] = clamp(v ?? DEF_F[k] * (ws ?? (k === 'neck' || k === 'arm' || k === 'forearm' ? 1 : Math.sqrt(hs))), ...RANGE_F[k]);
     }
     if (!num(raw.chest) && num(raw.shoulders)) out.chest = clamp(out.shoulders * 0.87, ...RANGE_F.chest);
     if (!num(raw.shoulders) && num(raw.chest)) out.shoulders = clamp(out.chest * 1.15, ...RANGE_F.shoulders);
@@ -41,10 +49,10 @@ export function normalizeMeasurements(m = {}, heightIn = 69, sex = 'male') {
     out.shoulders = Math.max(out.shoulders, out.chest * 0.98);
     return out;
   }
-  const hs = heightIn / 69;   // typical girths scale a little with height
+  const hs = heightIn / 69, ws = weightScale(W, heightIn, 164, 69);   // typical girths scale with height and weight
   for (const k of Object.keys(DEF)) {
     const v = num(raw[k]);
-    out[k] = clamp(v ?? DEF[k] * (k === 'neck' || k === 'arm' || k === 'forearm' ? 1 : Math.sqrt(hs)), ...RANGE[k]);
+    out[k] = clamp(v ?? DEF[k] * (ws ?? (k === 'neck' || k === 'arm' || k === 'forearm' ? 1 : Math.sqrt(hs))), ...RANGE[k]);
   }
   // keep the frame coherent when only some sites are known
   if (!num(raw.chest) && num(raw.shoulders)) out.chest = clamp(out.shoulders * 0.85, ...RANGE.chest);
@@ -312,18 +320,18 @@ function details(g, bf, s, cx, top) {
   return out.join('');
 }
 
-export function silhouetteSVG(measurements = {}, { bodyFatPct = null, heightIn = 69, label = '', compare = null, cls = '', title, sex = null } = {}) {
+export function silhouetteSVG(measurements = {}, { bodyFatPct = null, heightIn = 69, label = '', compare = null, cls = '', title, sex = null, weightLb = null } = {}) {
   const F = sexFor(measurements, sex) === 'female';
   const H = clamp(num(heightIn) || (F ? 64 : 69), F ? 54 : 58, 82);
   const bf = clamp(num(bodyFatPct) ?? (F ? 27 : 18), 4, F ? 50 : 40);
   const W = 230, VH = 470, pad = 12, s = (VH - pad * 2 - (label ? 18 : 0)) / H, cx = W / 2, top = pad + (F ? 2.4 : 0);
   const id = 'sil' + (++uidN);
-  const m = normalizeMeasurements(measurements, H, F ? 'female' : 'male');
+  const m = normalizeMeasurements(measurements, H, F ? 'female' : 'male', weightLb);
   const g = F ? bodyF(m, H) : body(m, H);
   const d = toPath(g.pts, s, cx, top);
   let ghost = '';
   if (compare) {
-    const cm = normalizeMeasurements(compare.measurements || compare, H, F ? 'female' : 'male');
+    const cm = normalizeMeasurements(compare.measurements || compare, H, F ? 'female' : 'male', compare.weightLb ?? weightLb);
     const cg = F ? bodyF(cm, H) : body(cm, H);
     ghost = `<path d="${toPath(cg.pts, s, cx, top)}" fill="none" stroke="#f3f3f6" stroke-opacity=".8" stroke-width="1.3" stroke-dasharray="3 2.5"/>`;
   }
