@@ -255,3 +255,14 @@ input[type=range].bd-range::-moz-range-thumb { width: 28px; height: 28px; border
 .bd-bdel { min-height: 36px; border-radius: 8px; color: var(--muted); font-size: 13px; }
 .bd-bdel:disabled { opacity: .3; }
 .bd-phtag { font-size: 11px; font-weight: 800; margin-left: 4px; white-space: nowrap; }
+
+/* Stack toggle chips under the 3D model */
+.bd-stackchips { margin: 10px 0 4px; }
+.bd-stackchips .chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 6px; }
+.bd-schip { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; padding: 8px 12px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--card2); color: var(--text); text-align: left; font: inherit; cursor: pointer; }
+.bd-schip.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--card2)); }
+.bd-sname { font-weight: 700; font-size: 13px; line-height: 1.25; overflow-wrap: anywhere; }
+.bd-schip:not(.active) .bd-sname { opacity: .55; text-decoration: line-through; }
+.bd-sdelta { font-size: 11px; font-weight: 700; color: var(--good); }
+.bd-schip:not(.active) .bd-sdelta { color: var(--muted); }

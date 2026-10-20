@@ -258,7 +258,7 @@ function compChart(S, W = 340, H = 150, phases = null) {
 }
 
 // ---------------- state ----------------
-const DEF_OPTS = { weeks: 12, until: null, adherence: null, repeat: true, kcal: null, pg: null, fatPct: null, cdelta: 0, cmod: null, cint: 'easy', view: 'proj', scrub: null, pose: 'relaxed', useStack: true, ph: null };
+const DEF_OPTS = { weeks: 12, until: null, adherence: null, repeat: true, kcal: null, pg: null, fatPct: null, cdelta: 0, cmod: null, cint: 'easy', view: 'proj', scrub: null, pose: 'relaxed', useStack: true, ph: null, stackOff: [] };
 function getOpts(store) { return { ...DEF_OPTS, ...(safe(() => store.kv('projection'), null) || {}) }; }
 function setOpts(store, patch) { const o = { ...getOpts(store), ...patch }; store.kv('projection', o); return o; }
 const PRESETS = [['Cut', -500], ['Recomp', -250], ['Maintain', 0], ['Lean bulk', 300], ['Bulk', 600], ['Dirty bulk', 1000]];
@@ -330,9 +330,15 @@ function plannedCardio(I) {
 }
 const adhOf = (I, o) => o.adherence ?? I.targets?.adherence ?? 0.85;
 const cmodOf = (I, o) => o.cmod ?? (I.targets?.cardio?.modalities || []).find(m => CARDIO[m]) ?? 'bike';
+// Per-item stack toggles (preview only; the saved stack is unchanged): drop switched-off items from the profile view.
+export function profFor(I, o) {
+  const off = Array.isArray(o?.stackOff) ? o.stackOff : [];
+  if (!off.length) return I.profile;
+  return { ...I.profile, supplements: (I.profile.supplements || []).filter(x => !off.includes(x?.id)) };
+}
 function runProject(I, o, weeks, kcal, pg, fatPct, plan = null) {
   if (!I.b) return null;
-  const base = { baseline: I.b, profile: I.profile, sessions: I.sessions, weeks, now: I.now, adherence: adhOf(I, o), repeatPlan: o.repeat, useStack: o.useStack !== false };
+  const base = { baseline: I.b, profile: profFor(I, o), sessions: I.sessions, weeks, now: I.now, adherence: adhOf(I, o), repeatPlan: o.repeat, useStack: o.useStack !== false };
   if (newEngine()) {
     const intake = { proteinGPerLb: pg, fatPct }; if (kcal != null && !plan) intake.calories = kcal;
     return safe(() => PJ.project({ ...base, bodyLog: I.bodyLog, foodLog: I.foodLog, intake, cardioDeltaMin: o.cdelta || 0, cardioModality: cmodOf(I, o), cardioIntensity: o.cint,
@@ -348,12 +354,12 @@ function runProject(I, o, weeks, kcal, pg, fatPct, plan = null) {
 let labCache = { key: null, v: null };
 export function labData(I, o, weeks, maint, pg, fatPct) {
   if (!I.b || !I.b.weightLb) return null;
-  const key = JSON.stringify([weeks, adhOf(I, o), o.repeat, cmodOf(I, o), o.useStack !== false, JSON.stringify(I.profile.supplements || []), JSON.stringify(I.profile.metabolic || {}), pg, fatPct, o.cdelta, o.cmod, o.cint, I.b.weightLb, I.b.bodyFatPct, I.sessions.length, Math.round(maint || 0), newEngine()]);
+  const key = JSON.stringify([weeks, adhOf(I, o), o.repeat, cmodOf(I, o), o.useStack !== false, JSON.stringify(o.stackOff || []), JSON.stringify(I.profile.supplements || []), JSON.stringify(I.profile.metabolic || {}), pg, fatPct, o.cdelta, o.cmod, o.cint, I.b.weightLb, I.b.bodyFatPct, I.sessions.length, Math.round(maint || 0), newEngine()]);
   if (labCache.key === key) return labCache.v;
   const bf0 = I.b.bodyFatPct ?? 20, lean0 = I.b.comp?.leanLb ?? I.b.weightLb * (1 - bf0 / 100), fat0 = I.b.weightLb - lean0;
   let raw = null;
   if (newEngine()) {
-    raw = safe(() => PJ.nutritionLab({ baseline: I.b, profile: I.profile, sessions: I.sessions, bodyLog: I.bodyLog, foodLog: I.foodLog, weeks, now: I.now, calorieRange: [-750, 1000], step: 125,
+    raw = safe(() => PJ.nutritionLab({ baseline: I.b, profile: profFor(I, o), sessions: I.sessions, bodyLog: I.bodyLog, foodLog: I.foodLog, weeks, now: I.now, calorieRange: [-750, 1000], step: 125,
       proteinGPerLb: pg, fatPct, cardioDeltaMin: o.cdelta || 0, cardioModality: cmodOf(I, o), cardioIntensity: o.cint, adherence: adhOf(I, o), repeatPlan: o.repeat, useStack: o.useStack !== false }), null);
   }
   if (!raw || !(raw.points || []).length) {
@@ -597,6 +603,43 @@ function phasesCard(D, o) {
   </div>`;
 }
 
+// Stack toggle chips under the 3D model: tap to switch an item off/on for this preview and see its effect.
+// Each chip shows that item's own effect at the horizon (with vs without it, same intake and plan).
+function stackChips(D, o) {
+  const items = activeStack(D.profile);
+  if (!items.length) return '';
+  const off = new Set(o.stackOff || []), useAll = o.useStack !== false;
+  const d = stackDeltaCache.key === stackDeltaKey(D, o) ? stackDeltaCache.v : null;
+  return `<div class="bd-stackchips">
+      <div class="row between"><span class="tiny muted bold">YOUR STACK · tap to compare</span><button class="link tiny" data-stall="${off.size || !useAll ? 'on' : 'off'}">${off.size || !useAll ? 'All on' : 'All off'}</button></div>
+      <div class="chips">${items.map(x => {
+        const on = useAll && !off.has(x.id), e = d?.[x.id];
+        const eff = e ? `${e.lean >= 0.05 ? '+' : ''}${f1(e.lean)} lb lean${Math.abs(e.fat) >= 0.1 ? ` · ${e.fat > 0 ? '+' : ''}${f1(e.fat)} fat` : ''}` : '…';
+        const short = suppName(x.id).replace(/\s*\(.*\)\s*$/, '');
+        return `<button class="bd-schip ${on ? 'active' : ''}" data-stoggle="${esc(x.id)}" aria-pressed="${on}"><span class="bd-sname">${on ? '●' : '○'} ${esc(short)}</span><span class="bd-sdelta" data-sdelta="${esc(x.id)}">${esc(eff)}</span></button>`;
+      }).join('')}</div>
+    </div>`;
+}
+const stackDeltaCache = { key: null, v: null };
+const stackDeltaKey = (D, o) => JSON.stringify([D.weeks, D.kcal, D.pg, D.fatPct, !!D.plan, o.cdelta || 0, o.cmod, o.cint, adhOf(D, o), o.repeat, o.useStack !== false, o.stackOff || [], D.profile.supplements || [], D.profile.metabolic || {}, D.b?.weightLb, D.sessions?.length]);
+// Effect of each item = projection with the item − projection without it (relative to the current on/off set).
+export function stackDeltas(D, o) {
+  const key = stackDeltaKey(D, o);
+  if (stackDeltaCache.key === key) return stackDeltaCache.v;
+  const items = activeStack(D.profile), base = new Set(o.useStack === false ? items.map(x => x.id) : (o.stackOff || []));
+  const endOf = r => { const S = r?.series || []; return S[S.length - 1] || null; };
+  const run = offSet => endOf(runProject(D, { ...o, useStack: true, stackOff: [...offSet] }, D.weeks, D.plan ? null : D.kcal, D.pg, D.fatPct, D.plan || null));
+  const v = {};
+  for (const x of items) {
+    const withSet = new Set(base); withSet.delete(x.id);
+    const withoutSet = new Set(base); withoutSet.add(x.id);
+    const a = run(withSet), b = run(withoutSet);
+    if (a && b) v[x.id] = { lean: (a.leanLb ?? 0) - (b.leanLb ?? 0), fat: (a.fatLb ?? 0) - (b.fatLb ?? 0), bf: (a.bodyFatPct ?? 0) - (b.bodyFatPct ?? 0) };
+  }
+  stackDeltaCache.key = key; stackDeltaCache.v = v;
+  return v;
+}
+
 function stackLine(D, o) {
   const items = activeStack(D.profile);
   const contrib = (D.res.stack?.contributions || []).slice(0, 3);
@@ -818,6 +861,7 @@ export function render(ctx) {
     <div class="bd-stage" id="pjStage" data-h="${H}">${heroSvg(S, i, H)}</div>
     <div class="bd-scrub"><input type="range" class="bd-range" id="pjScrub" min="0" max="${S.length - 1}" step="1" value="${i}" style="--pct:${(i / (S.length - 1)) * 100}%" aria-label="Point in time">
       <div class="row between tiny muted" id="pjScrubLbl">${scrubLabels(S)}</div></div>
+    <div id="pjStackChips">${stackChips(D, o)}</div>
     <div id="pjHeroInfo">${heroInfo(D, o)}</div>
   </div>`;
   return `<div class="page-head"><p class="sub" id="pjSub">${subText(D)}</p></div>
@@ -912,6 +956,7 @@ export function bind(root, ctx, params = {}) {
       if (!kcDragging) { set('#pjKcalV', kfmt(D.kcal)); }
       $('#pjKcalGrp')?.classList.toggle('bd-dim', !!D.plan);
       set('#pjStackLine', activeStack(D.profile).length ? stackLine(D, o) : '');
+      set('#pjStackChips', stackChips(D, o)); bindChips(); fillDeltas();
       const planC = plannedCardio(D), tgtC = D.targets?.cardio?.minPerWeek;
       set('#pjCardioBase', `${tgtC != null ? `target ${tgtC} · ` : ''}planned ${planC} min/wk`);
       const ca = $('#pjCApply'); if (ca) { ca.style.display = o.cdelta ? '' : 'none'; ca.textContent = `Make ${Math.max(0, (tgtC ?? planC) + (o.cdelta || 0))} min/wk my cardio target`; }
@@ -985,8 +1030,32 @@ export function bind(root, ctx, params = {}) {
   $('#pjRepeat').onchange = e => { save({ repeat: e.target.checked }); schedule(); };
   root.querySelectorAll('[data-stack]').forEach(b => b.onclick = () => {
     root.querySelectorAll('[data-stack]').forEach(x => x.classList.toggle('active', x === b));
-    save({ useStack: b.dataset.stack === '1' }); schedule();
+    save({ useStack: b.dataset.stack === '1', stackOff: [] }); schedule();
   });
+  // Per-item stack chips under the 3D model (preview only).
+  function bindChips() {
+    const box = $('#pjStackChips'); if (!box) return;
+    box.onclick = e => {
+      const all = e.target.closest('[data-stall]');
+      if (all) { save(all.dataset.stall === 'on' ? { useStack: true, stackOff: [] } : { useStack: true, stackOff: activeStack(cur.D.profile).map(x => x.id) }); schedule(0); return; }
+      const c = e.target.closest('[data-stoggle]'); if (!c) return;
+      const id = c.dataset.stoggle;
+      const offNow = o.useStack === false ? activeStack(cur.D.profile).map(x => x.id) : [...(o.stackOff || [])];
+      const next = offNow.includes(id) ? offNow.filter(x => x !== id) : [...offNow, id];
+      c.classList.toggle('active'); 
+      save({ useStack: true, stackOff: next }); schedule(0);
+    };
+  }
+  let deltaT = 0;
+  function fillDeltas() {
+    clearTimeout(deltaT);
+    deltaT = setTimeout(() => {
+      const D = cur?.D; if (!D || !activeStack(D.profile).length) return;
+      const v = safe(() => stackDeltas(D, o), null); if (!v) return;
+      const box = $('#pjStackChips'); if (box) { box.innerHTML = stackChips(D, o); bindChips(); }
+    }, 60);
+  }
+  bindChips(); fillDeltas();
   // Cardio what-if → the real target (re-plans upcoming auto days, then the projection uses the new plan).
   $('#pjCApply').onclick = () => {
     const D = cur.D, baseC = D.targets?.cardio?.minPerWeek ?? plannedCardio(D), target = Math.max(0, Math.round((baseC + (o.cdelta || 0)) / 5) * 5);
