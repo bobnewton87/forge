@@ -129,8 +129,8 @@ function renderSettings(ctx) {
     <div class="row mt"><input type="range" min="${LIMITS.adherence[0]}" max="${LIMITS.adherence[1]}" step="0.05" value="${T.adherence}" data-adh style="--pct:${((T.adherence - LIMITS.adherence[0]) / (LIMITS.adherence[1] - LIMITS.adherence[0])) * 100}%" class="grow" aria-label="Adherence"><span class="num bold" style="width:72px;text-align:right" data-adh-v>${Math.round(T.adherence * 100)}%</span></div>
     <div class="label mt2">When the week's set minimums don't fit your slot times</div>
     ${seg('volumeMode', [['extend', 'Lengthen'], ['ask', 'Ask me'], ['fixed', 'Keep times']], T.training.volumePolicy.mode)}
-    <div class="label mb mt">Targets above the minimums</div>
-    ${seg('volumeFill', [['time', 'Spare time only'], ['extend', 'May lengthen']], T.training.volumePolicy.fillTargets)}
+    <div class="label mb mt">Reach targets</div>
+    ${seg('volumeFill', [['extend', 'Lengthen workouts'], ['time', 'Spare time only'], ['ask', 'Ask me']], T.training.volumePolicy.fillTargets)}
     <div class="label mb mt">Longest workout</div>
     <div class="chips">${[60, 75, 90, 105, 120].map(m => `<button class="chip ${T.training.volumePolicy.maxMinutes === m ? 'active' : ''}" data-vmax="${m}">${m}′</button>`).join('')}</div>
     <p class="tiny muted" style="margin-top:6px">Plan my week always fits every muscle's weekly minimum (lengthening up to this cap if needed), then fills toward your targets.</p>

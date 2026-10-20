@@ -303,11 +303,13 @@ function minsLine(sum, profile) {
   const ext = (sum.extended || []).reduce((n, x) => n + (x.to - x.from), 0);
   const t = sum.targets, pp = sum.pushPull;
   const pol = volumePolicyOf(profile || {});
-  const hit = t && t.met < t.total && pol.fillTargets !== 'extend' && t.minutesToHit > 0;
+  const tShort = t && t.met < t.total;
+  const hit = tShort && pol.fillTargets !== 'extend' && t.minutesToHit > 0;            // 'time' / 'ask': offer to lengthen
+  const room = tShort && pol.fillTargets === 'extend';                                 // already lengthening: offer cap / day / Time-saver
   return `<div class="pl-mins"><span>Minimums</span>${m.met ? '<span class="ok">✓</span>' : `<span class="bad">✗ ${m.short.length} short</span><span class="muted small">${esc(m.short.slice(0, 3).map(x => `${x.name} ${fmtNum(x.total, 0)}/${fmtNum(x.min, 0)}`).join(', '))}</span>`}
-    ${t ? `<span class="muted">·</span><span>Targets <b>${t.met}/${t.total}</b></span>` : ''}${pp ? `<span class="muted small">· push:pull ${pp.push}:${pp.pull}</span>` : ''}
-    ${ext ? `<span class="muted small">· +${ext}′ added</span>` : ''}</div>
-    <div class="pl-mins">${hit ? `<button type="button" data-a="hit-targets">Hit targets: +${t.minutesToHit} min/wk</button>` : ''}<button type="button" data-a="why-min">Why these numbers?</button>${m.met ? '' : '<button type="button" data-a="vol-room">Make room</button>'}</div>`;
+    ${pp ? `<span class="muted small">· push:pull ${pp.push}:${pp.pull}</span>` : ''}${ext ? `<span class="muted small">· +${ext}′ added</span>` : ''}</div>
+    ${t ? `<div class="pl-mins"><span class="${tShort ? 'bad' : 'ok'}">${esc(t.line || `Targets ${t.met}/${t.total}`)}</span></div>` : ''}
+    <div class="pl-mins">${hit ? `<button type="button" data-a="hit-targets">Hit targets: +${t.minutesToHit} min/wk</button>` : ''}${room ? '<button type="button" data-a="vol-room">Reach targets: options</button>' : ''}<button type="button" data-a="why-min">Why these numbers?</button>${m.met || room ? '' : '<button type="button" data-a="vol-room">Make room</button>'}</div>`;
 }
 
 // ---------- day sheet ----------
@@ -602,6 +604,10 @@ async function runPlan(ctx, from, to, label) {
     if (pol.mode === 'ask' && shortN) {
       const longer = run({ mode: 'extend' });
       if (longer.some(s => s.plan?.extended)) openExtendSheet(ctx, { extended: longer, onApply: () => { store.replacePlanned(from, to, longer); toast(ctx, extendedToast(longer) || 'Plan updated'); } });
+    } else if (pol.fillTargets === 'ask' && wk?.targets && wk.targets.met < wk.targets.total) {
+      // Reach targets: ask me → show the lengthened plan as a proposal
+      const longer = run({ mode: 'extend', fillTargets: 'extend' });
+      if (longer.some(s => s.plan?.extended)) openExtendSheet(ctx, { extended: longer, title: 'Lengthen workouts to reach your targets?', onApply: () => { store.replacePlanned(from, to, longer); toast(ctx, extendedToast(longer) || 'Plan updated'); } });
     }
   } finally { busy = false; }
 }
@@ -682,7 +688,7 @@ export function bind(root, ctx) {
     const ex = e.target.closest('[data-ext]');
     if (ex) {
       const s = mainPlanned(ctx.store.getSessions(), ex.dataset.ext); const x = s?.plan?.extended;
-      if (x) ctx.openSheet(`<div class="pl-sheet"><h2>Why ${x.to} minutes?</h2><p class="small mt">Your slot was ${x.from}′. Forge added ${x.to - x.from}′ so this week reaches its weekly set minimums: <b>${esc(x.reason.replace(/^weekly minimums: /, ''))}</b> sets.</p>
+      if (x) ctx.openSheet(`<div class="pl-sheet"><h2>Why ${x.to} minutes?</h2><p class="small mt">Your slot was ${x.from}′. Forge added ${x.to - x.from}′ so this week reaches its weekly set targets: <b>${esc(x.reason.replace(/^weekly (set targets|minimums): /, ''))}</b> sets.</p>
         <p class="tiny muted mt">Change this in Settings → Training defaults (lengthen / ask / keep times, longest workout).</p>
         <div class="sheet-actions"><button type="button" class="btn btn-block" data-why>Why these numbers?</button><button type="button" class="btn btn-ghost btn-block" data-ok>OK</button></div></div>`, (el, close) => {
         el.querySelector('[data-ok]').onclick = () => close();
@@ -727,7 +733,7 @@ export function bind(root, ctx) {
       }
       case 'vol-room': {
         const sum = safe(() => weekPlanSummary(ctx.store.getSessions(), { weekStart: ws, profile: ctx.store.getProfile(), now: new Date() }), null);
-        openVolumeRoomSheet(ctx, sum?.minimums?.short || []); break;
+        openVolumeRoomSheet(ctx, sum?.minimums?.short || [], sum?.targets?.line || ''); break;
       }
       case 'projection': ctx.nav('projection'); break;
       case 'history': ctx.nav('history'); break;

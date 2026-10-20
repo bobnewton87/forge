@@ -380,7 +380,7 @@ function todayPlanCard(sessions, profile, active) {
   return `<section class="pl-today">
     <div class="pl-today-top"><span>Today's plan</span>${s.plan ? `<span class="pl-tag ${s.plan.auto ? 'auto' : 'custom'}">${s.plan.auto ? 'Auto' : 'Custom'}</span>` : ''}</div>
     <div class="pl-today-title">${esc(s.title || 'Workout')}</div>
-    <div class="pl-today-meta">~${Math.round(s.estMinutes || s.minutes || 0) || '?'} min${s.plan?.extended ? ` <span class="badge accent" title="${esc(s.plan.extended.reason)}">+${s.plan.extended.to - s.plan.extended.from}′ for weekly minimums</span>` : ''}${loc ? ` · ${esc(loc.icon || '')} ${esc(loc.name)}` : ''}${n ? ` · ${n} exercise${n === 1 ? '' : 's'}` : ''}${cls?.time ? ` · ${esc(cls.time)}` : ''}</div>
+    <div class="pl-today-meta">~${Math.round(s.estMinutes || s.minutes || 0) || '?'} min${s.plan?.extended ? ` <span class="badge accent" title="${esc(s.plan.extended.reason)}">+${s.plan.extended.to - s.plan.extended.from}′ for weekly targets</span>` : ''}${loc ? ` · ${esc(loc.icon || '')} ${esc(loc.name)}` : ''}${n ? ` · ${n} exercise${n === 1 ? '' : 's'}` : ''}${cls?.time ? ` · ${esc(cls.time)}` : ''}</div>
     ${groups.length || cardio || cls ? `<div class="pl-chips">${groups.map(g => `<span class="pl-mchip">${esc(g.name)}</span>`).join('')}${cls ? `<span class="badge warn">🎟️ Class</span>` : ''}${cardio ? `<span class="badge cardio">${cardio} min cardio</span>` : ''}</div>` : ''}
     ${s.plan?.reason ? `<div class="pl-today-why muted small">${esc(s.plan.reason)}</div>` : ''}
     ${elsewhere ? `<div class="pl-today-where"><span>Planned for ${esc(loc.icon || '')} ${esc(loc.name)}. You're at ${esc(here.icon || '')} ${esc(here.name)}.</span>

@@ -58,6 +58,7 @@ export const STYLES = [...BUILTIN_STYLES];   // built-in style ids; custom ones 
 export const GOALS = ['recomp', 'lean_bulk', 'cut'];
 export const MODES = ['off', 'simple', 'cycling'];
 export const VOLUME_MODES = ['extend', 'ask', 'fixed'];
+export const FILL_MODES = ['extend', 'time', 'ask'];
 // Cardio distribution (profile.cardio.style): few long sessions, a mix, or short finishers on lift days.
 export const CARDIO_STYLES = ['longer', 'balanced', 'finishers'];
 export const CARDIO_STYLE_NAMES = { longer: 'Long sessions', balanced: 'Balanced', finishers: 'Short finishers' };
@@ -305,7 +306,11 @@ export function makeRoomProposal(profile, target = cardioPrefs(profile).minPerWe
 export function volumePolicyOf(profile) {
   const v = profile?.volumePolicy && typeof profile.volumePolicy === 'object' ? profile.volumePolicy : {};
   return { mode: VOLUME_MODES.includes(v.mode) ? v.mode : DEF_VOLUME.mode, maxMinutes: fin(v.maxMinutes) ? clamp(Math.round(num(v.maxMinutes)), [30, 180]) : DEF_VOLUME.maxMinutes,
-    fillTargets: v.fillTargets === 'extend' ? 'extend' : 'time' };
+    // Reach TARGETS (after minimums): 'extend' (default: lengthen up to maxMinutes) | 'time' (spare time
+    // only) | 'ask'. A 'time' saved before 2026-10-20 without fillTargetsSetAt was never chosen by the
+    // user (it was the old default), so it migrates to 'extend'.
+    fillTargets: FILL_MODES.includes(v.fillTargets) && !(v.fillTargets === 'time' && !v.fillTargetsSetAt) ? v.fillTargets : 'extend',
+    ...(v.fillTargetsSetAt ? { fillTargetsSetAt: v.fillTargetsSetAt } : {}) };
 }
 const minCache = new WeakMap();
 // Resolved weekly set targets per muscle group ({min, max}), as the planner uses them.
@@ -361,6 +366,12 @@ export function volumeRoomOptions(profile) {
   if (flex) out.push({ id: 'flex', label: `Make ${flex[0].toUpperCase() + flex.slice(1)} (flex) a lift day, ${sch[flex].minutes}′`, patch: { training: { schedule: { [flex]: { ...sch[flex], kind: 'lift' } } } } });
   const rests = DAYS.filter(d => sch[d].kind === 'rest');
   if (rests.length >= 2 || (!flex && rests.length)) { const d = rests[rests.length - 1]; out.push({ id: 'rest', label: `Add a 45′ lift day on ${d[0].toUpperCase() + d.slice(1)}`, patch: { training: { schedule: { [d]: { kind: 'lift', minutes: 45, location: 'home' } } } } }); }
+  // Time-saver days fit ~28% more sets per minute (STYLES model: 90/60 s rests + non-competing pairs)
+  const slow = DAYS.filter(d => sch[d].kind === 'lift' && sch[d].style !== 'efficient');
+  if (slow.length) {
+    const patch = {}; slow.forEach(d => { patch[d] = { ...sch[d], style: 'efficient' }; });
+    out.push({ id: 'timesaver', label: `Switch ${slow.map(d => d[0].toUpperCase() + d.slice(1)).join(', ')} to Time-saver (~28% more sets per minute)`, patch: { training: { schedule: patch } } });
+  }
   const short = DAYS.filter(d => sch[d].kind === 'lift' && sch[d].minutes < 45);
   if (short.length) {
     const patch = {}; short.forEach(d => { patch[d] = { ...sch[d], minutes: 45 }; });
@@ -503,7 +514,7 @@ export function applyTargetChange(profile, patch = {}) {
     const cur = { ...volumePolicyOf(p) };
     if (VOLUME_MODES.includes(t.volumePolicy.mode)) cur.mode = t.volumePolicy.mode;
     if ('maxMinutes' in t.volumePolicy) { const v = vNum(t.volumePolicy.maxMinutes, [30, 180], { step: 5 }); if (v !== undefined) cur.maxMinutes = v; }
-    if (['time', 'extend'].includes(t.volumePolicy.fillTargets)) cur.fillTargets = t.volumePolicy.fillTargets;
+    if (FILL_MODES.includes(t.volumePolicy.fillTargets)) { cur.fillTargets = t.volumePolicy.fillTargets; cur.fillTargetsSetAt = new Date().toISOString(); }
     p.volumePolicy = cur;
   }
   if (t.groupPriority && typeof t.groupPriority === 'object') {
@@ -565,7 +576,7 @@ export function describeChange(before, after) {
   if (JSON.stringify(a.training.customStyles) !== JSON.stringify(b.training.customStyles)) out.push('your training styles');
   if (JSON.stringify(a.training.groupPriority) !== JSON.stringify(b.training.groupPriority)) out.push('muscle priorities');
   const va = a.training.volumePolicy, vb = b.training.volumePolicy;
-  if (va.fillTargets !== vb.fillTargets) out.push(vb.fillTargets === 'extend' ? 'lengthen workouts to reach targets' : 'targets only in spare time');
+  if (va.fillTargets !== vb.fillTargets) out.push(vb.fillTargets === 'extend' ? 'lengthen workouts to reach targets' : vb.fillTargets === 'ask' ? 'ask before lengthening for targets' : 'targets only in spare time');
   else if (va.mode !== vb.mode || va.maxMinutes !== vb.maxMinutes) out.push(vb.mode === 'fixed' ? 'fixed workout lengths' : `${vb.mode === 'ask' ? 'ask before lengthening' : 'lengthen workouts'} up to ${vb.maxMinutes}′`);
   if (JSON.stringify(a.nutrition) !== JSON.stringify(b.nutrition)) out.push('nutrition targets');
   if (a.adherence !== b.adherence) out.push(`${Math.round(b.adherence * 100)}% adherence`);

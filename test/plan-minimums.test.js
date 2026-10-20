@@ -10,6 +10,7 @@ import { planRange, weekPlanSummary, simulateDone } from '../js/engine/planner.j
 import { estimateMinutes } from '../js/engine/generator.js';
 import { sessionVolume } from '../js/engine/recovery.js';
 import { VOLUME_UNITS, GROUP_ORDER } from '../js/data/muscles.js';
+import { getEx } from '../js/data/exercises.js';
 import { SCULPT_GOALS } from '../js/data/sculpt.js';
 import { resolveTargets, applyTargetChange, volumePolicyOf, unitTargets, volumeRoomOptions, MINIMUMS_EVIDENCE } from '../js/engine/targets.js';
 import { extendedToast, setsBand } from '../js/ui/targets.js';
@@ -40,13 +41,25 @@ function checkWeek(name, p, out) {
     assert.ok(sum.warnings.some(w => w.startsWith(x.name) && /cap/.test(w)), `${name}: ${sum.warnings.join(' | ')}`);
   }
   assert.ok(sum.pushPull.ok, `${name}: push ${sum.pushPull.push} vs pull ${sum.pushPull.pull}`);
+  // TARGET invariant: every muscle reaches its target, or the summary names the binding constraint
+  // (and "time" really means every lift day is at the cap).
+  const REASONS = new Set(['time', 'max', 'recovery', 'session', 'pushpull', 'exercise', 'policy']);
+  for (const [u, x] of Object.entries(sum.units)) {
+    if (!(x.target > 0) || x.sub || x.total >= x.target - 0.25) continue;
+    const sh = sum.targets.short.find(y => y.unit === u);
+    assert.ok(sh && REASONS.has(sh.why), `${name}: ${u} ${x.total}/${x.target} short without a binding reason (${sh?.why})`);
+    if (pol.fillTargets === 'extend' && pol.mode === 'extend') assert.notEqual(sh.why, 'policy', name);
+    if (sh.why === 'time') assert.ok(lifts.every(s => estimateMinutes(s.blocks) >= cap(s) - 5), `${name}: ${u} "time" but a day has room`);
+  }
   for (const s of lifts) {
     const v = sessionVolume(simulateDone(s)).groups;
     for (const [g, x] of Object.entries(v)) assert.ok(x <= 12.01, `${name} ${s.date}: ${x} ${g} sets in one session`);
+    // per-muscle session caps: a topped-up small muscle stays ≤8 (12 when its priority cap was used)
     const raised = new Set(s.plan.topUp?.raisedCap || []);
     for (const u of Object.keys(s.plan.topUp || {})) {
-      const g = VOLUME_UNITS[u]?.group; if (!g || !SMALL.has(g) || !(s.plan.topUp[u] >= 0.5) || raised.has(u)) continue;
-      assert.ok(v[g] <= 8.01, `${name} ${s.date}: small group ${g} at ${v[g]} after a top-up`);
+      const U = VOLUME_UNITS[u]; if (!U || !(s.plan.topUp[u] >= 0.5)) continue;
+      let uv = 0; for (const b of s.blocks.filter(x => x.kind === 'lift')) { const ex = getEx(b.exId); let w = 0; for (const r of U.regions) w = Math.max(w, ex?.muscles?.[r] || 0); uv += Math.max(b.target?.sets || 0, b.sets.length) * w; }
+      assert.ok(uv <= (raised.has(u) ? 12 : U.big ? 10 : 8) + 0.01, `${name} ${s.date}: ${u} at ${uv} after a top-up`);
     }
     if (s.plan.extended) assert.ok(s.minutes <= cap(s) && Math.abs(estimateMinutes(s.blocks) - s.minutes) <= s.minutes * 0.1, `${name} ${s.date} ${s.minutes} est ${estimateMinutes(s.blocks)}`);
   }
@@ -59,9 +72,9 @@ function checkWeek(name, p, out) {
 }
 
 test('policy, unit targets (one priority mechanism) and evidence', () => {
-  assert.deepEqual(volumePolicyOf({}), { mode: 'extend', maxMinutes: 90, fillTargets: 'time' });
+  assert.deepEqual(volumePolicyOf({}), { mode: 'extend', maxMinutes: 90, fillTargets: 'extend' });
   const t = resolveTargets(prof());
-  assert.equal(t.training.volumePolicy.fillTargets, 'time');
+  assert.equal(t.training.volumePolicy.fillTargets, 'extend');
   const base = unitTargets(prof({ sculptGoals: [], groupPriority: {} }));
   const hi = unitTargets(prof({ sculptGoals: [], groupPriority: { triceps: 1.5, shoulders: 1.5 } }));
   for (const u of ['triceps', 'delt_side', 'delt_rear']) {
@@ -74,7 +87,12 @@ test('policy, unit targets (one priority mechanism) and evidence', () => {
   assert.ok(MINIMUMS_EVIDENCE.some(e => /10\.1007\/s40279-025-02344-w/.test(e.source)), 'Pelland 2025 (Sports Med) cited');
   assert.ok(MINIMUMS_EVIDENCE.some(e => /Bickel/.test(e.source)) && MINIMUMS_EVIDENCE.some(e => /Baz-Valle/.test(e.source)));
   const p = applyTargetChange(prof(), { training: { volumePolicy: { mode: 'ask', maxMinutes: 500, fillTargets: 'extend' } } });
-  assert.deepEqual(p.volumePolicy, { mode: 'ask', maxMinutes: 180, fillTargets: 'extend' });
+  assert.equal(p.volumePolicy.mode, 'ask'); assert.equal(p.volumePolicy.maxMinutes, 180); assert.equal(p.volumePolicy.fillTargets, 'extend');
+  assert.ok(p.volumePolicy.fillTargetsSetAt, 'an explicit choice is time-stamped');
+  // migration: an old saved 'time' that the user never chose becomes 'extend'; an explicit 'time' stays
+  assert.equal(volumePolicyOf({ volumePolicy: { fillTargets: 'time' } }).fillTargets, 'extend');
+  assert.equal(volumePolicyOf(applyTargetChange(prof(), { training: { volumePolicy: { fillTargets: 'time' } } })).fillTargets, 'time');
+  assert.equal(volumePolicyOf({ volumePolicy: { fillTargets: 'ask', fillTargetsSetAt: 'x' } }).fillTargets, 'ask');
   assert.ok(volumeRoomOptions(prof()).every(o => o.label && o.patch));
 });
 
@@ -90,6 +108,7 @@ test("Bob's default week: minimums met, nothing over max, delts separate, back =
   const out = week(p);
   const sum = checkWeek('default', p, out);
   assert.ok(!Object.values(sum.units).some(x => x.status === 'over'), 'no "over" in the default week');
+  assert.equal(sum.targets.met, sum.targets.total, `default week reaches every target: ${sum.targets.line}`);
   assert.ok(!sum.warnings.some(w => /over the/.test(w)));
   // the coverage score is target attainment: a fully-on-target week would score higher than this one
   assert.ok(sum.score >= 0 && sum.score <= 100);
@@ -110,9 +129,9 @@ test('matrix: sliders × groups, arms/shoulders, chest/back, all sculpt goals (d
 });
 
 test('matrix: 3/4/5/6 lift days × 30/45/60 min', () => {
-  for (const n of [3, 4, 5, 6]) for (const m of [30, 45, 60]) for (const seed of [1, 42]) {
-    const p = prof({ schedule: sched(n, m) });
-    checkWeek(`${n}x${m} s${seed}`, p, week(p, { seed }));
+  for (const n of [3, 4, 5, 6]) for (const m of [30, 45, 60]) for (const style of ['hypertrophy', 'efficient']) {
+    const p = prof({ schedule: sched(n, m), defaultStyle: style });
+    checkWeek(`${n}x${m} ${style}`, p, week(p, { seed: style === 'efficient' ? 42 : 1 }));
   }
   const p = prof({ schedule: sched(3, 30), groupPriority: { triceps: 1.5, biceps: 1.5, shoulders: 1.5 } });
   checkWeek('3x30 arms', p, week(p));
@@ -161,5 +180,26 @@ test('a 4-week plan stays under 1.5 s', () => {
 test('extendedToast summarizes extensions', () => {
   assert.equal(extendedToast([]), null);
   const s = (date, from, to) => ({ date, plan: { extended: { from, to, reason: 'weekly minimums: triceps +4' } } });
-  assert.equal(extendedToast([s('2026-10-29', 45, 55), s('2026-10-26', 45, 60)]), 'Extended Mon 45→60′ and Thu 45→55′ to hit weekly minimums');
+  assert.equal(extendedToast([s('2026-10-29', 45, 55), s('2026-10-26', 45, 60)]), 'Extended Mon 45→60′ and Thu 45→55′ to reach your weekly set targets');
+});
+
+// Bob: "not sure the weekly plan follows the sliders". Planned sets must move with each slider.
+test('slider sweep: planned sets follow each slider 0.5 → 1 → 1.5 (monotonic; target reached or a named reason)', async () => {
+  const { explainWeek } = await import('../js/engine/planner.js');
+  for (const g of GROUP_ORDER) {
+    const units = Object.values(VOLUME_UNITS).filter(u => u.group === g && u.target > 0 && !u.sub).map(u => u.id);
+    const runs = [0.5, 1, 1.5].map(v => { const p = prof({ groupPriority: { [g]: v } }); const out = week(p); return { sum: summary(out, p), ex: explainWeek(out, { weekStart: parseDs(MON), profile: p, now: NOW }) }; });
+    for (const u of units) {
+      const t = runs.map(r => r.sum.units[u].total);
+      assert.ok(t[1] >= t[0] - 0.25 && t[2] >= t[1] - 0.25, `${g}/${u}: planned ${t.join(' → ')} is not monotonic`);
+      assert.ok(runs[2].sum.units[u].target >= runs[0].sum.units[u].target);
+      runs.forEach((r, i) => {
+        const x = r.sum.units[u];
+        if (x.total < x.target - 0.25) assert.ok(r.sum.targets.short.find(y => y.unit === u)?.why, `${g} ×${[0.5, 1, 1.5][i]}: ${u} ${x.total}/${x.target} with no reason`);
+        const e = r.ex[u];
+        assert.equal(e.target, x.target); assert.equal(e.planned, x.total);
+        assert.ok(Math.abs(e.target - Math.min(e.max, Math.max(e.min, e.base * e.slider + e.extra))) < 0.06, `${u}: target = base × slider + extra (capped)`);
+      });
+    }
+  }
 });
