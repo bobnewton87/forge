@@ -275,7 +275,9 @@ function planCard(I) {
   if (!plan || plan.hidden) return '';
   const act = (plan.actions || []).find(a => a.kind === 'labs');
   const worth = plan.rows.filter(r => r.applies && !r.cost && (r.score > 0.05 || r.inStack));
-  const negative = plan.rows.filter(r => r.applies && !r.cost && r.score <= 0.05 && !r.inStack);
+  // Applies, but scores ~0 because its effect on lean/fat has never been measured (only the T rise has).
+  const unmeasured = plan.rows.filter(r => r.applies && !r.cost && !r.inStack && r.score > -0.05 && r.score <= 0.05);
+  const negative = plan.rows.filter(r => r.applies && !r.cost && r.score <= -0.05 && !r.inStack);
   const zero = plan.rows.filter(r => !r.applies && !r.cost);
   const cost = plan.rows.filter(r => r.cost);
   const shown = worth.slice(0, PLAN_MAX);
@@ -286,6 +288,9 @@ function planCard(I) {
     ${plan.notes.map(n => `<p class="tiny muted">${esc(n)}</p>`).join('')}
     ${shown.length ? `<div class="sp-sub">Worth considering for you</div><div class="sp-plist">${shown.map(planRow).join('')}</div>`
       : `<p class="small muted mt">On the values Forge has for you, <b>nothing here is modeled to add lean mass</b>. That is the honest answer, not a gap: almost every therapy in this area was tested in men who were hypogonadal, obese, or both. Open the list below to see each one's number and the reason it is zero.</p>`}
+    ${unmeasured.length ? `<details class="sp-pmore"><summary class="small">Raises testosterone, but nobody has measured what it does to muscle (${unmeasured.length})</summary>
+      <p class="tiny muted">These moved testosterone in a trial, but no trial measured lean or fat mass on them. The lean figure on each row is Forge extrapolating through the testosterone curve, so its range starts at zero and it is ranked at zero.</p>
+      <div class="sp-plist">${unmeasured.map(planRow).join('')}</div></details>` : ''}
     ${negative.length ? `<details class="sp-pmore"><summary class="small">Changes something, but not in your favour (${negative.length})</summary><div class="sp-plist">${negative.map(planRow).join('')}</div></details>` : ''}
     ${zero.length ? `<details class="sp-pmore" ${planUi.showZero ? 'open' : ''} data-pzero><summary class="small">Modeled at ~0 for you, with the reason (${zero.length})</summary><div class="sp-plist">${zero.map(planRow).join('')}</div></details>` : ''}
     ${cost.length ? `<details class="sp-pmore" ${planUi.showCost ? 'open' : ''} data-pcost><summary class="small">What might be costing you (${cost.length})</summary><div class="sp-plist">${cost.map(planRow).join('')}</div></details>` : ''}
