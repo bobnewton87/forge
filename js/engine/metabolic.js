@@ -212,8 +212,46 @@ export const SLEEP_RETENTION = [[4, 1.8], [5, 1.7], [5.5, 1.6], [6, 1.3], [7, 1]
 // 5 h in bed cut daytime total T ~10–15% in young men. Su 2021 meta-analysis: partial restriction SMD −0.22 (ns),
 // total deprivation −0.64, so Forge stays at the conservative end and treats 7 h+ as the reference.
 export const SLEEP_T = [[4, 0.84], [5, 0.89], [6, 0.95], [7, 1], [9, 1]];
-export const T_NORMAL_MID = 550;      // mid-normal adult male total T; the ceiling Forge credits with muscle (see §endogenous)
 export const VITD_CEIL = [[5, 0.94], [12, 0.95], [20, 1]];
+
+// ======================================================================== §22 endogenous-T interaction model
+// The flat `T_NORMAL_MID = 550` muscle-credit ceiling is GONE (CONTRACT §22, docs/research/endogenous-testosterone.md
+// §9). Muscle credit now follows achieved serum T on the Bhasin curve and is bounded per item by what that item's own
+// trials reached and by whether they measured body composition at all (`model.bodyComp` + `model.bcMaxLevel`).
+//
+// Routes to a man's own testosterone share one final common path — Leydig-cell output — so they do NOT add up:
+//   Habous 2018 (RCT, 282 men; doi:10.1111/bju.14401, via Hohl 2025 doi:10.20945/2359-4292-2025-0093): clomiphene
+//   +158, hCG +134, BOTH +153 ng/dL; the combination was no better than clomiphene alone (p = 0.57).
+// Forge therefore combines LH-driven items as "the largest one wins", which is the measured point estimate. The
+// optimistic end of the range adds COMBO_BONUS_HI of the others — an ASSUMPTION, since the CI does not exclude a
+// small extra effect.
+export const COMBO_BONUS = 0;          // measured (Habous 2018)
+export const COMBO_BONUS_HI = 0.25;    // ASSUMPTION: optimistic bound only
+// Per-route plateaus for total LH-driven output.
+//   Pituitary-driven (SERMs, AIs) need a working pituitary AND testis; the highest group mean any such trial reached
+//   is 790 ng/dL (Krause 1992 tamoxifen). Enclomiphene 604 (Wiehle 2013), letrozole 620 (Loves 2013), anastrozole 572
+//   (Leder 2004), 525 (Burnett-Bowie 2009), AI+weight loss 530 (Colleluori 2020).
+//   hCG replaces LH at the Leydig cell, so it can push harder: Liu 2002's +150% from a ≤433 ng/dL entry implies ≈870.
+export const PITUITARY_CEILING = 800;
+export const TESTIS_CEILING = 1100;    // ASSUMPTION: top of the male reference range; highest observed is ≈870
+export const ASSUMED_E2 = 25;          // pg/mL, mid adult male reference (sensitive assay ≈10–40) when no lab
+export const ASSUMED_SHBG = 35;        // nmol/L, mid adult male reference (≈10–57) when no lab
+export const E2_HIGH = 25;             // pg/mL, the hyperestrogenemia threshold used by the obesity gate
+export const OBESE_SEVERE_BMI = 35;    // Colleluori 2020 entry criterion
+
+// Finkelstein 2013 (NEJM 369:1011, doi:10.1056/NEJMoa1206168): with testosterone dose held constant, blocking
+// aromatase raised the percentage of body fat (cohort × dose interaction P = 0.001; between-cohort P < 0.001 for
+// % body fat, P < 0.001 subcutaneous, P = 0.002 intra-abdominal) and did NOT change lean mass (interaction P = 0.22,
+// between-cohort P = 0.52), thigh-muscle area (P = 0.20) or leg-press strength (P = 0.91).
+// *** The per-arm kilogram magnitudes exist only in that paper's figures. Every number below is an ASSUMPTION. ***
+// Anchor: in cohort 2 estradiol was 1.0–2.8 pg/mL against 3.6–33.3 pg/mL in cohort 1 — roughly a 90% loss of
+// estrogen action at the matched (5 g) dose. Forge assumes that costs 1.5 kg of fat over the trial's 16 weeks, with
+// a range of 0.5–3.0 kg, and scales it linearly with the fraction of estrogen action actually lost. That scaling is
+// what reconciles Finkelstein with every real-world aromatase-inhibitor trial: a man with a working axis loses only
+// 20–50% of his estradiol on 1 mg of anastrozole (Burnett-Bowie 2009 −24% and −20%, Loves 2013 −50%, Mauras 2000
+// −48%, Colleluori 2020 −52%), so the modeled penalty there is a few tenths of a kilogram — which is exactly why
+// those trials found nothing.
+export const E2_FAT = { kgAtFullBlock: 1.5, kgLo: 0.5, kgHi: 3.0, refBlockFrac: 0.90, refWeeks: 16, tauWeeks: 12 };
 export function ageCeiling(age) { const a = num(age, 0, 120); return a == null || a <= 35 ? 1 : Math.max(0.8, 1 - 0.004 * (a - 35)); }
 export function stressCeiling(s) { const x = num(s, 1, 5) ?? 3; return x <= 3 ? 1 : interp([[3, 1], [4, 0.97], [5, 0.93]], x); }
 
@@ -226,7 +264,40 @@ export const OBESE_BMI = 30;
 export function hormonePanel(m) {
   m = m && typeof m === 'object' ? m : {};
   return { lh: num(m.lh, 0, 200), fsh: num(m.fsh, 0, 200), shbg: num(m.shbg, 1, 300), estradiol: num(m.estradiol, 0, 1000),
-    prolactin: num(m.prolactin, 0, 5000), zinc: num(m.zinc, 1, 500), ferritin: num(m.ferritin, 0, 10000) };
+    prolactin: num(m.prolactin, 0, 5000), zinc: num(m.zinc, 1, 500), ferritin: num(m.ferritin, 0, 10000),
+    deficitKcal: num(m.deficitKcal, 0, 4000) };
+}
+
+// Fat-mass cost of losing estrogen ACTION (aromatase inhibition only — never a SERM's serum-E2 rise, which raises the
+// hormone while blocking the receptor in some tissues, so the direction in adipose is unknown).
+// `dropFrac` is the fraction of estrogen action lost (0..1). ASSUMPTION-heavy: see E2_FAT above.
+export function estradiolFatEffect(dropFrac, { weeksOn = 0, bmi = null, estradiol = null } = {}) {
+  const d = clamp(num(dropFrac, -1, 1) ?? 0, 0, 1);
+  const M = E2_FAT;
+  const sat = 1 - Math.exp(-M.refWeeks / M.tauWeeks);
+  const w = Math.max(0, num(weeksOn, 0, 1e4) ?? 0);
+  const b = num(bmi, 10, 90), e2 = num(estradiol, 0, 1000);
+  // Sign-reversal gate (Colleluori 2020, doi:10.3389/fendo.2020.00277): in severely obese men (BMI ≥ 35) with a high
+  // estradiol, anastrozole + weight loss produced MORE fat loss than weight loss alone (−4.4 ± 3.9 vs −0.7 ± 1.9 kg,
+  // adjusted p = 0.04) — but that group also lost 5.1 kg more weight (p = 0.17, not significant), which accounts for
+  // essentially all of the fat difference. Forge therefore switches the penalty OFF in this population rather than
+  // inventing a benefit, and reports the trial's raw direction as the optimistic end of the range.
+  const reversed = b != null && b >= OBESE_SEVERE_BMI && e2 != null && e2 >= E2_HIGH;
+  const scale = reversed ? 0 : d / M.refBlockFrac;
+  const kg = M.kgAtFullBlock * scale;
+  const A = (kg / sat) * LB_PER_KG;                                   // asymptotic fat change, lb
+  const rate = (A / M.tauWeeks) * Math.exp(-w / M.tauWeeks);
+  const cum = A * (1 - Math.exp(-w / M.tauWeeks));
+  return {
+    fatDirectLbPerWeek: rate, cumLb: cum, asymptoteLb: A, reversed, dropFrac: d,
+    loLb: reversed ? -(3.7 * LB_PER_KG) : (M.kgLo / M.kgAtFullBlock) * A,
+    hiLb: reversed ? 0 : (M.kgHi / M.kgAtFullBlock) * A,
+    note: reversed
+      ? `You are in the one population where lowering estradiol did not cost fat: severely obese (BMI ≥ ${OBESE_SEVERE_BMI}) with a high estradiol. In Colleluori 2020 anastrozole plus weight loss lost more fat than weight loss alone — though that group also lost 5.1 kg more weight, which explains most of it. Forge models no fat penalty here, and no benefit either.`
+      : d > 0
+        ? `Blocking aromatase costs you estrogen action (${Math.round(d * 100)}% of it modeled here), and in men estrogen is what keeps fat down (Finkelstein 2013: cohort × dose interaction P=0.001 for % body fat, and no effect at all on lean mass P=0.22 or strength P=0.91). Modeled as ≈${r1(A)} lb of fat over a year — an ASSUMPTION scaled from Finkelstein's near-total blockade, with a range of ${r1((M.kgLo / M.kgAtFullBlock) * A)}–${r1((M.kgHi / M.kgAtFullBlock) * A)} lb. Three trials failed to find it at real-world doses (Burnett-Bowie 2009, Mauras 2000, Dias 2016), which is why the low end is near zero.`
+        : 'No change in estrogen action, so no fat effect from this route.',
+  };
 }
 // Calculated free testosterone (Vermeulen 1999 mass-action equations). totalT ng/dL, shbg nmol/L, albumin g/dL → pg/mL.
 export function vermeulenFreeT(totalTNgDl, shbgNmolL, albuminGdL = 4.3) {
@@ -349,10 +420,14 @@ export function metabolicBaseline(profile, opts = {}) {
   if (labT != null) { totalT = labT; totalTSource = 'lab'; }
   else if (freeT != null) { totalT = freeT * 5; totalTSource = 'freeT'; notes.push(`Total T estimated from free T (${freeT} pg/mL × 5 ≈ ${Math.round(totalT)} ng/dL). Assays vary, so a total T lab is better.`); }
   else {
-    // Population average for the age, adjusted down for short sleep (a measured lab already reflects how you sleep).
+    // Population average for the age, adjusted down for short sleep and for a sustained calorie deficit
+    // (a measured lab already reflects both, so it always wins).
     const avg = averageTotalT(age), sleepT = interp(SLEEP_T, sleepHours);
-    totalT = Math.round(avg * sleepT); totalTSource = 'assumed';
-    assumptions.push(`Total testosterone: assumed average ≈${avg} ng/dL for a ${age}-year-old man${sleepT < 0.999 ? `, reduced to ≈${totalT} for ${r1(sleepHours)} h sleep (Leproult 2011: a week of 5 h cut daytime T ~10–15%)` : ''}. A morning lab replaces this guess.`);
+    const dk = num(m.deficitKcal, 0, 4000);
+    const suppPct = dk != null ? interp(SUPPLEMENTS.energy_availability?.model?.deficitT || [[0, 0]], dk) : 0;
+    const defT = 1 - suppPct / 100;
+    totalT = Math.round(avg * sleepT * defT); totalTSource = 'assumed';
+    assumptions.push(`Total testosterone: assumed average ≈${avg} ng/dL for a ${age}-year-old man${sleepT < 0.999 ? `, reduced for ${r1(sleepHours)} h sleep (Leproult 2011: a week of 5 h cut daytime T ~10–15%)` : ''}${suppPct > 0 ? `, and reduced ${Math.round(suppPct)}% for a sustained ${Math.round(dk)} kcal/day deficit (interpolated between Koehler 2016 and Friedl 2000 / Rossow 2013 — an assumption)` : ''}${sleepT < 0.999 || suppPct > 0 ? ` → ≈${totalT}` : ''}. A morning lab replaces this guess.`);
   }
   if (labT != null && freeT != null && freeT < 50 && labT >= 300) notes.push('Low free T with normal total T can happen with high SHBG. Worth discussing with your doctor.');
   const te0 = testosteroneEffect(totalT, { age });
@@ -498,7 +573,7 @@ export function stackAt(profile, date) {
 // ======================================================================== modifiers
 const BOUND_LABEL = { ceil: 'lean-gain ceiling', ret: 'lean retention', part: 'partitioning', tdee: 'calorie burn', intake: 'appetite', water: 'water weight', leanD: 'direct lean gain', fatD: 'direct fat change' };
 const BOUNDS = { ceil: [0.4, 2.0], ret: [0.4, 2.5], part: [-0.1, 0.1], tdee: [-400, 400], intake: [-1200, 600], water: [0, 12], leanD: [-1.0, 2.0], fatD: [-1.0, 0.5] };
-const ANABOLIC = new Set(['trt', 'enobosarm', 'lgd4033', 'hgh', 'mk677']);
+const ANABOLIC = new Set(['trt', 'oral_tu', 'nasal_t', 'enobosarm', 'lgd4033', 'hgh', 'mk677']);
 // Items whose effect is a change in your own serum testosterone; handled together so they combine into one level.
 const T_KINDS = new Set(['tShift', 'tEndogenous']);
 const FEMALE_SHIFT_NOTE = 'Studied in men only: no trial shows it changes testosterone or muscle in women, so Forge models no effect (and raising a woman\'s own testosterone within the female range didn\'t change lean mass in Huang 2014).';
@@ -543,6 +618,17 @@ export function tShiftPct(model, ctx = {}) {
     if (lab == null) return { pct: 0, note: `Only correcting a measured ${g.deficiencyOnly} deficiency raised testosterone in trials. Enter your ${g.deficiencyOnly} lab and Forge will apply it.`, warn: null };
     if (lab >= cut) return { pct: 0, note: `Your ${g.deficiencyOnly} (${lab}) is above the deficiency cutoff (${cut}), and supplementing replete men did nothing in trials.`, warn: null };
   }
+  if (g.deficitOnly) {
+    // "Eating enough" recovers whatever the modeled deficit is costing. The suppression curve itself is in the
+    // catalogue (model.deficitT) and is an interpolation between two measured extremes — see docs §10.
+    const dk = num(ctx.deficitKcal, 0, 4000);
+    if (dk == null) return { pct: 0, note: 'Enter your typical daily calorie deficit in Metabolic values and Forge will model what it is costing you. Under-eating is the fastest way for a lean, hard-training man to lower his own testosterone, and it reverses within days to weeks.', warn: null };
+    const supp = interp(model.deficitT || [[0, 0]], dk);
+    if (supp <= 0) return { pct: 0, note: `A ${Math.round(dk)} kcal/day deficit is small enough that the controlled studies found no testosterone change (Koehler 2016), so there is nothing to recover.`, warn: null };
+    // Recovering a suppression of `supp`% means multiplying the suppressed level back up by 1/(1−supp).
+    const pct = (1 / (1 - supp / 100) - 1) * 100;
+    return { pct, note: `A ${Math.round(dk)} kcal/day deficit is modeled as costing about ${Math.round(supp)}% of your testosterone (interpolated between Koehler 2016's null at mild restriction and the Friedl 2000 / Rossow 2013 extremes — an assumption, not a measurement). Eating at maintenance recovers it within days to weeks.`, warn: null };
+  }
   if (g.shortSleepOnly) {
     const sl = num(ctx.sleepHours, 0, 16) ?? AVERAGE_SLEEP;
     const target = g.sleepTarget ?? 8;
@@ -552,6 +638,128 @@ export function tShiftPct(model, ctx = {}) {
   }
   return { pct: full, note: null, warn: null };
 }
+// ======================================================================== §22 combination engine (pure)
+// `parts` = [{ id, name, item, model, dose, resp (0..1), ramp (0..1), weeksOn }]. See CONTRACT §22.
+// Three mechanisms, applied in order:
+//   1. CAUSE-CORRECTION (axis 'dopamine' | 'nutrient' | 'lifestyle'): these remove the thing suppressing the axis, so
+//      they raise the set-point. Applied first, multiplicatively (independent causes — an ASSUMPTION), and they
+//      therefore SHRINK what a drug can still add, because every drug's response falls with baseline.
+//   2. NEGATIVE items (endurance load, alcohol, 6 g D-aspartic acid): multiplicative, same chain.
+//   3. LH-DRIVEN positives (SERM, AI, hCG, herbal): one final common path, so the LARGEST wins and the rest add
+//      COMBO_BONUS (= 0, the measured value from Habous 2018). Capped by the route's testicular/pituitary ceiling.
+// Estradiol and SHBG are tracked separately, because an item can be subsumed on testosterone and still act: an
+// aromatase inhibitor stacked on clomiphene adds no testosterone but still blocks aromatase.
+export function combineEndogenous(parts, ctx = {}) {
+  const LH_AXES = new Set(['serm', 'ai', 'gonadotropin', 'herbal']);
+  const CAUSE_AXES = new Set(['dopamine', 'nutrient', 'lifestyle']);
+  const T0 = num(ctx.baselineT, 1, 100000) ?? 550;
+  const notes = [], warnings = [];
+  const ev = parts.map(p => {
+    const model = p.model || {};
+    const axis = model.axis || (LH_AXES.has(model.axis) ? model.axis : 'serm');
+    const g = tShiftPct(model, ctx);
+    return { ...p, axis, model, gate: g, pct0: g.pct * p.resp * p.ramp, ci: Array.isArray(model.tCI) ? model.tCI : [1, 1] };
+  });
+  const run = (ciIdx, bonus) => {
+    const f = e => ciIdx == null ? 1 : (e.ci[ciIdx] ?? 1);
+    let T = T0;
+    const causeCap = [];
+    for (const e of ev) {
+      if (e.pct0 === 0) continue;
+      if (e.pct0 < 0 || CAUSE_AXES.has(e.axis)) { T *= 1 + (e.pct0 * f(e)) / 100; causeCap.push(num(e.model.ceilingNg, 1, 1e5) ?? TESTIS_CEILING); }
+    }
+    if (causeCap.length) T = Math.min(T, Math.max(...causeCap));
+    T = Math.max(20, T);
+    // LH-driven positives, re-evaluated against the corrected baseline (this is where non-additivity bites).
+    const lh = [];
+    for (const e of ev) {
+      if (!LH_AXES.has(e.axis) || e.pct0 <= 0) continue;
+      const g2 = tShiftPct(e.model, { ...ctx, baselineT: T });
+      const pct = g2.pct * e.resp * e.ramp * f(e);
+      lh.push({ e, gate2: g2, pct, delta: Math.max(0, T * pct / 100) });
+    }
+    lh.sort((a, b) => b.delta - a.delta);
+    const driver = lh[0] || null;
+    const extra = lh.slice(1).reduce((a, x) => a + x.delta, 0);
+    const delta = driver ? driver.delta + bonus * extra : 0;
+    const cap = lh.length ? Math.max(...lh.map(x => num(x.e.model.ceilingNg, 1, 1e5) ?? num(x.e.model.maxLevel, 1, 1e5) ?? PITUITARY_CEILING)) : Infinity;
+    const level = Math.min(T + delta, cap, TESTIS_CEILING);
+    return { base: T, level, lh, driver, extra, cap, capped: T + delta > cap + 0.5 };
+  };
+  const mid = run(null, COMBO_BONUS);
+  const lo = run(0, COMBO_BONUS);
+  const hi = run(1, COMBO_BONUS_HI);
+
+  // ---- estradiol and estrogen action (every active item acts, driver or not)
+  const e2Base = num(ctx.estradiol, 0.1, 1000) ?? ASSUMED_E2;
+  const e2Assumed = num(ctx.estradiol, 0.1, 1000) == null;
+  let e2Mult = 1, actionMult = 1, shbg = num(ctx.shbg, 1, 300) ?? ASSUMED_SHBG;
+  const shbgAssumed = num(ctx.shbg, 1, 300) == null;
+  for (const e of ev) {
+    const on = e.resp * e.ramp > 0;
+    if (!on) continue;
+    const isDriverOrCause = CAUSE_AXES.has(e.axis) || e.pct0 < 0 ? e.pct0 !== 0 : true;
+    if (!isDriverOrCause) continue;
+    if (fin(e.model.e2Pct)) {
+      // A subsumed LH-driven item still changes estradiol only in proportion to what it actually did to T, except
+      // for aromatase inhibitors, whose estradiol effect is direct and does not depend on winning the T comparison.
+      const share = e.axis === 'ai' ? 1 : (mid.driver && mid.driver.e === e ? 1 : (CAUSE_AXES.has(e.axis) || e.pct0 < 0 ? 1 : 0));
+      if (share) e2Mult *= 1 + (e.model.e2Pct * e.resp * e.ramp * share) / 100;
+    }
+    if (fin(e.model.e2ActionPct) && e.axis === 'ai') actionMult *= 1 + (e.model.e2ActionPct * e.resp * e.ramp) / 100;
+    if (fin(e.model.shbgDelta)) shbg += e.model.shbgDelta * e.resp * e.ramp;
+  }
+  shbg = clamp(shbg, 3, 250);
+  const e2 = clamp(e2Base * e2Mult, 0.5, 500);
+  const e2ActionDrop = clamp(1 - actionMult, 0, 1);
+  const freeT = vermeulenFreeT(mid.level, shbg);
+  const freeTBase = vermeulenFreeT(T0, num(ctx.shbg, 1, 300) ?? ASSUMED_SHBG);
+
+  // ---- muscle credit: bounded by what the contributing items' own trials actually reached
+  let bcMax = -Infinity, bcSource = null;
+  for (const e of ev) {
+    if (e.pct0 === 0) continue;
+    const m = e.model;
+    const none = m.bodyComp === 'none' || m.tLeanShare === 0;
+    if (none) continue;
+    const cap = num(m.bcMaxLevel, 0, 1e5) ?? num(m.ceilingNg, 0, 1e5) ?? num(m.maxLevel, 0, 1e5) ?? Infinity;
+    if (cap > bcMax) { bcMax = cap; bcSource = e; }
+  }
+  const anyCreditable = bcSource != null;
+  const creditLevel = mid.level >= T0
+    ? (anyCreditable ? clamp(Math.min(mid.level, bcMax), T0, mid.level) : T0)
+    : mid.level;                                       // a loss is always real
+  const extrapolated = !!(bcSource && bcSource.model.bodyComp === 'extrapolated');
+
+  if (mid.lh.length > 1) {
+    const names = mid.lh.map(x => x.e.name.split(' (')[0]);
+    notes.push(`${names.join(' + ')}: these work through the same final step — your Leydig cells making testosterone — so Forge does not add them up. In the only randomized test of this (Habous 2018, 282 men) clomiphene gave +158 ng/dL, hCG +134, and both together +153: the combination was no better than clomiphene alone (p=0.57). The modeled level is driven by ${mid.driver.e.name.split(' (')[0]}; the optimistic end of the range adds a quarter of the others, which is an assumption.`);
+  }
+  if (mid.capped) notes.push(`Modeled level capped at ${Math.round(mid.cap)} ng/dL: that is the plateau for this route. The highest group mean any SERM or aromatase-inhibitor trial reached is 790 ng/dL (Krause 1992); hCG, which replaces LH at the testis directly, reached about 870 (Liu 2002).`);
+  if (anyCreditable && mid.level > creditLevel + 1) {
+    notes.push(`Forge credits muscle only up to ≈${Math.round(creditLevel)} ng/dL — the level ${bcSource.name.split(' (')[0]}'s own trials reached. ${bcSource.model.bcNote || ''}`.trim());
+  }
+  if (!anyCreditable && mid.level > T0 + 1) {
+    const culprit = ev.find(e => e.pct0 > 0 && (e.model.bodyComp === 'none' || e.model.tLeanShare === 0));
+    notes.push(`Your testosterone number goes up and Forge credits NO muscle for it${culprit ? `: ${culprit.model.leanNullNote || 'the trials that measured body composition on it found none'}` : ''}.`);
+  }
+
+  return {
+    baselineT: T0, causeBase: mid.base, level: mid.level, levelLo: Math.min(lo.level, mid.level), levelHi: Math.max(hi.level, mid.level),
+    cap: mid.cap, capped: mid.capped, driverId: mid.driver?.e.id || null,
+    e2, e2Base, e2Assumed, e2Lo: clamp(e2Base * (1 + (e2Mult - 1) * 0.5), 0.5, 500), e2Hi: clamp(e2Base * (1 + (e2Mult - 1) * 1.5), 0.5, 500),
+    e2ActionDrop, shbg: Math.round(shbg * 10) / 10, shbgAssumed, freeT, freeTBase,
+    creditLevel, creditSource: bcSource?.id || null, extrapolated, bcNote: bcSource?.model.bcNote || null,
+    parts: ev.map(e => {
+      const inLh = mid.lh.find(x => x.e === e);
+      return { id: e.id, name: e.name, axis: e.axis, pct: inLh ? inLh.pct : e.pct0, delta: inLh ? inLh.delta : T0 * e.pct0 / 100,
+        role: e.pct0 === 0 ? 'zero' : CAUSE_AXES.has(e.axis) || e.pct0 < 0 ? 'cause' : (mid.driver && mid.driver.e === e ? 'driver' : 'subsumed'),
+        gateNote: (inLh ? inLh.gate2.note : null) || e.gate.note, dose: e.dose, ramp: e.ramp };
+    }),
+    notes, warnings,
+  };
+}
+
 function taperFrac(model, weeks) {
   const after = num(model.taperAfterWeeks, 0, 1e4);
   if (after == null || weeks <= after) return 1;
@@ -593,8 +801,15 @@ export function modifiersAt(profile, date, opts = {}) {
       testosterone: (() => {
         const applied = tInfo.leanEffect || tInfo.effect;
         const capped = tInfo.leanLevel != null && Math.abs(tInfo.leanLevel - tInfo.level) > 1;
+        const C = tInfo.combined || null;
         return { natural: tInfo.natural, naturalSource: tInfo.naturalSource, level: Math.round(tInfo.level), source: tInfo.source,
           leanLevel: Math.round(tInfo.leanLevel != null ? tInfo.leanLevel : tInfo.level),
+          levelLo: C ? Math.round(C.levelLo) : Math.round(tInfo.level), levelHi: C ? Math.round(C.levelHi) : Math.round(tInfo.level),
+          estradiol: tInfo.e2 != null ? r1(tInfo.e2) : null, estradiolBase: tInfo.e2Base != null ? r1(tInfo.e2Base) : null,
+          estradiolAssumed: C ? C.e2Assumed : null, e2ActionDrop: C ? r2(C.e2ActionDrop) : 0,
+          shbg: tInfo.shbg != null ? r1(tInfo.shbg) : null, freeT: tInfo.freeT != null ? r1(tInfo.freeT) : null,
+          freeTBase: tInfo.freeTBase != null ? r1(tInfo.freeTBase) : null,
+          extrapolated: !!tInfo.extrapolated, creditSource: C ? C.creditSource : null, exogenous: !!tInfo.exogenous,
           leanCeilingMult: r2(applied.leanCeilingMult), leanDirectLbPerWeek: r2(applied.leanDirectLbPerWeek), beyondStudied: tInfo.effect.beyondStudied,
           note: capped ? `Serum total T ≈${Math.round(tInfo.level)} vs your natural ${Math.round(tInfo.natural)} ng/dL. Forge credits muscle only up to ≈${Math.round(tInfo.leanLevel)} ng/dL: ${fmtSign(applied.leanDirectLbPerWeek)} lb/week lean without training, training ceiling ×${r2(applied.leanCeilingMult)}.` : tInfo.effect.note };
       })(),
@@ -613,13 +828,15 @@ export function modifiersAt(profile, date, opts = {}) {
     for (const lr of a.item.model?.levelRisks || []) if (level >= lr.min) risks.push({ id: a.item.id, name: a.item.name, text: lr.text });
   };
 
-  // ---- testosterone: TRT (serum level) or herbal shifts → testosteroneEffect
-  const trtA = active.find(a => a.entry.id === 'trt' && a.phase === 'on');
+  // ---- testosterone: exogenous testosterone by any route (serum level) or own-axis shifts → testosteroneEffect
+  // §22: oral testosterone undecanoate and nasal testosterone are exogenous testosterone too. They suppress the
+  // axis (nasal less so — see its fertility note) and are modeled on the same Bhasin curve as injections.
+  const trtA = active.find(a => a.phase === 'on' && (a.entry.id === 'trt' || a.item.model?.kind === 'exogenousT'));
   const shifts = active.filter(a => T_KINDS.has(a.item.model?.kind) && a.phase === 'on');
   const te0 = base._t;
   if (trtA) {
     const model = trtA.item.model;
-    const dose = resolveDose(trtA.entry.dose, model);
+    const dose = model.dose ? resolveDose(trtA.entry.dose, model) : null;
     let level = num(m.onTrtT, 10, 100000), source = 'lab', natural = base.levels.totalT, naturalSource = base.levels.totalTSource;
     const labOnTherapy = labDate && trtA.start && weeksBetween(trtA.start, labDate) >= 2;
     if (level == null && labOnTherapy && base.levels.totalTSource === 'lab') {
@@ -628,14 +845,18 @@ export function modifiersAt(profile, date, opts = {}) {
       notes.push(`Your total T lab (${labDate}) was drawn after starting testosterone, so Forge reads it as your on-therapy level and assumes an average natural level (${natural} ng/dL).`);
       assumptions.push(`Natural testosterone: assumed average ≈${natural} ng/dL (your lab was drawn on therapy).`);
     }
-    if (level == null && !dose.assumed) {
+    if (level == null && dose && !dose.assumed && model.doseToLevel) {
       level = testosteroneFromDose(dose.value, sex) ?? (female ? 78 : 600); source = 'dose';
       warnings.push(female
         ? `No on-therapy testosterone lab entered: level estimated from your dose (${+dose.value.toFixed(1)} mg/week ≈ ${level} ng/dL nadir; Huang 2014 dose groups in women${dose.value > 25 ? ', and above 25 mg/week the men\'s dose-level data (Bhasin 2001), because no larger doses were studied in women' : ''}). Enter your trough lab for accuracy.`
         : `No on-therapy testosterone lab entered: level estimated from your dose (${+dose.value.toFixed(1)} mg/week ≈ ${level} ng/dL mean nadir, Bhasin 2001 dose groups). Enter your trough lab for accuracy.`);
     }
+    if (level == null && fin(model.trialLevel)) {
+      level = model.trialLevel; source = 'assumed';
+      warnings.push(`${trtA.item.name.split(' (')[0]}: no measured level entered, so Forge assumes ≈${level} ng/dL. ${model.trialLevelNote || ''}`.trim());
+    }
     if (level == null) {
-      if (female) {
+      if (female && dose) {
         level = testosteroneFromDose(dose.value, 'female'); source = 'assumed';
         warnings.push(`No on-therapy testosterone lab or dose entered: assuming the lowest dose in the female dose-response trial (${+dose.value.toFixed(2)} mg/week ≈ ${level} ng/dL, Huang 2014). Enter your trough lab for accuracy.`);
       } else {
@@ -659,12 +880,16 @@ export function modifiersAt(profile, date, opts = {}) {
     if (te.beyondStudied) warnings.push(female
       ? `Testosterone ${Math.round(num(m.onTrtT, 0) ?? level)} ng/dL is beyond any level reported in women or trans men (~${T_MODEL_F.studiedMax}): extrapolation not modeled, so Forge plateaus there.`
       : `Testosterone ${Math.round(num(m.onTrtT, 0) ?? level)} ng/dL is beyond the studied range (~${T_MODEL.studiedMax}): extrapolation not modeled, so Forge plateaus there.`);
-    tInfo = { natural, naturalSource, level: te.levelUsed, source, effect: te };
-    contributions.push({ id: 'trt', name: trtA.item.name, evidence: trtA.item.evidence, kind: 'stack', dose, rampPct: Math.round(100 * (1 - Math.exp(-trtA.weeksOn / T_MODEL.tauWeeks))),
+    tInfo = { natural, naturalSource, level: te.levelUsed, source, effect: te, exogenous: true,
+      e2: null, shbg: num(base.levels.shbg, 1, 300), freeT: vermeulenFreeT(te.levelUsed, num(base.levels.shbg, 1, 300) ?? ASSUMED_SHBG) };
+    contributions.push({ id: trtA.item.id, name: trtA.item.name, evidence: trtA.item.evidence, kind: 'stack', dose, rampPct: Math.round(100 * (1 - Math.exp(-trtA.weeksOn / T_MODEL.tauWeeks))),
       assumedAverage: source === 'dose' || source === 'assumed' || naturalSource === 'assumed',
-      text: `${te.note} Ceiling vs your natural level ×${r2(te.leanCeilingMult / natTe.leanCeilingMult)}; fat ${fmtSign(te.fatDirectLbPerWeek)} lb/week.${source === 'dose' ? ` Level estimated from dose ${doseText(dose)}.` : ''}` });
+      text: `${te.note} Ceiling vs your natural level ×${r2(te.leanCeilingMult / natTe.leanCeilingMult)}; fat ${fmtSign(te.fatDirectLbPerWeek)} lb/week.${source === 'dose' && dose ? ` Level estimated from dose ${doseText(dose)}.` : ''}` });
     levelRisks(trtA, te.levelUsed);
     if (shifts.length && !female) notes.push('Testosterone boosters and HPG-axis therapies (ashwagandha, tongkat ali, clomiphene, hCG, aromatase inhibitors) do nothing on testosterone therapy, because your own production is suppressed. Ignored.');
+    if (trtA.item.model?.kind === 'exogenousT' && fin(trtA.item.model.axisPreservedPct) && trtA.item.model.axisPreservedPct > 0) {
+      notes.push(`${trtA.item.name.split(' (')[0]} is still exogenous testosterone, but in its trial LH stayed normal in about ${trtA.item.model.axisPreservedPct}% of men and sperm counts held up (Ramasamy 2020, single-arm, 6 months). Suppression is reduced, not eliminated.`);
+    }
     for (const s of shifts) contributions.push({ id: s.item.id, name: s.item.name, evidence: s.item.evidence, kind: 'stack', text: female ? (s.item.model?.femaleNote || FEMALE_SHIFT_NOTE) : 'No effect while on testosterone therapy (your own production is suppressed by it).' });
   } else if (shifts.length && female) {
     // Women (§20): every endogenous-testosterone item was studied in men (or found nothing in women), and raising a
@@ -674,54 +899,69 @@ export function modifiersAt(profile, date, opts = {}) {
       contributions.push({ id: s.item.id, name: s.item.name, evidence: s.item.evidence, kind: 'stack', dose, text: s.item.model?.femaleNote || FEMALE_SHIFT_NOTE });
     }
   } else if (shifts.length) {
-    const ctx = { baselineT: base.levels.totalT, lh: base.levels.lh, bmi: bmiOf(profile, bw), inDeficit, sleepHours: base.levels.sleepHours, zinc: base.levels.zinc, prolactin: base.levels.prolactin };
     const T0 = base.levels.totalT;
-    let pct = 0, pctLean = 0, weeks = 0, cap = Infinity, leanCap = Infinity;
-    const parts = [];
+    const ctx = { baselineT: T0, lh: base.levels.lh, bmi: bmiOf(profile, bw), inDeficit, sleepHours: base.levels.sleepHours,
+      zinc: base.levels.zinc, prolactin: base.levels.prolactin, deficitKcal: base.levels.deficitKcal,
+      estradiol: base.levels.estradiol, shbg: base.levels.shbg, age };
+    const cParts = [];
+    let weeks = 0;
     for (const s of shifts) {
-      const model = s.item.model, dose = resolveDose(s.entry.dose, model);
+      const model = s.item.model, dose = model.dose ? resolveDose(s.entry.dose, model) : null;
       const labAfter = labDate && s.start && labDate >= s.start && base.levels.totalTSource === 'lab';
       if (labAfter) { contributions.push({ id: s.item.id, name: s.item.name, evidence: s.item.evidence, kind: 'stack', dose, text: `Your T lab (${labDate}) was drawn while taking it, so its effect is already in your number. Not added again.` }); continue; }
-      const resp = clamp(interp(model.response, dose.value), 0, 1);
+      const resp = dose ? clamp(interp(model.response, dose.value), 0, 1) : 1;
       const r = rampFrac(s.weeksOn, model.rampWeeks || 0);
-      const g = tShiftPct(model, ctx);
-      const p = g.pct * resp * r;
-      const share = fin(model.tLeanShare) ? clamp(model.tLeanShare, 0, 1) : 1;
-      pct += p; pctLean += p * share; weeks = Math.max(weeks, s.weeksOn);
-      if (p > 0 && fin(model.maxLevel)) cap = Math.min(cap, model.maxLevel);
-      if (p > 0 && fin(model.leanCapLevel)) leanCap = Math.max(leanCap === Infinity ? 0 : leanCap, model.leanCapLevel);
-      parts.push({ s, dose, p, r, gate: g, share });
-      if (dose.beyond) warnings.push(`${s.item.name}: ${Math.round(dose.value)} ${dose.unit} is above the studied range; Forge plateaus at the studied dose.`);
-      if (g.warn) warnings.push(`${s.item.name}: ${g.warn}`);
-      if (p !== 0 && share < 1) warnings.push(`${s.item.name}: Forge raises your testosterone number but adds no muscle from it — ${model.leanNullNote || 'trials that measured body composition on it found no change'}.`);
+      weeks = Math.max(weeks, s.weeksOn);
+      cParts.push({ id: s.item.id, name: s.item.name, item: s.item, model, dose, resp, ramp: r, weeksOn: s.weeksOn, evidence: s.item.evidence });
+      if (dose?.beyond) warnings.push(`${s.item.name}: ${Math.round(dose.value)} ${dose.unit} is above the studied range; Forge plateaus at the studied dose.`);
     }
-    // A measured on-therapy lab wins over the modeled rise.
-    const measured = num(m.onTrtT, 10, 100000);
-    const measuredUsable = measured != null && parts.some(p => p.p !== 0);
-    const modeled = Math.min(cap, T0 * (1 + pct / 100));
-    const level = measuredUsable ? measured : modeled;
-    if (measuredUsable) notes.push(`Your measured total T on therapy (${Math.round(measured)} ng/dL) is used as-is; Forge doesn't add a modeled rise on top of a real lab.`);
-    else if (fin(cap) && T0 * (1 + pct / 100) > cap) notes.push(`Modeled level capped at ${Math.round(cap)} ng/dL: these therapies restored men to the normal range in the trials, so Forge doesn't project past it.`);
-    if (Math.abs(level - T0) > 1) {
-      // The level Forge credits with muscle: the share of the rise from items whose body-composition evidence
-      // supports it, and only up to leanCapLevel (no endogenous therapy has shown muscle gain by pushing a
-      // man who is already in the normal range higher — see docs/research/endogenous-testosterone.md).
-      const credited = T0 + (level - T0) * (pct !== 0 ? pctLean / pct : 1);
-      const leanLevel = level > T0 ? clamp(Math.min(credited, leanCap === Infinity ? credited : leanCap), T0, level) : credited;
-      const te = testosteroneEffect(level, { baselineT: T0, weeksOn: weeks, age });
-      const teLean = Math.abs(leanLevel - level) < 1 ? te : testosteroneEffect(leanLevel, { baselineT: T0, weeksOn: weeks, age });
-      ceil = ceil / te0.leanCeilingMult * teLean.leanCeilingMult;
-      leanD = leanD - te0.leanDirectLbPerWeek + teLean.leanDirectLbPerWeek;
-      fatD = fatD - te0.fatDirectLbPerWeek + teLean.fatDirectLbPerWeek;
-      tInfo = { natural: T0, naturalSource: base.levels.totalTSource, level, source: measuredUsable ? 'measured' : 'endogenous', effect: te, leanLevel, leanEffect: teLean };
-      if (level > T0 && leanLevel < level - 1) notes.push(`Forge credits muscle only up to ≈${Math.round(leanLevel)} ng/dL. Raising your own testosterone from a low level to the normal range is where lean mass improved in trials; past that, no study of these therapies has shown added muscle in men who were already in range.`);
-      for (const { s, dose, p, r, gate } of parts) contributions.push({ id: s.item.id, name: s.item.name, evidence: s.item.evidence, kind: 'stack', dose, rampPct: Math.round(r * 100),
-        assumedAverage: base.levels.totalTSource === 'assumed', assumedDose: dose.assumed,
-        text: `${gate.note ? gate.note + ' ' : ''}Total T ${fmtSign(p, 1)}% (${Math.round(r * 100)}% of full effect): ≈${Math.round(T0)} → ${Math.round(level)} ng/dL ${measuredUsable ? '(your measured lab)' : 'modeled'}. Lean ${fmtSign(teLean.leanDirectLbPerWeek, 3)} lb/week, training ceiling ×${r2(teLean.leanCeilingMult / te0.leanCeilingMult)}.` });
-      for (const { s } of parts) levelRisks({ item: s.item }, level);
-    } else {
-      for (const { s, dose, gate, r } of parts) contributions.push({ id: s.item.id, name: s.item.name, evidence: s.item.evidence, kind: 'stack', dose, rampPct: Math.round(r * 100),
-        text: gate.note || 'No change in your testosterone modeled.' });
+    if (cParts.length) {
+      const comb = combineEndogenous(cParts, ctx);
+      for (const n of comb.notes) notes.push(n);
+      for (const w of comb.warnings) warnings.push(w);
+      // A measured on-therapy lab always wins over the modeled rise.
+      const measured = num(m.onTrtT, 10, 100000);
+      const measuredUsable = measured != null && comb.parts.some(p => p.pct !== 0);
+      const level = measuredUsable ? measured : comb.level;
+      if (measuredUsable) notes.push(`Your measured total T on therapy (${Math.round(measured)} ng/dL) is used as-is; Forge doesn't add a modeled rise on top of a real lab.`);
+      const creditLevel = measuredUsable
+        ? (comb.creditSource ? clamp(Math.min(level, Math.max(T0, num(SUPPLEMENTS[comb.creditSource]?.model?.bcMaxLevel, 0, 1e5) ?? level)), Math.min(T0, level), Math.max(T0, level)) : (level >= T0 ? T0 : level))
+        : comb.creditLevel;
+      // Estradiol → fat (aromatase inhibitors only; Finkelstein 2013, scaled, ASSUMPTION — see E2_FAT).
+      const e2Fat = estradiolFatEffect(comb.e2ActionDrop, { weeksOn: weeks, bmi: ctx.bmi, estradiol: comb.e2Base });
+      if (comb.e2ActionDrop > 0.001) {
+        fatD += e2Fat.fatDirectLbPerWeek;
+        notes.push(e2Fat.note);
+      }
+      if (Math.abs(level - T0) > 1 || Math.abs(creditLevel - T0) > 1) {
+        const te = testosteroneEffect(level, { baselineT: T0, weeksOn: weeks, age });
+        const teLean = Math.abs(creditLevel - level) < 1 ? te : testosteroneEffect(creditLevel, { baselineT: T0, weeksOn: weeks, age });
+        ceil = ceil / te0.leanCeilingMult * teLean.leanCeilingMult;
+        leanD = leanD - te0.leanDirectLbPerWeek + teLean.leanDirectLbPerWeek;
+        fatD = fatD - te0.fatDirectLbPerWeek + teLean.fatDirectLbPerWeek;
+        tInfo = { natural: T0, naturalSource: base.levels.totalTSource, level, source: measuredUsable ? 'measured' : 'endogenous',
+          effect: te, leanLevel: creditLevel, leanEffect: teLean, combined: comb, e2: comb.e2, e2Base: comb.e2Base,
+          shbg: comb.shbg, freeT: comb.freeT, freeTBase: comb.freeTBase, extrapolated: comb.extrapolated };
+      } else {
+        tInfo = { ...tInfo, combined: comb, e2: comb.e2, e2Base: comb.e2Base, shbg: comb.shbg, freeT: comb.freeT, freeTBase: comb.freeTBase };
+      }
+      for (const p of comb.parts) {
+        const src = cParts.find(c => c.id === p.id);
+        const roleText = p.role === 'subsumed'
+          ? `Adds no extra testosterone on top of ${SUPPLEMENTS[comb.driverId]?.name.split(' (')[0] || 'the stronger item'}: they share the same final step (Habous 2018). `
+          : p.role === 'cause' ? 'Treats a cause, so it raises the level the drugs then work from (and shrinks what they can add). ' : '';
+        const none = src?.model.bodyComp === 'none' || src?.model.tLeanShare === 0;
+        const extraText = none
+          ? ` Forge raises your testosterone number and credits NO muscle — ${src.model.leanNullNote || 'the trials that measured body composition on it found none'}.`
+          : src?.model.bodyComp === 'extrapolated' && p.pct !== 0 ? ' Any lean mass shown is an EXTRAPOLATION: no trial of this item measured body composition.' : '';
+        contributions.push({ id: p.id, name: p.name, evidence: src?.evidence, kind: 'stack', dose: p.dose, rampPct: Math.round(p.ramp * 100),
+          assumedAverage: base.levels.totalTSource === 'assumed', assumedDose: !!p.dose?.assumed, role: p.role, extrapolated: src?.model.bodyComp === 'extrapolated',
+          text: p.pct === 0
+            ? (p.gateNote || 'No change in your testosterone modeled.')
+            : `${p.gateNote ? p.gateNote + ' ' : ''}${roleText}Total T ${fmtSign(p.pct, 1)}% (${Math.round(p.ramp * 100)}% of full effect): ≈${Math.round(T0)} → ${Math.round(level)} ng/dL ${measuredUsable ? '(your measured lab)' : 'modeled'}, range ${Math.round(comb.levelLo)}–${Math.round(comb.levelHi)}.${extraText}` });
+        if (none && p.pct !== 0) warnings.push(`${p.name}: Forge raises your testosterone number but adds no muscle from it — ${src.model.leanNullNote || 'trials that measured body composition on it found no change'}.`);
+        if (src) levelRisks({ item: src.item }, level);
+      }
     }
   }
 
@@ -731,6 +971,13 @@ export function modifiersAt(profile, date, opts = {}) {
     const { item, entry } = a;
     const model = item.model || {};
     if (item.id === 'trt' || T_KINDS.has(model.kind)) continue;
+    if (model.kind === 'exogenousT') {
+      // A second exogenous-testosterone route while another is already driving the level: not additive, and nobody
+      // has studied it. The level comes from the one Forge picked (or your lab).
+      if (a !== trtA) contributions.push({ id: item.id, name: item.name, evidence: item.evidence, kind: 'stack',
+        text: `Exogenous testosterone, and your level is already being modeled from ${trtA ? trtA.item.name.split(' (')[0] : 'another route'}. Forge does not add two testosterone routes together — enter your measured level instead.` });
+      continue;
+    }
     if (a.phase === 'stopped') {
       // only water washes out over ~4 weeks after stopping
       if (model.kind === 'generic' && model.waterLb) {

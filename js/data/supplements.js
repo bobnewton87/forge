@@ -15,6 +15,28 @@
 //     ngPer100IU, maxSerum                                       vitaminD: serum rise per 100 IU/day at steady state
 //     doseToLevel: [[mg/week, ng/dL]]                            testosterone: dose → mean nadir serum T (Bhasin 2001), used only without a lab
 //     levelRisks: [{ min, text }]                                risks that apply at/above a dose (or serum level for testosterone)
+// CONTRACT-NOTE (§22 Natural testosterone therapies): every item that moves a man's OWN testosterone also carries
+//   the fields the interaction engine and the planner read (docs/research/endogenous-testosterone.md §8–§10):
+//     axis: 'serm'|'ai'|'gonadotropin'|'dopamine'|'nutrient'|'lifestyle'|'herbal'|'exogenous'
+//       'serm'|'ai'|'gonadotropin'|'herbal' are LH-DRIVEN: they share one final common path (Leydig output), so they
+//       combine NON-ADDITIVELY (Habous 2018) and are bound by a testicular-capacity ceiling.
+//       'dopamine'|'nutrient'|'lifestyle' are CAUSE-CORRECTION: they raise the baseline/set-point itself, are applied
+//       first, and therefore SHRINK what an LH-driven drug can still add (its response falls with baseline).
+//     ceilingNg                 the highest serum total T this route can plausibly reach (per-route plateau)
+//     tCI: [lo, hi]             the trial/meta CI on the modeled T rise, as a multiple of the point estimate
+//     e2Pct                     modeled % change in serum estradiol at full effect (null = not modeled)
+//     e2ActionPct               modeled % change in estrogen ACTION (only aromatase inhibitors: synthesis blocked).
+//                               Finkelstein 2013's fat term is driven by this, never by a SERM's serum-E2 rise.
+//     shbgDelta                 modeled change in SHBG (nmol/L); free T is then computed with Vermeulen
+//     bodyComp: 'measured'|'extrapolated'|'none'
+//       'measured'     trials of THIS item measured body composition → credit up to bcMaxLevel (what they reached)
+//       'extrapolated' no body-composition data, but a measured T rise → run through the Bhasin T→lean curve,
+//                      bounded by the highest serum T this item's own trials reached, and LABELLED an extrapolation
+//       'none'         trials measured body composition and found none → tLeanShare 0
+//     bcMaxLevel                the serum T up to which muscle is credited (see bcNote for where the number comes from)
+//     monitor: [labs], fertility, timeCourse, wada, suits, notSuits   (shown by the planner, never computed from)
+// CONTRACT-NOTE: `rx: true` marks every item that needs a prescriber. The group can be excluded wholesale from a
+//   build (isRx / RX_IDS) without touching the rest of the catalogue.
 // CONTRACT-NOTE: category 'peptide' also holds SARMs (research compounds); the UI labels the group
 //   "Peptides & research compounds". typicalUse is null for every unapproved compound; `dose.default`
 //   is the dose used in the cited trial, shown as "studied dose", never as a recommendation.
@@ -234,10 +256,25 @@ const LIST = [
       'Morgado A, et al. Systematic review of the use of dietary supplements for male sexual dysfunction and testosterone. Int J Impot Res. 2023.',
     ],
     model: {
-      kind: 'tShift',
+      kind: 'tShift', axis: 'herbal',
       dose: { unit: 'mg/day', default: 600, label: 'studied dose', studied: [250, 600] },
       response: [[0, 0], [300, 0.5], [600, 1]],
-      tPct: 12, tPctLowT: 12, rampWeeks: 8, leanCapLevel: 750,
+      tPct: 12, tPctLowT: 12, rampWeeks: 8,
+      // Zhu 2026 SMD 0.33 (95% CI 0.13–0.54) → the CI spans roughly 0.4–1.6× the point estimate.
+      tCI: [0.4, 1.6], ceilingNg: 800,
+      e2Pct: null, e2ActionPct: 0, shbgDelta: 0,
+      // Wankhede 2015 measured body composition on it (8 wk, novice lifters) and reported more arm/chest size and
+      // −3.5 % body fat vs −1.5 % placebo, but end testosterone did not differ between groups, so the body-composition
+      // result cannot be attributed to the hormone change. Treated as an extrapolation through the T curve, bounded by
+      // the highest on-treatment mean reported (Wankhede 2015: 726 ng/dL).
+      bodyComp: 'extrapolated', bcMaxLevel: 726,
+      bcNote: 'No trial has shown that ashwagandha\'s testosterone rise becomes muscle: Wankhede 2015 measured body composition but its end testosterone did not differ from placebo. Forge runs the modeled rise through the testosterone→lean curve and labels it an extrapolation.',
+      monitor: ['Liver panel (ALT/AST/bilirubin) if you take it for more than a few weeks', 'TSH if you have thyroid disease'],
+      fertility: 'No suppression of LH or FSH reported; small trials report better sperm parameters.',
+      timeCourse: 'Trials ran 8–16 weeks; the salivary rise in Lopresti 2019 did not persist after stopping.',
+      wada: 'Not prohibited.',
+      suits: 'Anyone curious about the only supplement with a positive meta-analysis; cheap to try and easy to stop.',
+      notSuits: 'Liver disease, hyperthyroidism or thyroid medication; no trial has tested trained men with normal testosterone.',
     },
   },
   {
@@ -263,7 +300,17 @@ const LIST = [
       kind: 'tShift',
       dose: { unit: 'mg/day', default: 200, label: 'studied dose', studied: [100, 400] },
       response: [[0, 0], [100, 0.5], [200, 1]],
-      tPct: 0, tPctLowT: 15, rampWeeks: 5, leanCapLevel: 350,
+      tPct: 0, tPctLowT: 15, rampWeeks: 5,
+      axis: 'herbal', tCI: [0.3, 1.7], ceilingNg: 400,
+      e2Pct: null, e2ActionPct: 0, shbgDelta: 0,
+      bodyComp: 'extrapolated', bcMaxLevel: 350,
+      bcNote: 'No tongkat ali trial measured body composition. The modeled rise is run through the testosterone→lean curve and bounded at 350 ng/dL, because Chinnappan 2021\'s men stayed below 300 and the meta-analysis was only significant below 300.',
+      monitor: ['Total testosterone before and after 12 weeks (it only works if you start low)'],
+      fertility: 'No suppression; small trials report better sperm motility.',
+      timeCourse: 'Trials ran 4–12 weeks.',
+      wada: 'Not prohibited.',
+      suits: 'Men with a measured total testosterone under about 300 ng/dL who want to try something before a prescription.',
+      notSuits: 'Anyone in the normal range (the meta-analysis subgroup was not significant); buy only third-party-tested product (heavy metals).',
       nullNote: 'Your testosterone is in the normal range, and in that subgroup of the meta-analysis the effect was not significant, so Forge models no change.',
     },
   },
@@ -292,7 +339,17 @@ const LIST = [
       kind: 'tEndogenous',
       dose: { unit: 'mg/day', default: 30, label: 'elemental zinc in standard ZMA', studied: [15, 45] },
       response: [[0, 0], [15, 0.6], [30, 1]],
-      tPct: 30, rampWeeks: 12, leanCapLevel: 550,
+      tPct: 30, rampWeeks: 12,
+      axis: 'nutrient', tCI: [0.3, 1.7], ceilingNg: 600,
+      e2Pct: null, e2ActionPct: 0, shbgDelta: 0,
+      bodyComp: 'extrapolated', bcMaxLevel: 500,
+      bcNote: 'Nobody has measured body composition while repleting zinc. Prasad 1996 moved marginally deficient older men from 239 to 461 ng/dL, so the credit is bounded at 500 ng/dL and labelled an extrapolation.',
+      monitor: ['Serum zinc (morning, fasting) before and after', 'Serum copper if you take more than 40 mg/day for months'],
+      fertility: 'Zinc deficiency impairs spermatogenesis; correcting it helps. Supplementing replete men does not.',
+      timeCourse: 'Repletion takes weeks to a few months.',
+      wada: 'Not prohibited.',
+      suits: 'A measured serum zinc under 70 µg/dL. Endurance athletes and restrictive diets are the usual cause.',
+      notSuits: 'Anyone with a normal zinc level: trials in replete men found nothing.',
       gate: { deficiencyOnly: 'zinc', deficiencyBelow: 70 },
     },
   },
@@ -320,6 +377,15 @@ const LIST = [
       dose: { unit: 'g/day', default: 3, label: 'common dose', studied: [3, 6] },
       response: [[0, 0], [3, 0], [6, 1]],
       tPct: -12.5, tPctLowT: -12.5, rampWeeks: 2,
+      axis: 'herbal', tCI: [0.5, 1.5], ceilingNg: 2500,
+      e2Pct: null, e2ActionPct: 0, shbgDelta: 0,
+      bodyComp: 'extrapolated', bcMaxLevel: 2500,
+      bcNote: 'Melville 2017 measured body composition over 12 weeks at 6 g/day and found no extra hypertrophy. The modeled testosterone drop is run through the same curve as any other change, which gives a small negative.',
+      monitor: ['Total and free testosterone if you take the 6 g dose'],
+      fertility: 'Not studied.', timeCourse: 'The drop appeared within 14 days (Melville 2015).',
+      wada: 'Not prohibited.',
+      suits: 'Nobody, on this evidence.',
+      notSuits: 'Trained men: 6 g/day lowered testosterone and 3 g/day did nothing.',
       nullNote: 'At 3 g/day the randomized trials in trained men found no change in testosterone.',
     },
   },
@@ -503,7 +569,17 @@ const LIST = [
       kind: 'tEndogenous',
       dose: { unit: '% of nights', default: 100, label: 'as studied (every night)', studied: [0, 100] },
       response: [[0, 0], [100, 1]],
-      tPct: 14, rampWeeks: 2, leanCapLevel: 750,
+      tPct: 14, rampWeeks: 2,
+      axis: 'lifestyle', tCI: [0.5, 1.5], ceilingNg: 900,
+      e2Pct: null, e2ActionPct: 0, shbgDelta: 0,
+      bodyComp: 'measured', bcMaxLevel: 900,
+      bcNote: 'Sleep is the one lifestyle lever with a randomized body-composition result: Nedeltcheva 2010 (5.5 h vs 8.5 h in a deficit) shifted weight loss from fat to lean. Forge models that through the sleep retention and ceiling curves as well as through testosterone, so no extra cap is needed.',
+      monitor: ['Nothing. Track hours; a morning testosterone lab after a month of 8 h nights tells you if it mattered.'],
+      fertility: 'Short sleep lowers testosterone and sperm quality in observational data; fixing it is harmless.',
+      timeCourse: 'Leproult 2011 saw the fall within one week, so recovery is fast.',
+      wada: 'Not prohibited.',
+      suits: 'Anyone averaging under 7 h. The biggest free lever on this list.',
+      notSuits: 'Nobody — but if you already sleep 7–9 h there is nothing to recover, and Forge models zero.',
       gate: { shortSleepOnly: true, sleepBelow: 7, sleepTarget: 8, sleepFloor: 5 },
     },
   },
@@ -517,7 +593,8 @@ const LIST = [
       'Rossow 2013 (natural bodybuilder, 6-month contest prep to 4.5% body fat): 922 → 227 ng/dL, back to 991 after recovery; strength had not fully returned at 6 months.',
       'Short, mild restriction does far less: 4 days at 15 kcal/kg fat-free mass did not change T in 6 men (Koehler 2016).',
       'Lean mass: a meta-analysis found deficits around 500 kcal/day stop lean-mass gain from lifting altogether (Murphy & Koehler 2021).',
-      'No projection effect of its own; it works through your calorie target in Nutrition and through the warning Forge shows when you are in a deficit.',
+      'Forge models the recovery from YOUR entered typical deficit (Metabolic values → "typical daily deficit"). The anchors are the two measured extremes — about −10% at 500 kcal/day and roughly −65% at the Ranger/contest-prep end (1,500 kcal/day plus heavy training) — and the points between them are an interpolation, not a measurement.',
+      'It also works through your calorie target in Nutrition and through the warning Forge shows when you are in a deficit.',
     ],
     risks: [],
     typicalUse: 'Keep deficits moderate (roughly 300–500 kcal/day), protein high, and eat before the Adderall dose takes hold',
@@ -528,7 +605,30 @@ const LIST = [
       'Areta JL, Taylor HL, Koehler K. Low energy availability: history, definition and evidence of its endocrine, metabolic and physiological effects in prospective studies in males. Eur J Appl Physiol. 2021;121(1):1-21.',
       'Murphy C, Koehler K. Energy deficiency impairs resistance training gains in lean mass but not strength: a meta-analysis and meta-regression. Scand J Med Sci Sports. 2021;31(11):2185-2198.',
     ],
-    model: { kind: 'none', note: 'Works through your calorie target; Forge warns when a deficit is likely to cost you testosterone.' },
+    model: {
+      kind: 'tEndogenous', axis: 'lifestyle',
+      dose: { unit: '% of the deficit you remove', default: 100, label: 'as studied (back to maintenance)', studied: [0, 100] },
+      response: [[0, 0], [100, 1]],
+      tPct: 100, rampWeeks: 4,          // full effect = undoing 100% of the modeled suppression (see deficitT below)
+      // ASSUMPTION (docs §10): the suppression curve between the two measured extremes is interpolated.
+      //   Friedl 2000: ~1,000–1,200 kcal/day deficit + load + sleep loss → T ≈ 130 ng/dL from a normal baseline (≈ −75%).
+      //   Rossow 2013: a 6-month contest prep → 922 → 227 ng/dL (−75%), fully reversed on refeeding.
+      //   Koehler 2016: 4 days at 15 kcal/kg FFM → no change (so short, mild restriction is ~0).
+      //   Murphy & Koehler 2021: ~500 kcal/day stops lean-mass gain from lifting.
+      deficitT: [[0, 0], [300, 0], [500, 10], [1000, 40], [1500, 65], [2000, 75]],   // kcal/day deficit → % of T suppressed
+      tCI: [0.5, 1.5], ceilingNg: 1000,
+      e2Pct: null, e2ActionPct: 0, shbgDelta: -5,
+      shbgNote: 'Low energy availability raises SHBG, so free testosterone falls further than total; eating enough reverses that (Areta 2021).',
+      bodyComp: 'measured', bcMaxLevel: 1100,
+      bcNote: 'Measured: a 500 kcal/day deficit abolished lean-mass gain from lifting in a meta-analysis of 26 trials (Murphy & Koehler 2021), and the case-study and field data show the testosterone fall reversing with refeeding. Forge models both, and the calorie side already flows through the projection.',
+      monitor: ['Morning total testosterone, LH and SHBG if you have been in a deficit for months', 'Body weight trend: if it is falling you are in one'],
+      fertility: 'Central and fully reversible; sperm production recovers with weight and energy intake.',
+      timeCourse: 'Days to weeks (Friedl 2000 saw prompt recovery on refeeding while the other stressors continued).',
+      wada: 'Not prohibited.',
+      suits: 'Lean, hard-training men in a long deficit — and anyone whose appetite is blunted (Adderall, stimulants, high cardio volume).',
+      notSuits: 'Anyone eating at or above maintenance: there is nothing to undo, and Forge models zero.',
+      gate: { deficitOnly: true },
+    },
   },
   {
     id: 'fat_loss', name: 'Fat loss (if you carry a lot of it)', category: 'lifestyle', evidence: 'strong',
@@ -553,7 +653,19 @@ const LIST = [
       kind: 'tEndogenous',
       dose: { unit: '% of the studied weight loss', default: 100, label: 'as studied (~10% of body weight)', studied: [0, 100] },
       response: [[0, 0], [100, 1]],
-      tPct: 28, rampWeeks: 24, leanCapLevel: 550,
+      tPct: 28, rampWeeks: 24,
+      axis: 'lifestyle', tCI: [0.58, 1.42], ceilingNg: 700,   // Corona 2013 diet CI 1.68–4.07 of 2.87 nmol/L
+      e2Pct: -25, e2ActionPct: 0, shbgDelta: 6,
+      e2Note: 'Losing fat removes aromatase tissue, so estradiol falls while testosterone rises. That is a different thing from blocking aromatase with a drug: the estrogen that remains is not blocked, and fat is being lost for ordinary energy-balance reasons.',
+      shbgNote: 'SHBG rises with weight loss (insulin falls), so total T rises more than free T (Corona 2013).',
+      bodyComp: 'measured', bcMaxLevel: 700,
+      bcNote: 'Measured end to end: the fat loss itself is what the projection is already simulating. The hormone change is credited on top only up to 700 ng/dL, the top of what diet or surgery produced in Corona 2013.',
+      monitor: ['Total testosterone before and after ~10% weight loss', 'HbA1c, lipids, blood pressure'],
+      fertility: 'Improves with weight loss (LH and FSH recover).',
+      timeCourse: 'Tracks the weight: months.',
+      wada: 'Not prohibited.',
+      suits: 'BMI 30 or above. First-line treatment for obesity-related low testosterone in every guideline.',
+      notSuits: 'Lean men — there is no evidence it raises testosterone, and a hard deficit lowers it (see Eating enough).',
       gate: { obesityOnly: true },
     },
   },
@@ -582,6 +694,17 @@ const LIST = [
       dose: { unit: '% of the studied training load', default: 100, label: 'as studied (years of near-daily endurance training)', studied: [0, 100] },
       response: [[0, 0], [100, 1]],
       tPct: -25, rampWeeks: 0,
+      axis: 'lifestyle', tCI: [1.0, 1.8], ceilingNg: 1000,   // the reviews describe 25–50%; Forge models the low end
+      e2Pct: null, e2ActionPct: 0, shbgDelta: 4,
+      shbgNote: 'Endurance-trained men run higher SHBG, so free T falls a little more than total (Hackney 1988: free T −27% vs total −31%).',
+      bodyComp: 'extrapolated', bcMaxLevel: 1100,
+      bcNote: 'No trial has randomized endurance volume and measured body composition against testosterone. The modeled drop is run through the same curve as any other change and is labelled an extrapolation.',
+      monitor: ['Morning total testosterone and LH', 'Vitamin D and bone density if this has been going on for years'],
+      fertility: 'Usually preserved; the drop is central and partly reversible when volume falls.',
+      timeCourse: 'Takes years to appear (Hackney 2020) and improves over months when volume is cut.',
+      wada: 'Not prohibited.',
+      suits: 'Nothing to take. Add it to see what your current running volume is costing you; the lever is cutting the volume.',
+      notSuits: 'Anyone not running big weeks.',
     },
   },
   {
@@ -591,8 +714,8 @@ const LIST = [
     mechanism: 'Alcohol suppresses LH and directly impairs testicular steroidogenesis, and raises estradiol. It also costs you sleep quality and training calories.',
     effects: [
       'Sierksma 2004 (randomized crossover, 10 middle-aged men, ~40 g alcohol/day for 3 weeks): total T −6.8% (95% CI −1.0 to −12.5%).',
-      'Santi 2023 meta-analysis (21 studies, 10,199 subjects): lower total T in healthy chronic drinkers, with estradiol higher. The pooled units are ambiguous in the abstract, so Forge does not model a number for heavy drinking.',
-      'Not modeled as a stack item: track it, and keep it away from the nights before hard training.',
+      'Santi 2023 meta-analysis (21 studies, 10,199 subjects): lower total T in healthy chronic drinkers, with estradiol higher. The pooled units are ambiguous in the abstract, so Forge does not extrapolate past the randomized number.',
+      'Forge models −6.8% at the studied 3 drinks/day and scales linearly below that; above 3 drinks/day it plateaus, because no randomized dose higher than that exists.',
     ],
     risks: ['Blunts muscle protein synthesis after training, wrecks sleep quality, and adds calories without protein.'],
     typicalUse: 'If size is the goal, keep it occasional rather than daily',
@@ -600,7 +723,48 @@ const LIST = [
       'Sierksma A, et al. Effect of moderate alcohol consumption on plasma dehydroepiandrosterone sulfate, testosterone, and estradiol levels in middle-aged men and postmenopausal women. Alcohol Clin Exp Res. 2004;28(5):780-785.',
       'Santi D, et al. Alcohol consumption and testicular function: a systematic review and meta-analysis. Andrology. 2023;11(8):1480-1492.',
     ],
-    model: { kind: 'none', note: 'Real but small at moderate intake; the pooled estimate for heavy drinking is too ambiguous to model.' },
+    model: {
+      kind: 'tEndogenous', axis: 'lifestyle',
+      dose: { unit: 'drinks/day', default: 3, label: 'the randomized dose (≈40 g/day)', studied: [0, 3], note: 'One drink ≈ 14 g alcohol. Above 3 drinks/day Forge plateaus: no randomized higher dose exists.' },
+      response: [[0, 0], [3, 1]],
+      tPct: -6.8, rampWeeks: 3,
+      tCI: [0.15, 1.84], ceilingNg: 1000,       // Sierksma 2004 95% CI −1.0 % to −12.5 % of the −6.8 % point estimate
+      e2Pct: 7, e2ActionPct: 0, shbgDelta: 0,
+      e2Note: 'Estradiol rose on alcohol in the same crossover (Sierksma 2004) and in the meta-analysis (Santi 2023).',
+      bodyComp: 'extrapolated', bcMaxLevel: 1100,
+      bcNote: 'No trial has measured body composition against alcohol-induced testosterone change. The modeled drop runs through the testosterone→lean curve and is labelled an extrapolation; the bigger costs (sleep, blunted post-workout protein synthesis, empty calories) are separate.',
+      monitor: ['Nothing specific; a morning testosterone after a dry month is the cheapest experiment.'],
+      fertility: 'Heavy chronic use impairs it; moderate intake has not been shown to.',
+      timeCourse: 'The randomized effect appeared over 3 weeks of daily drinking.',
+      wada: 'Not prohibited (removed from the WADA list in 2018).',
+      suits: 'Daily drinkers. Cutting back is free and the effect reverses.',
+      notSuits: 'Occasional drinking is not the issue; the trial was 3 drinks a day for 3 weeks.',
+    },
+  },
+  {
+    id: 'resistance_training', name: 'Lifting itself (resistance training)', category: 'lifestyle', evidence: 'strong',
+    status: 'Free, and the thing that actually builds the muscle',
+    summary: 'Lifting is the single biggest driver of muscle in this whole app — and it does NOT raise your resting testosterone. The post-workout hormone spike is real, lasts about half an hour, and does not predict how much muscle you build. Forge models the training, not a hormone effect.',
+    mechanism: 'Mechanical tension drives muscle protein synthesis through local, androgen-receptor and mTOR pathways. The acute systemic hormone surge is a side effect of the effort, not the signal.',
+    effects: [
+      'Resting testosterone does not change with training: SMD 0.00 (95% CI −0.20 to 0.20) across trials in men 19–75 (Potter 2021 meta-analysis).',
+      'The acute spike is large (SMD 0.74) and gone within 30 minutes (D\'Andrea 2020).',
+      'It does not matter: training one arm in a high-hormone environment and one in a low-hormone environment produced the same growth (West 2010), and no hormone response correlated with gains in 49 trained men (Morton 2016).',
+      'What did correlate was muscle androgen-receptor content, not blood hormones (Morton 2018).',
+      'Forge models no testosterone effect from lifting. The lean mass it builds comes through the training side of the projection, where it belongs.',
+    ],
+    risks: [],
+    typicalUse: 'The weekly set targets Forge already plans for you',
+    sources: [
+      'Potter E, et al. The effect of resistance training on resting testosterone concentrations in men: a systematic review and meta-analysis. Sports Med. 2022;52(5):1091-1105. doi:10.1007/s40279-021-01600-z',
+      'D\'Andrea S, et al. Endogenous transient doping: physical exercise acutely increases testosterone levels — results from a meta-analysis. J Endocrinol Invest. 2020;43(10):1349-1371. doi:10.1007/s40618-020-01251-3',
+      'West DW, et al. Elevations in ostensibly anabolic hormones with resistance exercise enhance neither training-induced muscle hypertrophy nor strength of the elbow flexors. J Appl Physiol. 2010;108(1):60-67. doi:10.1152/japplphysiol.01147.2009',
+      'Morton RW, et al. Neither load nor systemic hormones determine resistance training-mediated hypertrophy or strength gains in resistance-trained young men. J Appl Physiol. 2016;121(1):129-138. doi:10.1152/japplphysiol.00154.2016',
+      'Morton RW, et al. Muscle androgen receptor content but not systemic hormones is associated with resistance training-induced skeletal muscle hypertrophy in healthy, young men. Front Physiol. 2018;9:1373. doi:10.3389/fphys.2018.01373',
+    ],
+    model: { kind: 'none', axis: 'lifestyle', bodyComp: 'none',
+      bcNote: 'Measured and null for the hormone pathway: resting testosterone does not change with training (Potter 2021, SMD 0.00). The muscle it builds is modeled by the training side of the projection, not here.',
+      note: 'No testosterone effect (Potter 2021: SMD 0.00). Your training already drives the projection.' },
   },
   {
     id: 'cold_plunge', name: 'Cold plunge / ice bath after lifting', category: 'lifestyle', evidence: 'moderate',
@@ -624,7 +788,7 @@ const LIST = [
 
   // ============================================================ PRESCRIPTION
   {
-    id: 'trt', name: 'Testosterone (TRT and higher doses)', category: 'prescription', evidence: 'strong',
+    id: 'trt', name: 'Testosterone (TRT and higher doses)', category: 'prescription', rx: true, exogenousT: true, evidence: 'strong',
     status: 'Prescription only (Schedule III). Replacement is for diagnosed hypogonadism; doses above replacement are not an approved use. WADA prohibited.',
     summary: 'Testosterone\'s effect on lean mass rises with the blood level. Bhasin\'s trials show fat-free mass going up roughly in step with the log of serum T, from low levels to about 2,400 ng/dL, even without training. Lifting adds to that. Forge uses your on-therapy blood level (or estimates it from your dose) against your own natural level.',
     mechanism: 'Androgen receptor activation raises muscle protein synthesis and satellite-cell activity. Higher serum T means more lean mass, with no clear plateau inside the studied range, and fat mass falls at higher levels.',
@@ -668,15 +832,17 @@ const LIST = [
     },
   },
   {
-    id: 'clomiphene', name: 'Clomiphene citrate (off-label)', category: 'prescription', evidence: 'moderate',
+    id: 'clomiphene', name: 'Clomiphene citrate (off-label)', category: 'prescription', rx: true, evidence: 'moderate',
     status: 'Prescription only; used off-label in men (FDA-approved only for ovulation induction in women). WADA prohibited (S4 hormone and metabolic modulators).',
     summary: 'The best-evidenced way to raise your OWN testosterone. In men with low testosterone and a pituitary that still works, a meta-analysis of 10 randomized trials found +274 ng/dL versus placebo, with LH and FSH going up rather than down — so sperm production is preserved, unlike with testosterone therapy. It does nothing for a man whose level is already normal.',
     mechanism: 'Blocks estrogen receptors in the hypothalamus and pituitary, so the brain stops seeing the negative feedback, releases more LH and FSH, and your own testes make more testosterone. Estradiol rises along with it.',
     effects: [
-      'Hohl 2025 meta-analysis (10 RCTs, 819 men with functional or secondary hypogonadism, baseline 67–303 ng/dL): total T +273.8 ng/dL (95% CI 191.9–355.7), LH +4.7 IU/L, FSH +4.6 IU/L, estradiol +34 pg/mL. GRADE moderate. The benefit shrank with higher age (p=0.043) and higher BMI (p=0.0008).',
-      'Equivalent to testosterone gel on serum levels (difference 5 ng/dL, 95% CI −43 to +54), but well below injections (−290 ng/dL).',
-      'Fertility is the real differentiator: SERMs kept sperm concentration 70 million/mL higher than gel, and the risk of falling below 15 million/mL was 90% lower.',
-      'Body composition: only one trial measured it. Soares 2018 (RCT, 78 men with obesity, baseline ~220 ng/dL, 12 weeks) found improved lean, fat-free and muscle mass — but by bioimpedance, not DXA, and only in men with obesity and low T.',
+      'Hohl 2025 meta-analysis (10 RCTs, 819 men with functional or secondary hypogonadism, baseline 67–303 ng/dL): total T +273.8 ng/dL (95% CI 191.9–355.7, I²=89%), LH +4.66 IU/L (3.37–5.94), FSH +4.59 IU/L (2.88–6.30), free T SMD 1.57 (0.44–2.70), DHT +7.58 ng/dL (3.42–11.73), estradiol +33.99 pg/mL (19.19–48.79). GRADE moderate. The benefit shrank with higher age (p=0.043) and higher BMI (p=0.0008).',
+      'SHBG did NOT move significantly in the pooled analysis (+3.63 nmol/L, 95% CI −0.54 to 7.81, p=0.09), although the single body-composition trial (Soares 2018) did report a rise.',
+      'Equal to testosterone gel on serum levels (difference 5.41 ng/dL, 95% CI −43 to +54). Hohl 2025 did not compare SERMs with injections, so Forge makes no claim there.',
+      'Fertility is the real differentiator: SERMs kept sperm concentration 70.4 million/mL higher than gel (95% CI 41.6–99.2), and the risk of falling below 15 million/mL was 90% lower (RR 0.10).',
+      'Body composition: only one trial measured it. Soares 2018 (RCT, 78 men with obesity, BMI >30, baseline 226 ± 70 ng/dL, 50 mg/day, 12 weeks) found improved lean mass (p<0.001), fat-free mass (p=0.004) and muscle mass (p<0.001) — but by bioimpedance, not DXA, and only in obese men with low T. HDL fell (p<0.001).',
+      'No glucose or weight benefit: FBG, HbA1c, insulin and BMI were all unchanged vs placebo (Hohl 2025).',
       'Forge models the rise only when your testosterone is low, credits muscle only up to about 500 ng/dL (where that one body-composition trial landed), and models nothing at all if your level is normal.',
     ],
     risks: [
@@ -701,13 +867,27 @@ const LIST = [
       dose: { unit: '% of the studied regimen', default: 100, label: 'as studied (prescriber-set dose)', studied: [0, 100], note: 'Forge models the trial-average response, not a dose you choose.' },
       response: [[0, 0], [100, 1]],
       tPctByBaseline: [[150, 183], [250, 110], [300, 91], [350, 60], [400, 30], [450, 0]],
-      rampWeeks: 6, maxLevel: 900, leanCapLevel: 500,
-      gate: { lowTOnly: true, noEffectAbove: 450, secondaryOnly: true },
+      rampWeeks: 6, maxLevel: 800,
+      // Pituitary-driven plateau: the highest group mean any SERM or AI trial reached is 790 ng/dL (Krause 1992).
+      axis: 'serm', ceilingNg: 800,
+      tCI: [0.70, 1.30],              // Hohl 2025: 191.9–355.7 around 273.8
+      e2Pct: 90, e2ActionPct: 90, shbgDelta: 4,
+      e2Note: 'Estradiol rises a lot (+34 pg/mL pooled, 95% CI 19–49). That is part of the mechanism, not a side-show. Forge does NOT turn a SERM\'s serum-E2 rise into fat loss: Finkelstein\'s fat finding is about estrogen ACTION, and a SERM raises the hormone while blocking the receptor in some tissues. Direction unknown, so zero.',
+      shbgNote: 'Pooled SHBG change was not significant (+3.63 nmol/L, p=0.09); Forge models a small rise so free T is not overstated.',
+      bodyComp: 'measured', bcMaxLevel: 500,
+      bcNote: 'MEASURED (one trial): Soares 2018 measured body composition by bioimpedance in obese men starting at 226 ± 70 ng/dL. The achieved level is not in the abstract; 500 ng/dL is inferred from that baseline plus the pooled clomiphene rise in obese men (+333 ng/dL, Tienforti 2023) and is an ASSUMPTION. Above it, no trial of clomiphene has measured muscle.',
+      monitor: ['Total testosterone (morning, 4–6 weeks in)', 'Estradiol (sensitive assay)', 'Hematocrit', 'PSA', 'LH/FSH', 'Vision changes: stop and call the prescriber'],
+      fertility: 'Preserved or improved — the main reason to pick it over testosterone.',
+      timeCourse: 'Levels move within 2 weeks; trials ran 8–30 weeks. Long-term data are retrospective.',
+      wada: 'WADA prohibited at all times, S4.2 (anti-estrogenic substances / SERMs).',
+      suits: 'Low testosterone (two morning draws under ~300) with a normal or low LH, especially when fertility matters.',
+      notSuits: 'A normal testosterone (no trial, and the model shows zero), a raised LH (primary: the pituitary signal is not the problem), or anyone already on testosterone.',
       levelRisks: [{ min: 1, text: 'Estradiol rises on clomiphene, so breast tenderness or gynecomastia can appear; your prescriber tracks it along with hematocrit and PSA.' }],
+      gate: { lowTOnly: true, noEffectAbove: 450, secondaryOnly: true },
     },
   },
   {
-    id: 'enclomiphene', name: 'Enclomiphene citrate', category: 'prescription', evidence: 'moderate',
+    id: 'enclomiphene', name: 'Enclomiphene citrate', category: 'prescription', rx: true, evidence: 'moderate',
     status: 'Not an FDA-approved drug: the application got a Complete Response Letter in 2015 and was never approved. It appears on the FDA\'s list of bulk substances under evaluation for compounding (Category 1), so it reaches people through compounding pharmacies. WADA prohibited.',
     summary: 'The purified isomer of clomiphene, without the estrogenic one. Two phase-3 trials reached testosterone levels equal to testosterone gel while raising LH and FSH and keeping sperm counts intact. Pooled rise in obesity-related low T: +216 ng/dL. No trial has ever measured muscle on it.',
     mechanism: 'Same as clomiphene — estrogen-receptor blockade at the hypothalamus and pituitary — but it is the trans-isomer alone, which may mean fewer of the estrogenic side effects.',
@@ -738,21 +918,33 @@ const LIST = [
       dose: { unit: '% of the studied regimen', default: 100, label: 'as studied (prescriber-set dose)', studied: [0, 100] },
       response: [[0, 0], [100, 1]],
       tPctByBaseline: [[150, 144], [200, 108], [250, 86], [300, 72], [350, 45], [400, 22], [450, 0]],
-      rampWeeks: 6, maxLevel: 900, leanCapLevel: 550,
+      rampWeeks: 6, maxLevel: 800,
+      axis: 'serm', ceilingNg: 800,
+      tCI: [0.87, 1.13],              // Tienforti 2023: 188–245 ng/dL around 216
+      e2Pct: 45, e2ActionPct: 45, shbgDelta: 3,
+      e2Note: 'Estradiol rises, but less than on racemic clomiphene (the estrogenic zuclomiphene isomer is removed). As with clomiphene, Forge credits no fat change from it.',
+      bodyComp: 'extrapolated', bcMaxLevel: 604,
+      bcNote: 'EXTRAPOLATED: no enclomiphene trial has ever measured body composition. Forge runs the modeled testosterone rise through the Bhasin curve and stops at 604 ng/dL — the highest on-treatment group mean reported (Wiehle 2013, 25 mg, day 42: 604 ± 160 ng/dL). Treat the lean number as an extrapolation, not a result.',
+      monitor: ['Total testosterone', 'Estradiol', 'Hematocrit', 'PSA', 'LH/FSH', 'IGF-1 (it fell in phase 2)'],
+      fertility: 'Preserved: LH and FSH rise and sperm concentration was maintained where gel suppressed it (Kim 2016).',
+      timeCourse: 'Testosterone rises within 14 days; the LH/T effect persisted a week after stopping.',
+      wada: 'WADA prohibited at all times, S4.2.',
+      suits: 'Overweight men with secondary hypogonadism (T ≤300, LH <9.4) who want fertility preserved and prefer fewer estrogenic effects than clomiphene.',
+      notSuits: 'Anyone in the normal range; anyone who wants an FDA-approved product (it is not one) or long-term safety data (none exist).',
       gate: { lowTOnly: true, noEffectAbove: 450, secondaryOnly: true },
     },
   },
   {
-    id: 'hcg', name: 'hCG (human chorionic gonadotropin)', category: 'prescription', evidence: 'moderate',
-    status: 'Prescription only; regulated as a biologic since 2020, which took it out of ordinary compounding. WADA prohibited in males (S2 gonadotropins).',
+    id: 'hcg', name: 'hCG (human chorionic gonadotropin) — an injection, but not testosterone', category: 'prescription', rx: true, evidence: 'moderate',
+    status: 'Prescription only, and an injection — but NOT testosterone: it makes your own testes produce testosterone instead of replacing it. Regulated as a biologic since 2020, which took it out of ordinary compounding. WADA prohibited in males (S2 gonadotropins).',
     summary: 'Acts like LH directly on the testes, so it works even when the pituitary signal is the problem. The one placebo-controlled trial in older men with low testosterone raised T about 150% and added roughly 2 kg of lean mass in 3 months — but strength, balance and physical function did not improve at all.',
     mechanism: 'hCG binds the LH receptor on Leydig cells, driving testosterone production inside the testis. That intratesticular testosterone is also what sperm production needs, which is why it is used alongside testosterone therapy to protect fertility.',
     effects: [
       'Liu 2002 (double-blind RCT, 40 men over 60 with low T, 3 months): total and free T and estradiol up about 150%; lean body mass +2 kg (p<0.001), fat mass −1 kg; LH and FSH fell and testis volume dropped about 5 mL.',
       'Crucially, in that same trial shoulder and knee strength, physical activity, gait and balance did not improve. More lean mass on the scan did not become more function.',
-      'Habous 2018 (randomized, 282 hypogonadal men wanting fertility): clomiphene, hCG and both together all roughly tripled a very low baseline, with no significant difference between arms.',
+      'Habous 2018 (randomized, 282 hypogonadal men wanting fertility, baseline ≈67 ng/dL, 5,000 IU twice weekly, 12 weeks): clomiphene +158, hCG +134, both together +153 ng/dL — the combination was no better than clomiphene alone (p=0.57). This is the single best piece of evidence that these drugs do not add up.',
       'Alongside testosterone therapy it preserves sperm: in Hsieh 2013 no man became azoospermic and semen parameters held steady.',
-      'Forge credits muscle up to about 900 ng/dL here, because that is where the trial that measured lean mass actually landed.',
+      'Forge credits muscle up to about 870 ng/dL here, inferred from Liu 2002\'s ≤15 nmol/L (433 ng/dL) entry criterion and its reported +150% rise. The exact achieved level is not in the paper, so that bound is an assumption.',
     ],
     risks: [
       'Nipple tenderness and gynecomastia (estradiol rises with it).',
@@ -773,22 +965,38 @@ const LIST = [
       dose: { unit: '% of the studied regimen', default: 100, label: 'as studied (prescriber-set dose)', studied: [0, 100] },
       response: [[0, 0], [100, 1]],
       tPctByBaseline: [[150, 200], [250, 160], [350, 150], [430, 140], [500, 0]],
-      rampWeeks: 4, maxLevel: 1100, leanCapLevel: 900,
+      rampWeeks: 4, maxLevel: 1100,
+      // hCG drives the Leydig cell directly, so it can push past the pituitary-driven plateau. 1,100 ng/dL is the
+      // top of the male reference range and an ASSUMPTION: the highest level actually observed is Liu 2002's ≈870.
+      axis: 'gonadotropin', ceilingNg: 1100,
+      tCI: [0.6, 1.4],
+      e2Pct: 150, e2ActionPct: 150, shbgDelta: 0,
+      e2Note: 'Estradiol rose about 150% alongside testosterone in Liu 2002 — hCG drives the whole steroidogenic pathway, not just testosterone. Fat fell 1 kg in that trial, which is the measured number Forge uses; no separate estradiol term is applied.',
+      bodyComp: 'measured', bcMaxLevel: 870,
+      bcNote: 'MEASURED, and the only placebo-controlled lean-mass result in this whole class: Liu 2002, 40 men over 60, 3 months, lean +2 kg (p<0.001) and fat −1 kg (p<0.05) — with NO improvement in shoulder or knee strength, gait, balance or physical activity. The 870 ng/dL bound is inferred from the ≤433 ng/dL entry criterion and the reported +150%; the achieved mean is not published, so the bound is an assumption.',
+      monitor: ['Total testosterone and estradiol', 'Hematocrit', 'Testis volume (it fell ~5 mL in the trial)', 'LH/FSH (they are suppressed while you use it)'],
+      fertility: 'The reason it exists: intratesticular testosterone is what sperm production needs, so it is used alongside testosterone therapy to protect fertility.',
+      timeCourse: 'Levels rise within days; Liu 2002 ran 3 months.',
+      wada: 'WADA prohibited at all times in males, S2.2 (chorionic gonadotropin).',
+      suits: 'Low testosterone with fertility to protect, including men already on testosterone therapy. It works even when the pituitary signal is the problem, because it replaces LH.',
+      notSuits: 'A normal testosterone; primary (testicular) failure where the testes cannot respond; anyone who would rather not inject.',
       gate: { lowTOnly: true, noEffectAbove: 500 },
       levelRisks: [{ min: 1, text: 'Estradiol rises with hCG: breast tenderness and gynecomastia are the common complaints, and your own LH and FSH are suppressed while you use it.' }],
     },
   },
   {
-    id: 'aromatase_inhibitor', name: 'Aromatase inhibitor (anastrozole, letrozole), off-label', category: 'prescription', evidence: 'strong',
+    id: 'aromatase_inhibitor', name: 'Aromatase inhibitor (anastrozole, letrozole), off-label', category: 'prescription', rx: true, evidence: 'strong',
     status: 'Prescription only; approved for breast cancer, used off-label in men. WADA prohibited (S4.1).',
     summary: 'These reliably raise testosterone by 30–150% by blocking its conversion to estradiol. They are also the clearest case in this whole area where a big testosterone number bought nothing: two year-long randomized trials measured body composition and strength and found no change, and spine bone density fell. Forge raises your testosterone number and deliberately credits zero muscle.',
     mechanism: 'Blocks aromatase, so less testosterone becomes estradiol. Lower estradiol means less negative feedback, so LH rises and testosterone rises. The catch is that men need estradiol — it is what protects bone and, per Finkelstein 2013, what keeps fat mass down.',
     effects: [
       'Leder 2004 (RCT, men 62–74 with T under 350): daily dosing took total T from 343 ± 61 to 572 ± 139 ng/dL (+67%); a twice-weekly schedule gave +31%. No change in quality of life, erectile function or hematocrit.',
-      'Burnett-Bowie 2009 (RCT, men ≥60, 12 months): total T 323 → 525 ng/dL at 3 months, still raised at 12 — and body composition (CT and DXA) and strength did not change.',
-      'A second 12-month RCT found spine bone density fell on anastrozole while it rose on placebo (p=0.0014). The authors concluded aromatase inhibition does not improve skeletal health in aging men.',
-      'Letrozole in men with BMI over 35 (RCT, 6 months): 248 → 620 ng/dL (+150%), and the authors reported no significant effect on any predefined endpoint including body composition.',
-      'Finkelstein 2013 (NEJM, 400 men): androgen deficiency drives loss of lean mass and strength, but estrogen deficiency is what drives fat gain — so suppressing estradiol works against a leaner body.',
+      'Burnett-Bowie 2009 (RCT, men ≥60, 12 months, anastrozole 1 mg): total T 11.2 → 18.2 nmol/L (323 → 525 ng/dL) at 3 months, bioavailable T 2.7 → 5.4 nmol/L — and body composition (CT and DXA) and strength did not change. Estradiol fell only 55.8 → 42.2 pmol/L (−24%), because the rising testosterone feeds the enzyme more substrate.',
+      'A second 12-month RCT (Burnett-Bowie 2009b, n=69) found spine bone density fell on anastrozole (1.121 → 1.102 g/cm²) while it rose on placebo (1.180 → 1.189), p=0.0014. Estradiol 15 → 12 pg/mL. "Aromatase inhibition does not improve skeletal health in aging men."',
+      'Loves 2013 (RCT, letrozole, 42 men with BMI >35, 6 months): estradiol 119 → 59 pmol/L, LH 3.3 → 8.8 IU/L, total T 8.6 → 21.5 nmol/L (248 → 620 ng/dL, +150%) — and "significant effects on the predefined endpoints were not observed", body composition included.',
+      'Finkelstein 2013 (NEJM, 400 men, goserelin + graded testosterone ± anastrozole): the cohort × dose interaction was significant for % body fat (P=0.001), intra-abdominal fat (P=0.021) and subcutaneous fat (P=0.029), and NOT significant for lean mass (P=0.22), thigh-muscle area (P=0.20) or leg-press strength (P=0.91). Androgen runs muscle; estrogen runs fat.',
+      'The catch that reconciles all of it: Finkelstein crushed estradiol to 1–3 pg/mL (the testes were switched off, so anastrozole had almost no substrate to work on). In a man with a working axis the same 1 mg only drops estradiol 20–50%, which is why the real-world AI trials found no fat effect. Forge scales the fat penalty by how much estrogen action you actually lose, so a real-world AI gives a small number with a range that includes zero.',
+      'Two more failures to replicate the fat penalty: Mauras 2000 (anastrozole 1 mg, 10 weeks, young men; estradiol −48%, no change in fat-free mass, fat mass, protein synthesis or strength) and Dias 2016/2017 (RCT, 12 months, older men; the AI arm LOST abdominal subcutaneous fat and leptin).',
     ],
     risks: [
       'Spine bone-mineral density fell over a year in a randomized trial. In a man already at risk (endurance athlete, low energy availability) that is a real concern.',
@@ -803,22 +1011,42 @@ const LIST = [
       'Burnett-Bowie SM, et al. Effects of aromatase inhibition on bone mineral density and bone turnover in older men with low testosterone levels. J Clin Endocrinol Metab. 2009;94(12):4785-4792.',
       'Loves S, et al. Letrozole once a week normalizes serum testosterone in obesity-related male hypogonadism. Eur J Endocrinol. 2008;158(5):741-747.',
       'Loves S, et al. Effects of letrozole on the lipid profile, body composition and quality of life in obese men with hypogonadotropic hypogonadism: a randomized placebo-controlled trial. Eur J Endocrinol. 2013;169(5):705-714.',
-      'Finkelstein JS, et al. Gonadal steroids and body composition, strength, and sexual function in men. N Engl J Med. 2013;369(11):1011-1022.',
+      'Finkelstein JS, et al. Gonadal steroids and body composition, strength, and sexual function in men. N Engl J Med. 2013;369(11):1011-1022. doi:10.1056/NEJMoa1206168',
+      'Mauras N, et al. Estrogen suppression in males: metabolic effects. J Clin Endocrinol Metab. 2000;85(7):2370-2377. doi:10.1210/jcem.85.7.6676',
+      'Dias JP, et al. Testosterone vs. aromatase inhibitor in older men with low testosterone: effects on cardiometabolic parameters. Andrology. 2017;5(1):31-40. doi:10.1111/andr.12284',
+      'Colleluori G, et al. Aromatase inhibitors plus weight loss improves the hormonal profile of obese hypogonadal men without causing major side effects. Front Endocrinol. 2020;11:277. doi:10.3389/fendo.2020.00277',
       WADA,
     ],
     model: {
       kind: 'tEndogenous',
       dose: { unit: '% of the studied regimen', default: 100, label: 'as studied (prescriber-set dose)', studied: [0, 100] },
       response: [[0, 0], [100, 1]],
-      tPctByBaseline: [[200, 70], [320, 64], [400, 40], [450, 0]],
-      rampWeeks: 4, maxLevel: 900, tLeanShare: 0,
+      // Unlike the SERMs, an AI has a randomized testosterone rise in EUGONADAL males too: Mauras 2000 found +58%
+      // in males aged 15–22 with normal levels, with no body-composition change. So there is no low-T gate here —
+      // the number moves at any baseline, and Forge still credits zero muscle and applies the estradiol fat term.
+      tPctByBaseline: [[200, 70], [320, 67], [450, 60], [600, 58], [900, 40]],
+      rampWeeks: 4, maxLevel: 800, tLeanShare: 0,
+      axis: 'ai', ceilingNg: 800, tCI: [0.45, 2.2],   // +31 % (twice-weekly) to +150 % (letrozole) around ≈ +67 %
+      // Estradiol in men with an INTACT axis: −24 % (Burnett-Bowie 2009a), −20 % (2009b), −50 % (Loves 2013),
+      // −52 % (Colleluori 2020), −48 % (Mauras 2000). Mean ≈ −35 %.
+      e2Pct: -35, e2ActionPct: -35, shbgDelta: 0,
+      shbgNote: 'SHBG did not change on anastrozole (Mauras 2000).',
+      e2Note: 'This is the only item where Forge applies the Finkelstein 2013 fat term, because it is the only one that blocks estrogen SYNTHESIS. The penalty is scaled by how much estrogen action is lost: a real-world 20–50% drop is a fraction of Finkelstein\'s ~90%.',
+      bodyComp: 'none', bcMaxLevel: 0,
+      bcNote: 'MEASURED AND NULL. Two 12-month randomized trials (Burnett-Bowie 2009 ×2) measured body composition by CT and DXA and strength and found no change; Loves 2013 found nothing on any predefined endpoint despite +150% testosterone; Mauras 2000 found no change in fat-free mass, fat mass or protein synthesis. Forge therefore raises your testosterone number and credits ZERO muscle — the clearest case in this whole area that a bigger number is not more muscle.',
+      monitor: ['Estradiol (sensitive assay) — the point is not to crush it', 'Total testosterone', 'Spine bone-mineral density if used beyond a few months', 'Lipids'],
+      fertility: 'LH and FSH rise, so spermatogenesis is preserved or improved; it is used off-label in male infertility.',
+      timeCourse: 'Testosterone peaks at ~3 months and drifts back down by 12 (Burnett-Bowie 2009).',
+      wada: 'WADA prohibited at all times, S4.1 (aromatase inhibitors).',
+      suits: 'Obese men with low testosterone and a genuinely high estradiol, under a prescriber — and even then for the hormone profile, not for muscle.',
+      notSuits: 'Anyone whose goal is muscle (measured: none), anyone at risk of bone loss (endurance athletes, low energy availability), and anyone with a normal estradiol.',
       leanNullNote: 'two 12-month randomized trials measured body composition and strength on it and found no change, and spine bone density fell',
-      gate: { lowTOnly: true, noEffectAbove: 450 },
+      gate: {},
       levelRisks: [{ min: 1, text: 'Lower estradiol is the mechanism and the problem: joint aches, low libido and, over a year, spine bone loss (Burnett-Bowie 2009).' }],
     },
   },
   {
-    id: 'tamoxifen', name: 'Tamoxifen (off-label in men)', category: 'prescription', evidence: 'moderate',
+    id: 'tamoxifen', name: 'Tamoxifen (off-label in men)', category: 'prescription', rx: true, evidence: 'moderate',
     status: 'Prescription only; approved for breast cancer, used off-label in men for gynecomastia and infertility. WADA prohibited (S4.2).',
     summary: 'The one HPG-axis drug with a randomized testosterone rise in men whose levels were already normal: about +60% in infertile but eugonadal men. Nobody has ever measured muscle on it, and Forge credits none, because no trial has shown that pushing a normal man higher this way builds anything.',
     mechanism: 'A selective estrogen receptor modulator, like clomiphene: blocks estrogen feedback at the hypothalamus and pituitary.',
@@ -843,11 +1071,23 @@ const LIST = [
       kind: 'tEndogenous',
       dose: { unit: '% of the studied regimen', default: 100, label: 'as studied (prescriber-set dose)', studied: [0, 100] },
       response: [[0, 0], [100, 1]],
-      tPct: 60, rampWeeks: 6, maxLevel: 1100, leanCapLevel: 550,
+      tPct: 60, rampWeeks: 6, maxLevel: 800,
+      axis: 'serm', ceilingNg: 800, tCI: [0.5, 1.5],
+      e2Pct: 60, e2ActionPct: 0, shbgDelta: 0,
+      e2Note: 'Serum estradiol rises as on any SERM, but tamoxifen also blocks the receptor in several tissues, so whether estrogen action goes up or down in fat is unknown. Forge models no fat effect either way.',
+      shbgNote: 'SHBG did not change significantly in Krause 1992.',
+      bodyComp: 'extrapolated', bcMaxLevel: 790,
+      bcNote: 'EXTRAPOLATED, and the most uncertain row in the catalogue: nobody has ever measured body composition on tamoxifen in men. Krause 1992 is the ONLY randomized testosterone rise in men who were not hypogonadal (490 → 790 ng/dL vs 530 → 560 on placebo), so Forge runs it through the Bhasin curve and stops at 790. The lower end of the range is zero, because zero is what has actually been measured.',
+      monitor: ['Total testosterone and estradiol', 'Any leg swelling, chest pain or breathlessness: venous thromboembolism is the serious risk', 'Eye symptoms', 'Liver panel'],
+      fertility: 'Used for male infertility; hormones improve but a Cochrane review found no improvement in pregnancy rates (OR 1.26, 95% CI 0.99–1.56).',
+      timeCourse: 'Krause 1992 ran 6 months.',
+      wada: 'WADA prohibited at all times, S4.2.',
+      suits: 'Gynecomastia or male infertility, under a prescriber. It is the only item here with a randomized testosterone rise in eugonadal men.',
+      notSuits: 'Using a breast-cancer drug for body composition in a healthy man, on an extrapolation and a clot risk, is a bad trade. Absolutely not with any history of thrombosis.',
     },
   },
   {
-    id: 'cabergoline', name: 'Cabergoline (only for high prolactin)', category: 'prescription', evidence: 'moderate',
+    id: 'cabergoline', name: 'Cabergoline (only for high prolactin)', category: 'prescription', rx: true, evidence: 'moderate',
     status: 'Prescription only; FDA approved for hyperprolactinemia. Irrelevant unless your prolactin is actually high.',
     summary: 'If high prolactin is what is suppressing your testosterone, treating it fixes the cause. Testosterone normalized in about 61% of men with a prolactinoma within 6 months. If your prolactin is normal, this does nothing and Forge models nothing.',
     mechanism: 'A dopamine agonist that suppresses prolactin secretion. High prolactin blocks GnRH pulses, so lowering it lets LH and testosterone recover.',
@@ -866,14 +1106,26 @@ const LIST = [
       dose: { unit: '% of the studied regimen', default: 100, label: 'as studied (prescriber-set dose)', studied: [0, 100] },
       response: [[0, 0], [100, 1]],
       tPctByBaseline: [[150, 180], [250, 100], [350, 40], [450, 0]],
-      rampWeeks: 12, maxLevel: 900, leanCapLevel: 550,
+      rampWeeks: 12, maxLevel: 900,
+      // Cause-correction, not an LH drug: it removes the thing suppressing GnRH, so it raises the set-point and
+      // therefore shrinks what a SERM or hCG could still add on top.
+      axis: 'dopamine', ceilingNg: 900, tCI: [0.5, 1.5],
+      e2Pct: 0, e2ActionPct: 0, shbgDelta: 0,
+      bodyComp: 'extrapolated', bcMaxLevel: 700,
+      bcNote: 'EXTRAPOLATED: Colao 2004 measured bone density, not body composition. Forge runs the restored testosterone through the Bhasin curve and stops at 700 ng/dL, roughly the normal range the responders reached. 39% of men did NOT normalize and still needed replacement.',
+      monitor: ['Prolactin (repeat it before acting — one high value is not a diagnosis)', 'Total testosterone', 'Pituitary MRI if prolactin is confirmed high', 'Echocardiogram only at the much higher Parkinson\'s doses'],
+      fertility: 'Sperm volume and count normalized in everyone whose testosterone normalized (Colao 2004).',
+      timeCourse: 'Testosterone normalized in ~61% by 6 months.',
+      wada: 'Not prohibited.',
+      suits: 'A confirmed high prolactin with low testosterone. This treats the cause rather than pushing the axis.',
+      notSuits: 'A normal prolactin — then there is nothing here to treat and Forge models zero.',
       gate: { highProlactin: true, lowTOnly: true, noEffectAbove: 450 },
     },
   },
   {
-    id: 'nasal_t', name: 'Short-acting nasal testosterone (Natesto)', category: 'prescription', evidence: 'weak',
-    status: 'Prescription only (FDA approved as testosterone replacement). Using it specifically to protect fertility is off-label. WADA prohibited.',
-    summary: 'Testosterone from outside, but dosed so briefly that LH and FSH mostly survive. In a single-arm study, 91% of men reached a normal level while FSH stayed normal in 82% and sperm counts held up — the usual trade-off between testosterone therapy and fertility, partly avoided.',
+    id: 'nasal_t', name: 'Short-acting nasal testosterone (Natesto)', category: 'prescription', rx: true, exogenousT: true, evidence: 'weak',
+    status: 'Prescription only (FDA approved as testosterone replacement). This IS exogenous testosterone — it suppresses your own axis, just less than other routes. Using it specifically to protect fertility is off-label. WADA prohibited.',
+    summary: 'Testosterone from outside, but dosed so briefly that LH and FSH mostly survive. In a single-arm study, 91% of men reached a normal level while FSH stayed normal in 82% and sperm counts held up — the usual trade-off between testosterone therapy and fertility, partly avoided. It is still exogenous testosterone: suppression is reduced, not eliminated.',
     mechanism: 'Three short nasal doses a day produce brief testosterone peaks instead of a steady level, which seems to leave the pituitary enough unsuppressed time to keep signalling the testes.',
     effects: [
       'Ramasamy 2020 (open-label, single-arm, 6 months, 33–44 evaluable men): 90.9% reached total T above 300 ng/dL; LH stayed normal in 72.7% and FSH in 81.8%; sperm counts above 5 million were maintained in 93.9% at 6 months.',
@@ -887,10 +1139,60 @@ const LIST = [
       'Bhasin S, et al. Testosterone therapy in men with hypogonadism: an Endocrine Society clinical practice guideline. J Clin Endocrinol Metab. 2018;103(5):1715-1744.',
       WADA,
     ],
-    model: { kind: 'none', note: 'Enter your measured on-therapy level and add Testosterone to your stack; the testosterone curve handles it.' },
+    model: { kind: 'exogenousT', axis: 'exogenous', suppresses: true, axisPreservedPct: 75,
+      trialLevel: 500, trialLevelNote: 'Ramasamy 2020 reported the proportion above 300 ng/dL (90.9%), not a group mean. 500 ng/dL is an ASSUMPTION standing in for "mid-normal", used only when you enter no lab.',
+      bodyComp: 'extrapolated', bcMaxLevel: 1100,
+      bcNote: 'EXTRAPOLATED: body composition was not measured. Enter your measured level and the Bhasin testosterone curve handles it like any other exogenous testosterone.',
+      monitor: ['Total testosterone (timing matters — it peaks and falls within the hour)', 'LH and FSH', 'Semen analysis if fertility matters', 'Hematocrit, PSA'],
+      fertility: 'The distinguishing claim: LH stayed normal in 72.7% and FSH in 81.8%, and 93.9% kept sperm above 5 million at 6 months (Ramasamy 2020) — but that is one uncontrolled single-arm study with heavy attrition and nothing past 6 months.',
+      timeCourse: 'Three doses a day; peaks within ~1 h.',
+      wada: 'WADA prohibited at all times, S1 (anabolic androgenic steroids).',
+      suits: 'A man who needs testosterone replacement and wants to keep sperm production, who will not miss three doses a day.',
+      notSuits: 'Anyone relying on the fertility claim as if it were proven, and anyone who wants to raise their OWN production — this replaces it.',
+      note: 'Exogenous testosterone: enter your measured on-therapy level and add Testosterone to your stack; the testosterone curve handles it.' },
   },
   {
-    id: 'pulsatile_gnrh', name: 'Pulsatile GnRH (gonadorelin pump)', category: 'prescription', evidence: 'moderate',
+    id: 'oral_tu', name: 'Oral testosterone undecanoate (Jatenzo, Tlando, Kyzatrex)', category: 'prescription', rx: true, exogenousT: true, evidence: 'moderate',
+    status: 'Prescription only (Schedule III), FDA approved as testosterone replacement. This IS exogenous testosterone: it suppresses your own production and sperm count like any other route. Boxed warning for blood-pressure increases. WADA prohibited.',
+    summary: 'Testosterone in a capsule. Three approved products get about 87–88% of hypogonadal men into the normal range without injections or gel transfer — but they are replacement, not restoration: your own axis shuts down, fertility suffers, and all three raise blood pressure. No trial has measured body composition on any of them.',
+    mechanism: 'Testosterone undecanoate in a lipid vehicle is absorbed through the intestinal lymphatics with food, bypassing the first-pass liver metabolism that made old oral testosterone hepatotoxic. Serum levels peak and trough within the day, so dosing is twice daily with meals.',
+    effects: [
+      'Jatenzo (Swerdloff 2020, phase 3, 166 men vs 56 topical): 87% reached a 24-hour average in the eugonadal range; plasma Cavg 403 ± 128 ng/dL (serum-equivalent ≈489 ± 155), versus 391 ± 140 for topical testosterone.',
+      'Jatenzo at 2 years (Honig 2022, 69 men completing 24 months): mean total T 617 ± 427 ng/dL, sexual-function scores improved, no clinically significant liver changes — and HDL fell 9.8 ± 0.9 mg/dL, systolic BP rose 3–6 mmHg.',
+      'Tlando (Miner 2024, phase 3, 315 men, baseline 205.7 ± 71.6 ng/dL, 225 mg twice daily): 87.4% within 300–1,140 ng/dL, with no dose titration needed in most.',
+      'Tlando blood pressure (White 2021, 138 men, ambulatory monitoring): 24-hour systolic +3.8 mmHg (p<0.001), hematocrit +3.2% and haemoglobin +0.9 g/dL. The men whose hematocrit rose more than 6% had the largest blood-pressure rise (mean +8.3 mmHg).',
+      'Kyzatrex (phase 3, 155 men with T ≤281 ng/dL): 88% (95% CI 82–93) reached a 24-hour average of 222–800 ng/dL at day 90; boxed warning for blood pressure.',
+      'Body composition was not measured in any of these trials. Forge treats it as exogenous testosterone: enter your measured level and the Bhasin curve applies, labelled an extrapolation.',
+    ],
+    risks: [
+      'Boxed warning: it raises blood pressure, which raises cardiovascular risk. Blood pressure must be controlled before starting and monitored on it.',
+      'It suppresses your own testosterone and sperm production like any exogenous testosterone. Not for a man planning fertility soon.',
+      'Hematocrit rises (needs regular blood counts); HDL falls.',
+      'Must be taken with food twice daily or absorption fails; levels swing within the day, so lab timing matters.',
+    ],
+    typicalUse: 'Physician-prescribed replacement, taken twice daily with meals and titrated on a timed blood level.',
+    sources: [
+      'Swerdloff RS, et al. A new oral testosterone undecanoate formulation restores testosterone to normal concentrations in hypogonadal men. J Clin Endocrinol Metab. 2020;105(8):2515-2531. doi:10.1210/clinem/dgaa238',
+      'Honig S, et al. Two-year analysis of a new oral testosterone undecanoate (TU) formulation in hypogonadal men: efficacy, impact on psychosexual function, and safety. J Sex Med. 2022;19(12):1750-1758. doi:10.1016/j.jsxm.2022.09.002',
+      'Miner M, et al. Safety, efficacy, and pharmacokinetics of oral testosterone undecanoate in males with hypogonadism. Andrology. 2025;13(4):882-893. doi:10.1111/andr.13747',
+      'White WB, et al. Effects of a novel oral testosterone undecanoate on ambulatory blood pressure in hypogonadal men. J Cardiovasc Pharmacol Ther. 2021;26(6):630-637. doi:10.1177/10742484211027394',
+      'U.S. FDA. KYZATREX (testosterone undecanoate) capsules, prescribing information. Marius Pharmaceuticals; approved July 2022.',
+      WADA,
+    ],
+    model: { kind: 'exogenousT', axis: 'exogenous', suppresses: true, axisPreservedPct: 0,
+      trialLevel: 500, trialLevelNote: 'Mid-point of the reported on-treatment means (Jatenzo Cavg ≈489 ng/dL serum-equivalent at 3–4 months, 617 at 2 years). Used only when you enter no lab.',
+      bodyComp: 'extrapolated', bcMaxLevel: 1100,
+      bcNote: 'EXTRAPOLATED: no oral testosterone undecanoate trial measured body composition. Enter your measured level and the Bhasin curve applies, as for any exogenous testosterone.',
+      monitor: ['Blood pressure (boxed warning) before and during', 'Total testosterone, timed per the product label', 'Hematocrit', 'Lipids (HDL falls)', 'PSA'],
+      fertility: 'Suppressed, like any exogenous testosterone. If fertility matters, the SERMs, hCG or nasal testosterone exist for that reason.',
+      timeCourse: 'Levels are in range within days; the trials ran 3–24 months.',
+      wada: 'WADA prohibited at all times, S1.',
+      suits: 'A man who needs replacement, has a diagnosis, and wants to avoid needles and gel transfer to family.',
+      notSuits: 'Anyone trying to raise their OWN testosterone (this replaces it), anyone with uncontrolled blood pressure, and anyone planning children.',
+      note: 'Exogenous testosterone: enter your measured level and add Testosterone to your stack; the testosterone curve handles it.' },
+  },
+  {
+    id: 'pulsatile_gnrh', name: 'Pulsatile GnRH (gonadorelin pump)', category: 'prescription', rx: true, evidence: 'moderate',
     status: 'Specialist use for congenital hypogonadotropic hypogonadism; not a therapy for otherwise healthy men. US availability is unclear (the approved products were discontinued).',
     summary: 'A pump delivering GnRH in pulses can restart the axis in men born without it. It is not a muscle-building option, and in head-to-head data it produces LOWER testosterone than hCG. Continuous rather than pulsed delivery does the opposite and shuts the axis down.',
     mechanism: 'The pituitary only responds to GnRH arriving in pulses. Pulsed delivery restores LH and FSH; steady delivery desensitizes the receptors and suppresses them, which is how prostate-cancer drugs work.',
@@ -909,7 +1211,7 @@ const LIST = [
     model: { kind: 'none', note: 'Only studied in congenital hypogonadotropic hypogonadism, where it gives lower testosterone than hCG.' },
   },
   {
-    id: 'semaglutide', name: 'Semaglutide (Wegovy / Ozempic)', category: 'prescription', evidence: 'strong',
+    id: 'semaglutide', name: 'Semaglutide (Wegovy / Ozempic)', category: 'prescription', rx: true, evidence: 'strong',
     status: 'Prescription only (FDA approved as Wegovy for obesity, Ozempic for type 2 diabetes). Compounded versions are not FDA approved.',
     summary: 'Strong evidence for fat loss, mainly because you eat much less. In STEP-1, the 2.4 mg dose meant ~15% body-weight loss at 68 weeks (vs 2.4% on placebo). Without lifting, about 40% of the weight lost was lean mass. It works against a bulk.',
     mechanism: 'A GLP-1 receptor agonist: slows stomach emptying and acts on brain appetite centers. In a lab study, people ate ~24% less at a buffet.',
@@ -943,7 +1245,7 @@ const LIST = [
     },
   },
   {
-    id: 'tirzepatide', name: 'Tirzepatide (Zepbound / Mounjaro)', category: 'prescription', evidence: 'strong',
+    id: 'tirzepatide', name: 'Tirzepatide (Zepbound / Mounjaro)', category: 'prescription', rx: true, evidence: 'strong',
     status: 'Prescription only (FDA approved as Zepbound for obesity, Mounjaro for type 2 diabetes). Compounded versions are not FDA approved.',
     summary: 'The strongest approved weight-loss drug. In SURMOUNT-1, people lost ~15%, ~19.5% and ~21% of body weight at 5, 10 and 15 mg over 72 weeks. In the body-composition substudy, about a quarter of the loss was lean. It works against a bulk.',
     mechanism: 'Dual GIP and GLP-1 receptor agonist: strong appetite and intake reduction.',
@@ -974,7 +1276,7 @@ const LIST = [
     },
   },
   {
-    id: 'adderall', name: 'Adderall / stimulant ADHD meds', category: 'prescription', evidence: 'strong',
+    id: 'adderall', name: 'Adderall / stimulant ADHD meds', category: 'prescription', rx: true, evidence: 'strong',
     status: 'Prescription only (Schedule II), for diagnosed ADHD. WADA prohibited in competition without a therapeutic use exemption.',
     summary: 'Already part of your life. Lower appetite is one of the most common side effects, and it\'s the main reason eating enough for a lean bulk feels hard. Forge models it as lower intake only when you haven\'t set calories yourself, and flags under-eating.',
     mechanism: 'Raises dopamine and norepinephrine; suppresses appetite for the hours it\'s active, with an evening rebound as it wears off.',
@@ -1003,7 +1305,7 @@ const LIST = [
     },
   },
   {
-    id: 'hgh', name: 'Growth hormone (HGH / somatropin)', category: 'prescription', evidence: 'moderate',
+    id: 'hgh', name: 'Growth hormone (HGH / somatropin)', category: 'prescription', rx: true, evidence: 'moderate',
     status: 'Prescription only for diagnosed GH deficiency and a few specific conditions; distributing it for anti-aging or bodybuilding is illegal in the US. WADA prohibited.',
     summary: 'In healthy adults, GH increases "lean mass" by ~2 kg, but that\'s mostly retained water. Strength doesn\'t improve. Fat mass drops a little. Side effects (swelling, joint pain, carpal tunnel, higher blood sugar) are common.',
     mechanism: 'Raises IGF-1, promotes fat breakdown and causes sodium and water retention in tissues.',
@@ -1031,7 +1333,7 @@ const LIST = [
 
   // ============================================================ PEPTIDES & RESEARCH COMPOUNDS
   {
-    id: 'tesamorelin', name: 'Tesamorelin (Egrifta)', category: 'peptide', evidence: 'moderate',
+    id: 'tesamorelin', name: 'Tesamorelin (Egrifta)', category: 'peptide', rx: true, evidence: 'moderate',
     status: 'Prescription only (FDA approved as Egrifta solely for HIV-associated abdominal fat). WADA prohibited.',
     summary: 'A GHRH analog that cut visceral (deep belly) fat by ~15% over 26 weeks in people with HIV lipodystrophy. Evidence in healthy lifters is lacking; the modeled effect is tiny.',
     mechanism: 'Stimulates the pituitary to release more of your own GH, raising IGF-1.',
@@ -1050,7 +1352,7 @@ const LIST = [
     },
   },
   {
-    id: 'kisspeptin', name: 'Kisspeptin and kisspeptin analogs (MVT-602, TAK-448)', category: 'peptide', evidence: 'refuted',
+    id: 'kisspeptin', name: 'Kisspeptin and kisspeptin analogs (MVT-602, TAK-448)', category: 'peptide', rx: true, evidence: 'refuted',
     status: 'Investigational research peptides; none is approved anywhere. The FDA lists kisspeptin-10 among compounding substances that raise significant safety risks (Category 2). Likely prohibited in drug-tested sport as a gonadotropin-releasing factor — check the current WADA list.',
     summary: 'The most upstream switch in the whole axis, and the human trials are a cautionary tale. A single infusion raises testosterone 15–45% for a few hours, but when the long-acting analogs were given continuously, testosterone fell BELOW castrate levels within a week. There is no way to use this to raise testosterone long-term.',
     mechanism: 'Kisspeptin neurons drive the GnRH pulse generator. Pulses stimulate it; continuous exposure desensitizes the receptor, which is exactly how the analogs were being developed as prostate-cancer drugs.',
@@ -1309,6 +1611,14 @@ const FEMALE = {
   aromatase_inhibitor: { model: { femaleNote: `${MALE_HPG}: aromatase inhibitors treat breast cancer and induce ovulation. They lower estrogen, which costs bone. Forge models no muscle effect.` } },
   tamoxifen: { model: { femaleNote: `${MALE_HPG}: tamoxifen treats and prevents breast cancer. Forge models no muscle effect.` } },
   cabergoline: { model: { femaleNote: 'In women cabergoline treats high prolactin, which restores periods and fertility. That is a health effect, not a muscle effect; Forge models none.' } },
+  oral_tu: { status: 'Prescription only (Schedule III). Approved for male hypogonadism; there is no approved oral testosterone product for women and the doses are far above the female range. WADA prohibited.',
+    model: { femaleNote: `${MALE_HPG.replace('(it works by pushing the testes to make more testosterone)', '(oral testosterone replacement for men)')}. Forge models no effect for women; see Testosterone for the female evidence.` } },
+  alcohol: { model: { femaleNote: 'The randomized crossover (Sierksma 2004) included postmenopausal women, but the testosterone outcome Forge models is the male one. Alcohol still costs sleep, training quality and calories.' } },
+  resistance_training: { effects: [
+    'Resting testosterone does not change with training in either sex; women build muscle at the same relative rate as men (Roberts 2020; Refalo 2025) despite about 15× less testosterone.',
+    'The acute post-workout hormone surge does not predict growth (West 2010; Morton 2016).',
+    'Forge models no hormone effect. The lean mass lifting builds comes through the training side of the projection.',
+  ] },
 };
 for (const s of LIST) if (FEMALE[s.id]) s.female = FEMALE[s.id];
 
@@ -1336,3 +1646,30 @@ export const NOT_MODELED = [
 export function getSupplement(id) { return SUPPLEMENTS[id] || null; }
 export function isUnapproved(s) { return !!(s && /^not fda approved/i.test(s.status || '')); }
 export function isModeled(s) { return !!(s && s.model && s.model.kind && s.model.kind !== 'none'); }
+
+// ===================================================================== §22 helpers
+// Needs a prescriber. A build that must not surface prescription items can exclude RX_IDS wholesale.
+export function isRx(s) { const x = typeof s === 'string' ? SUPPLEMENTS[s] : s; return !!(x && (x.rx === true || x.category === 'prescription')); }
+export const RX_IDS = Object.freeze(Object.values(SUPPLEMENTS).filter(isRx).map(s => s.id));
+// Exogenous testosterone by any route: it replaces your own production and suppresses the axis.
+export function isExogenousT(s) { const x = typeof s === 'string' ? SUPPLEMENTS[s] : s; return !!(x && (x.exogenousT === true || x.model?.kind === 'testosterone' || x.model?.kind === 'exogenousT')); }
+// Every item that changes a man's OWN testosterone (or is in the catalogue specifically because it doesn't).
+export const T_AXIS_IDS = Object.freeze(Object.values(SUPPLEMENTS)
+  .filter(s => ['tEndogenous', 'tShift', 'exogenousT'].includes(s.model?.kind)
+    || ['fenugreek', 'boron', 'tribulus', 'maca', 'shilajit', 'dhea', 'forskolin', 'vitamin_d', 'resistance_training', 'kisspeptin', 'pulsatile_gnrh'].includes(s.id))
+  .map(s => s.id));
+export const LH_DRIVEN_AXES = Object.freeze(['serm', 'ai', 'gonadotropin', 'herbal']);
+export const CAUSE_AXES = Object.freeze(['dopamine', 'nutrient', 'lifestyle']);
+// The panel that decides which of these therapies could apply at all (docs/research/endogenous-testosterone.md §5).
+export const T_LAB_PANEL = Object.freeze([
+  { k: 'totalT', label: 'Total testosterone', why: 'The number everything is gated on. Morning (7–10 am), fasted, and repeated on a separate day — it is pulsatile.' },
+  { k: 'freeT', label: 'Free testosterone', why: 'Equilibrium dialysis, or calculated from total T and SHBG. Normal total with low free points at high SHBG.' },
+  { k: 'lh', label: 'LH', why: 'The single most decisive one. Low T with a normal or low LH is secondary (what clomiphene, enclomiphene and hCG treat); low T with a high LH is testicular and those drugs will not work.' },
+  { k: 'fsh', label: 'FSH', why: 'Drawn with LH; together they stage the axis and track fertility.' },
+  { k: 'estradiol', label: 'Estradiol (sensitive assay)', why: 'Men need it: it is what keeps fat down (Finkelstein 2013) and bone intact. It decides whether an aromatase inhibitor makes any sense.' },
+  { k: 'shbg', label: 'SHBG', why: 'Converts total T into free T, and rises with under-eating and age.' },
+  { k: 'prolactin', label: 'Prolactin', why: 'A treatable cause of low testosterone. Cabergoline does nothing unless this is high.' },
+  { k: 'vitD', label: '25(OH) vitamin D', why: 'Correcting a real deficiency helps muscle function a little; supplementing a replete man does nothing.' },
+  { k: 'ferritin', label: 'Ferritin', why: 'Commonly low in endurance athletes (hurts training); very high can mean iron overload, a recognised cause of low testosterone.' },
+  { k: 'zinc', label: 'Serum zinc', why: 'Only a measured deficiency (<70 µg/dL) moves testosterone.' },
+]);

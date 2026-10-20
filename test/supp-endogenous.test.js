@@ -34,7 +34,9 @@ test('the endogenous-T catalogue exists, is prescription-labeled and carries rea
     assert.match(SUPPLEMENTS[id].model.dose.unit, /%/, `${id} dose unit is a share of the studied regimen`);
   }
   // research-only items project nothing
-  for (const id of ['kisspeptin', 'pulsatile_gnrh', 'leydig_regen', 'nasal_t']) assert.equal(isModeled(SUPPLEMENTS[id]), false, id);
+  for (const id of ['kisspeptin', 'pulsatile_gnrh', 'leydig_regen']) assert.equal(isModeled(SUPPLEMENTS[id]), false, id);
+  // §22: nasal and oral testosterone ARE modeled, as exogenous testosterone on the Bhasin curve
+  for (const id of ['nasal_t', 'oral_tu']) assert.equal(SUPPLEMENTS[id].model.kind, 'exogenousT', id);
   assert.equal(SUPPLEMENTS.leydig_regen.evidence, 'preclinical');
   assert.equal(SUPPLEMENTS.leydig_regen.typicalUse, null);
   assert.equal(SUPPLEMENTS.kisspeptin.typicalUse, null);
@@ -59,7 +61,9 @@ test('clomiphene raises effective T in a low-T secondary profile, and the lean e
 
 test('the same therapy does nothing for a man already in the normal range (Bob)', () => {
   const base = modifiersAt(P(), DATE);
-  for (const id of ['clomiphene', 'enclomiphene', 'hcg', 'aromatase_inhibitor']) {
+  // The aromatase inhibitor is deliberately NOT in this list any more: Mauras 2000 raised testosterone 58 % in
+  // eugonadal males, so the number does move. It still credits zero muscle (see the AI test) and now costs fat.
+  for (const id of ['clomiphene', 'enclomiphene', 'hcg']) {
     const m = modifiersAt(P([entry(id)]), DATE);
     assertFinite(m, id);
     assert.equal(m.leanDirectLbPerWeek, base.leanDirectLbPerWeek, `${id} no direct lean`);
@@ -125,11 +129,14 @@ test('muscle credit stops at the level the trials actually measured', () => {
   const m = modifiersAt(P([entry('clomiphene')], LOW), DATE);
   assert.ok(m.testosterone.leanLevel <= 505 && m.testosterone.leanLevel < m.testosterone.level, 'credited level is capped');
   assert.ok(m.notes.some(n => /credits muscle only up to/i.test(n)));
-  // tamoxifen in a eugonadal man: the number moves, the muscle does not
+  assert.equal(m.testosterone.extrapolated, false, 'clomiphene measured body composition (Soares 2018)');
+  // tamoxifen in a eugonadal man: §22 case (b). The number moves, muscle IS credited through the Bhasin curve,
+  // bounded at Krause 1992's achieved 790 ng/dL, and the row is flagged an extrapolation.
   const tam = modifiersAt(P([entry('tamoxifen')]), DATE);
-  const base = modifiersAt(P(), DATE);
   assert.ok(tam.testosterone.level > tam.testosterone.natural * 1.4, 'T rises ~60%');
-  assert.ok(Math.abs(tam.leanDirectLbPerWeek - base.leanDirectLbPerWeek) < 0.01, 'but no muscle credited');
+  assert.equal(tam.testosterone.extrapolated, true, 'flagged as an extrapolation');
+  assert.ok(tam.testosterone.leanLevel <= 790, 'bounded by the level Krause 1992 reached');
+  assert.ok(tam.contributions.some(c => c.id === 'tamoxifen' && /EXTRAPOLATION/i.test(c.text)), 'and says so');
 });
 
 test('lifestyle: sleep sets the assumed level, extension recovers it, fat loss is gated on obesity, endurance load lowers it', () => {
