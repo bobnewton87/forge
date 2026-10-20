@@ -400,6 +400,7 @@ export function labData(I, o, weeks, maint, pg, fatPct) {
     'Muscle can only be built so fast. Your training age, weekly volume and protein set a ceiling on lean gain.',
     'A modest surplus gets you close to that ceiling. Every calorie beyond it can\'t become muscle, so it is stored as fat.',
     'In a deficit you lose fat, and as a newer lifter you can still add some muscle (recomp), just more slowly.',
+    'Some of what you lose is lean tissue, whatever your goal is called. How much depends on how lean you already are, how fast the weight comes off and how much protein you eat.',
   ];
   const v = { points: pts, sweet, explanation, local: !!raw.local, lean0, fat0 };
   labCache = { key, v };
@@ -848,7 +849,7 @@ function outputs(D, o) {
       ${res.bodyFatAssumed ? '<p class="tiny" style="color:var(--warn);margin-top:10px">Body fat was assumed (no height/neck/waist yet), so these numbers are very rough.</p>' : ''}
       ${res.energyAvailability?.low ? `<p class="tiny" style="color:var(--warn);margin-top:10px" data-ea-warn>Energy availability drops to ≈${f1(res.energyAvailability.min)} kcal per kg of lean mass a day (food minus exercise). ${sexOf(D.b?.sex) === 'female' ? 'Under ~30 the hormones that run your cycle are disrupted (Loucks &amp; Thuma 2003; IOC REDs 2023)' : 'That is below ~30, where reproductive and metabolic hormones (testosterone included) start to suffer. The ~30 threshold comes from Loucks &amp; Thuma 2003 in women; no equivalent number has been established in men, so treat it as a flag, not a line (IOC REDs 2023)'}: eat more around training or ease the deficit.</p>` : ''}
       ${res.caution === 'postpartum' ? '<p class="tiny" style="color:var(--warn);margin-top:10px">Postpartum: this projection is very rough. Check with your provider before a deficit or hard training.</p>' : ''}</div>
-    ${wl ? weightLossCard(wl, D) : ''}
+    ${wl ? weightLossCard(wl, D) : deficitCostCard(res)}
     ${labCard(D, o)}
     <div class="section-title">Trends</div>${charts}
     <div class="section-title">Projected measurements</div>${table}
@@ -864,6 +865,26 @@ function outputs(D, o) {
 // §23. The honest trade-off card for the weight-loss goal: what this rate costs in lean mass, what the
 // other rates would cost, and every warning the engine raised. Numbers come straight from res.weightLoss
 // (one lite simulation per rate), so the card and the projection can never disagree.
+// §23 (universal): under any goal, a deficit costs some lean mass. The weight-loss goal gets the full
+// "what it costs" card; every other goal gets these three numbers so the cost is never invisible.
+function deficitCostCard(res) {
+  const p = res.partition;
+  if (!p || p.leanLossFrac == null || !(p.leanLossLb > 0.05)) return '';
+  const share = Math.round(p.leanLossFrac * 100);
+  const fatOff = res.summary && res.summary.fatLb != null && res.series?.length
+    ? Math.max(0, res.series[0].fatLb - res.series[res.series.length - 1].fatLb) : null;
+  return `<div class="card bd-why" id="pjDeficitCost">
+    <div class="card-title">What this deficit costs in lean mass</div>
+    <p class="small" style="color:#cfcfd8;margin-top:6px;line-height:1.5">Fat goes first, but never all of it, whatever the goal is called. How much of each pound comes off as lean mass depends on how lean you already are (Forbes' rule), how fast you go (Garthe 2011), and your protein and lifting (Mettler 2010).</p>
+    <div class="bd-deltas" style="margin-top:10px">
+      ${fatOff != null ? `<div><b class="num" style="color:var(--accent2)">\u2212${f1(fatOff)}<small>lb</small></b><span>Fat off</span></div>` : ''}
+      <div><b class="num" style="color:var(--warn)">\u2212${f1(p.leanLossLb)}<small>lb</small></b><span>Lean off</span></div>
+      <div><b class="num">${share}%</b><span>of the loss is lean</span></div>
+    </div>
+    <p class="tiny muted" style="margin-top:8px">At about ${f1(p.lossRatePctPerWeek)}% of bodyweight a week. Going slower, or eating more protein, moves this number down.</p>
+  </div>`;
+}
+
 function weightLossCard(wl, D) {
   const rows = (wl.rates || []).map(r => {
     const me = Math.abs(r.pctPerWeek - (wl.ratePctPerWeek ?? -1)) < 0.01;
