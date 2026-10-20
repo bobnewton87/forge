@@ -187,7 +187,10 @@ export function tPlan(profile, opts = {}) {
       : [v * (ln(t.levelLo ?? t.level ?? t0) / dLn), v * (ln(t.levelHi ?? t.level ?? t0) / dLn)];
     let [leanLo, leanHi] = scale(lean);
     let [fatLo, fatHi] = scale(fat);
-    if (t.extrapolated) leanLo = Math.min(0, lean);   // zero is what has actually been measured for these items
+    if (t.extrapolated) {
+      leanLo = Math.min(0, lean);   // zero is what has actually been measured for these items
+      fatHi = Math.max(0, fat);     // ...and the same honesty in the fat direction
+    }
     if (leanLo > leanHi) [leanLo, leanHi] = [leanHi, leanLo];
     if (fatLo > fatHi) [fatLo, fatHi] = [fatHi, fatLo];
 
@@ -217,7 +220,11 @@ export function tPlan(profile, opts = {}) {
       lean: { lb: r2(lean), lo: r2(leanLo), hi: r2(leanHi) },
       fat: { lb: r2(fat), lo: r2(fatLo), hi: r2(fatHi) },
       projected, weeks,
-      score: r2(lean - fat),
+      // Ranking score. An item whose body-composition effect has never been MEASURED is ranked on the
+      // conservative end of its own range (which is zero), not on the mid-point of an extrapolation
+      // through the T->lean curve. Otherwise a drug with a published T rise and no body-composition
+      // trial outranks everything that has actually been measured. The mid-point still shows on the row.
+      score: r2(bc.includes('measured') ? lean - fat : leanLo - fatHi),
       why, monitor: [...new Set(items.flatMap(i => i.model?.monitor || []))],
       suits: items.map(i => i.model?.suits).filter(Boolean), notSuits: items.map(i => i.model?.notSuits).filter(Boolean),
       wada: [...new Set(items.map(i => i.model?.wada).filter(w => w && !/^not prohibited/i.test(w)))],
