@@ -12,7 +12,7 @@ const ICONS = {
 };
 const TABS = [['today', 'Today'], ['session', 'Workout'], ['plan', 'Plan'], ['body', 'Body'], ['more', 'More']];
 
-export function createShell(app, { onTab, onBack, onLocation }) {
+export function createShell(app, { onTab, onBack, onLocation, onAccount }) {
   app.innerHTML = `
     <header class="app-header" id="hdr"></header>
     <div class="timer-banner" id="timer" hidden></div>
@@ -26,13 +26,23 @@ export function createShell(app, { onTab, onBack, onLocation }) {
   tabs.addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) onTab(b.dataset.tab); });
   window.addEventListener('scroll', () => hdr.classList.toggle('scrolled', window.scrollY > 4), { passive: true });
 
-  function setHeader({ title, back, location }) {
+  // account = { name, test, multi } (CONTRACT §19): test accounts always show a TEST badge (and an amber rule
+  // under the header) so screenshots can't pass for real data; the name chip appears once there are 2+ accounts.
+  function setHeader({ title, back, location, account }) {
     const pill = location ? `<button class="loc-pill" id="locpill" aria-label="Change location"><span>${esc(location.icon || '📍')}</span><span class="nm">${esc(location.name)}</span><span class="caret">▼</span></button>` : '';
+    const test = !!(account && account.test);
+    const nm = account ? String(account.name || '').replace(/^Test\s*·\s*/i, '') : '';
+    const chip = !account || (!account.multi && !test) ? ''
+      : back ? (test ? '<button class="acct-chip" id="acctchip" aria-label="Switch account"><span class="test-badge">TEST</span></button>' : '')
+        : `<button class="acct-chip" id="acctchip" aria-label="Switch account">${test ? '<span class="test-badge">TEST</span>' : ''}<span class="nm">${esc(nm)}</span></button>`;
+    hdr.classList.toggle('is-test', test);
+    hdr.classList.toggle('has-acct', !!chip);
     hdr.innerHTML = back
-      ? `<button class="hdr-back" id="hdrback" aria-label="Back">${ICONS.back}</button><div class="hdr-title">${esc(title || '')}</div>${pill}`
-      : `<div class="brand"><span class="brand-mark">F</span>FORGE</div><div class="hdr-spacer"></div>${pill}`;
+      ? `<button class="hdr-back" id="hdrback" aria-label="Back">${ICONS.back}</button><div class="hdr-title">${esc(title || '')}</div>${chip}${pill}`
+      : `<div class="brand"><span class="brand-mark">F</span>FORGE</div><div class="hdr-spacer"></div>${chip}${pill}`;
     hdr.querySelector('#hdrback')?.addEventListener('click', onBack);
     hdr.querySelector('#locpill')?.addEventListener('click', onLocation);
+    if (onAccount) hdr.querySelector('#acctchip')?.addEventListener('click', onAccount);
   }
   function setTabs(active, { activeSession } = {}) {
     tabs.querySelectorAll('.tab').forEach(b => {

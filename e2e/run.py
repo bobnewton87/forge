@@ -1228,6 +1228,246 @@ def t_c8(t, ctx):
           f'≈{want} kcal', f'{shown} kcal; profile.nutrition {dict((x, n2.get(x)) for x in ("mode", "calories", "surplus"))}')
 
 
+# ---------------------------------------------------------------- accounts (CONTRACT §19)
+def acct_mark(app):
+    """Switching accounts reloads the page: mark the current document so we can wait for the new one."""
+    app.page.evaluate('() => { window.__acctOld = 1; }')
+
+
+def acct_wait_reload(app, route='today', timeout=15000):
+    app.page.wait_for_function("r => !window.__acctOld && document.querySelector('#content')?.dataset.route === r",
+                               arg=route, timeout=timeout, polling=80)
+    app.page.wait_for_timeout(200)
+
+
+def fg_keys(app):
+    return {k: v for k, v in app.snapshot().items() if k.startswith('fg_')}
+
+
+def other_keys(app):
+    return sorted(k for k in app.snapshot() if k.startswith('fga_'))
+
+
+@test('A1', 'Accounts: test persona is isolated from Bob (TEST badge, own workout, Bob intact after switching back)')
+def t_accounts(t, ctx):
+    app = t.app
+    app.load(bobir(app), 'settings?section=accounts')
+    bob = fg_keys(app)
+    bob_done = app.store("store.getSessions().filter(s => s.status === 'done').map(s => s.id)")
+    bob_w = app.store('store.getBodyLog().length')
+    t.check(len(bob_done) >= 1, 'Bob fixture has workouts', '≥1 done session', len(bob_done))
+    t.check(app.has('#sec-accounts'), 'Settings → Accounts section', '#sec-accounts', short(app.text(), 120))
+    t.sub('A1a', 'Cloud not configured: section says so, local accounts still offered', app.has('[data-cloud-off]') and app.has('[data-acct-add]'),
+          'Accounts section', 'data-cloud-off note + Add account', short(app.text('#acct-sec'), 160))
+    t.sub('A1b', 'One account: no account chip or TEST badge in the header', not app.has('#acctchip') and not app.has('#hdr .test-badge'),
+          'header', 'no chip', short(app.text('#hdr'), 80))
+    app.click('[data-acct-add]')
+    t.check(app.wait_sheet('[data-persona="woman28"]'), 'Add sheet lists test people', 'Woman, 28 persona', short(app.text(app.sheet()), 160))
+    acct_mark(app)
+    app.click('#sheet-root > .sheet:last-child [data-persona="woman28"]')
+    acct_wait_reload(app, 'today')
+    t.sub('A1c', 'Test account shows a TEST badge in the header', app.has('#hdr .test-badge') and app.has('#hdr.is-test'),
+          'header after switching', 'TEST badge + amber rule', short(app.text('#hdr'), 80))
+    p = app.profile()
+    t.check((p.get('body') or {}).get('sex') == 'female' and (p.get('body') or {}).get('heightIn') == 64, 'persona profile',
+            'female, 64 in', p.get('body'))
+    n_sess = app.store('store.getSessions().length')
+    t.sub('A1d', "Bob's data isn't visible in the test account", n_sess == 0 and app.store('store.getBodyLog().length') == 3,
+          'store in test account', '0 sessions, 3 persona weigh-ins', f'{n_sess} sessions')
+    app.go('history')
+    t.sub('A1e', 'History is empty in the test account', app.count('[data-sid]') == 0, 'History rows', 0, app.count('[data-sid]'))
+    app.go('measure')
+    t.sub('A1f', 'TEST badge on sub-pages too', app.has('#hdr .test-badge'), 'Measurements header', 'TEST badge', short(app.text('#hdr'), 80))
+    app.tab('today')
+    log_workout(t, 'home')
+    test_done = app.store("store.getSessions().filter(s => s.status === 'done').map(s => s.id)")
+    t.check(len(test_done) == 1, 'workout saved in the test account', '1 done session', test_done)
+    m = app.toast_mark()
+    app.go('settings?section=accounts')
+    app.close_sheet()
+    # switch back through the header chip
+    app.click('#acctchip')
+    t.check(app.wait_sheet('[data-sw-acct="default"]'), 'header chip opens the switcher', 'switch sheet with Bob', short(app.text(app.sheet()), 120))
+    acct_mark(app)
+    app.click('#sheet-root > .sheet:last-child [data-sw-acct="default"]')
+    acct_wait_reload(app, 'today')
+    t.sub('A1g', 'Back on Bob: no TEST badge, account chip shows his name', not app.has('#hdr .test-badge') and 'Bob' in app.text('#acctchip'),
+          'header', 'chip "Bob", no badge', short(app.text('#hdr'), 80))
+    now_done = app.store("store.getSessions().filter(s => s.status === 'done').map(s => s.id)")
+    t.sub('A1h', "Bob's workouts and weigh-ins intact; the test workout isn't there",
+          sorted(now_done) == sorted(bob_done) and test_done[0] not in now_done and app.store('store.getBodyLog().length') == bob_w,
+          "Bob's sessions", f'{len(bob_done)} done, no {test_done[0]}', f'{len(now_done)} done')
+    after = fg_keys(app)
+    changed = sorted(k for k in set(bob) | set(after) if bob.get(k) != after.get(k))
+    t.sub('A1i', "Bob's fg_* keys byte-identical after the round trip", not changed, 'localStorage fg_*', 'no key changed', changed)
+    # delete the test account from Settings
+    app.go('settings?section=accounts')
+    test_id = app.page.evaluate("() => [...document.querySelectorAll('[data-acct]')].map(b => b.dataset.acct).find(id => id !== 'default')")
+    app.click(f'[data-acct="{test_id}"]')
+    t.check(app.wait_sheet('[data-a-del]'), 'account sheet has Delete', 'Delete button', short(app.text(app.sheet()), 120))
+    app.click('#sheet-root > .sheet:last-child [data-a-del]')
+    t.check(app.wait_sheet('[data-del-go]'), 'delete confirm sheet', 'Delete button', short(app.text(app.sheet()), 120))
+    m = app.toast_mark()
+    app.click('#sheet-root > .sheet:last-child [data-del-go]')
+    t.check(app.wait_toast('deleted', m), 'delete toast', 'toast "… deleted"', app.toasts(m))
+    left = other_keys(app)
+    t.sub('A1j', 'Deleting the test account removes only its keys', not left and fg_keys(app) == after and app.count('[data-acct]') == 1,
+          'localStorage', 'no fga_* keys, fg_* unchanged, 1 account', f'{len(left)} fga_ keys left')
+
+
+@test('A2', 'Accounts: blank account by name; deleting Bob\'s original account needs his name typed')
+def t_accounts2(t, ctx):
+    app = t.app
+    app.load(bobir(app), 'settings?section=accounts')
+    bob = fg_keys(app)
+    app.click('[data-acct-add]')
+    t.check(app.wait_sheet('[data-new-name]'), 'add sheet', 'name field', short(app.text(app.sheet()), 120))
+    app.fill('#sheet-root > .sheet:last-child [data-new-name]', 'Sam')
+    acct_mark(app)
+    app.click('#sheet-root > .sheet:last-child [data-new-blank]')
+    acct_wait_reload(app, 'today')
+    p = app.profile()
+    t.sub('A2a', 'Blank account uses the typed name, no TEST badge, chip shows it',
+          p.get('name') == 'Sam' and 'Sam' in app.text('#acctchip') and not app.has('#hdr .test-badge') and app.store('store.getSessions().length') == 0,
+          'new account', 'name Sam, 0 sessions', f"{p.get('name')}; chip {short(app.text('#acctchip'), 30)}")
+    app.go('more')
+    t.sub('A2b', 'More hub shows the new account', 'Sam · 0 workouts' in app.text(), 'More subtitle', 'Sam · 0 workouts logged', short(app.text('.page-head'), 80))
+    app.go('settings?section=accounts')
+    app.click('[data-acct="default"]')
+    t.check(app.wait_sheet('[data-a-del]'), "Bob's account sheet", 'Delete button', short(app.text(app.sheet()), 120))
+    app.click('#sheet-root > .sheet:last-child [data-a-del]')
+    t.check(app.wait_sheet('[data-del-name]'), 'typed-name confirm for the original account', 'name field', short(app.text(app.sheet()), 160))
+    go = '#sheet-root > .sheet:last-child [data-del-go]'
+    dis0 = app.page.locator(go).is_disabled()
+    app.page.locator('#sheet-root > .sheet:last-child [data-del-name]').fill('bo')
+    dis1 = app.page.locator(go).is_disabled()
+    app.page.locator('#sheet-root > .sheet:last-child [data-del-name]').fill('Bob')
+    dis2 = app.page.locator(go).is_disabled()
+    t.sub('A2c', 'Delete stays disabled until the name is typed', dis0 and dis1 and not dis2, 'Delete button', 'disabled, disabled, enabled', f'{dis0}, {dis1}, {dis2}')
+    app.click('#sheet-root > .sheet:last-child [data-del-no]')
+    app.page.wait_for_timeout(300)
+    t.sub('A2d', "Cancel leaves Bob's account alone", fg_keys(app) == bob and app.count('[data-acct]') == 2, 'localStorage', 'fg_* unchanged', '')
+
+
+class FakeSupabase:
+    """Just enough GoTrue + PostgREST for the cloud UI (no real Supabase is reachable from the test box).
+    Mirrors supabase/schema.sql: rows keyed (user, key), forge_push keeps only newer rows."""
+    BASE = 'https://fake-forge.supabase.test'
+
+    def __init__(self):
+        self.users, self.tokens, self.rows, self.calls, self.n = {}, {}, {}, [], 0
+
+    def _issue(self, email):
+        self.n += 1
+        at, rt = f'at{self.n}', f'rt{self.n}'
+        self.tokens[at] = email
+        return {'access_token': at, 'refresh_token': rt, 'token_type': 'bearer', 'expires_in': 3600,
+                'expires_at': int(time.time()) + 3600, 'user': {'id': 'u-' + email, 'email': email}}
+
+    def handle(self, route, request):
+        u = request.url.replace(self.BASE, '')
+        path, _, qs = u.partition('?')
+        q = dict(x.split('=', 1) for x in qs.split('&') if '=' in x)
+        cors = {'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*', 'content-type': 'application/json'}
+        if request.method == 'OPTIONS':
+            return route.fulfill(status=204, headers=cors, body='')
+        body = json.loads(request.post_data) if request.post_data else None
+        self.calls.append((request.method, path))
+        who = self.tokens.get((request.headers.get('authorization') or '').replace('Bearer ', ''))
+        def ok(data, status=200):
+            route.fulfill(status=status, headers=cors, body='' if data is None else json.dumps(data))
+        if path == '/auth/v1/signup':
+            self.users[body['email']] = body['password']
+            return ok(self._issue(body['email']))
+        if path == '/auth/v1/token' and q.get('grant_type') == 'password':
+            if self.users.get(body['email']) != body['password']:
+                return ok({'error': 'invalid_grant', 'error_description': 'Invalid login credentials'}, 400)
+            return ok(self._issue(body['email']))
+        if path == '/auth/v1/logout':
+            return ok(None, 204)
+        if path == '/rest/v1/forge_state':
+            if not who: return ok({'message': 'JWT expired'}, 401)
+            rows = sorted(self.rows.get(who, {}).values(), key=lambda r: (r['synced_at'], r['key']))
+            return ok(rows[int(q.get('offset', 0)): int(q.get('offset', 0)) + int(q.get('limit', 1000))])
+        if path == '/rest/v1/rpc/forge_push':
+            if not who: return ok({'message': 'JWT expired'}, 401)
+            mine = self.rows.setdefault(who, {})
+            for r in body['rows']:
+                cur = mine.get(r['key'])
+                if not cur or cur['updated_at'] < r['updated_at']:
+                    mine[r['key']] = {'key': r['key'], 'value': r.get('value'), 'updated_at': r['updated_at'],
+                                      'synced_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')}
+            return ok(len(body['rows']))
+        return ok({'message': 'no route ' + path}, 404)
+
+    def row(self, email, key):
+        r = self.rows.get(email, {}).get(key)
+        return r and r['value']
+
+
+@test('A3', 'Cloud UI against a fake Supabase: sign up uploads Bob\'s data, writes push, sign out keeps data, sign-in again offers merge')
+def t_accounts_cloud(t, ctx):
+    app = t.app
+    fake = FakeSupabase()
+    cfg = ("export const config = { supabaseUrl: '%s', supabaseAnonKey: 'anon-test', oauthProviders: ['apple'], redirectUrl: '' };\n"
+           "export default config;\n") % FakeSupabase.BASE
+    cfg_route = lambda route, req: route.fulfill(status=200, headers={'content-type': 'text/javascript'}, body=cfg)
+    app.page.route('**/js/config.js*', cfg_route)
+    app.page.route(FakeSupabase.BASE + '/**', fake.handle)
+    try:
+        app.load(bobir(app), 'settings?section=accounts')
+        bob = fg_keys(app)
+        n_bob = app.store('store.getSessions().length')
+        t.check(app.has('[data-cloud-signin]', timeout=3000), 'configured cloud offers sign-in', 'Sign in button', short(app.text('#acct-sec'), 160))
+        app.click('[data-cloud-signin]')
+        t.check(app.wait_sheet('[data-ci-email]'), 'sign-in sheet', 'email field', short(app.text(app.sheet()), 120))
+        t.sub('A3a', 'Provider buttons only for configured providers', app.count('#sheet-root > .sheet:last-child [data-oauth]') == 1 and 'Apple' in app.text(app.sheet()),
+              'sign-in sheet', 'one "Continue with Apple"', short(app.text(app.sheet()), 120))
+        app.fill('#sheet-root > .sheet:last-child [data-ci-email]', 'bob@example.com')
+        app.fill('#sheet-root > .sheet:last-child [data-ci-pw]', 'hunter22')
+        m = app.toast_mark()
+        app.click('#sheet-root > .sheet:last-child [data-ci-up]')
+        t.check(app.wait_toast('backed up', m, timeout=8000), 'sign-up toast', "toast \"Signed in. This device's data is backed up.\"", app.toasts(m))
+        app.page.wait_for_timeout(300)
+        sec = app.text('#acct-sec')
+        t.sub('A3b', 'Accounts shows the signed-in email and sync state', 'bob@example.com' in sec and re.search(r'synced', sec, re.I),
+              'Accounts section', 'Signed in as bob@example.com · Last synced', short(sec, 160))
+        n_rows = sum(1 for k in fake.rows.get('bob@example.com', {}) if k.startswith('s:'))
+        t.sub('A3c', "Bob's sessions uploaded, one row each; fg_* keys untouched", n_rows == n_bob and fg_keys(app) == bob,
+              'fake server rows', f'{n_bob} s:* rows', f'{n_rows} rows')
+        # a weigh-in pushes after the debounce
+        app.fill('[data-bw]', '161.5')
+        app.page.locator('[data-bw]').dispatch_event('change')
+        deadline = time.time() + 10
+        while time.time() < deadline and not ((fake.row('bob@example.com', 'body') or [{}])[-1].get('w') == 161.5):
+            app.page.wait_for_timeout(250)
+        t.sub('A3d', 'A new weigh-in reaches the cloud (debounced push)', (fake.row('bob@example.com', 'body') or [{}])[-1].get('w') == 161.5,
+              'fake server body row', 'last w 161.5', (fake.row('bob@example.com', 'body') or [{}])[-1])
+        # sign out, keep data
+        app.click('[data-cloud-signout]')
+        t.check(app.wait_sheet('[data-so-keep]'), 'sign-out sheet', 'keep-data option', short(app.text(app.sheet()), 120))
+        m = app.toast_mark()
+        app.click('#sheet-root > .sheet:last-child [data-so-keep]')
+        t.check(app.wait_toast('Signed out', m), 'sign-out toast', 'toast "Signed out…"', app.toasts(m))
+        t.sub('A3e', 'Sign out keeps the data and revokes the session', ('POST', '/auth/v1/logout') in fake.calls and app.store('store.getSessions().length') == n_bob
+              and app.has('[data-cloud-signin]'), 'after sign-out', 'logout called, sessions kept, sign-in offered again', '')
+        # sign in again: both sides have data → choice sheet, merge
+        app.click('[data-cloud-signin]')
+        app.wait_sheet('[data-ci-email]')
+        app.fill('#sheet-root > .sheet:last-child [data-ci-email]', 'bob@example.com')
+        app.fill('#sheet-root > .sheet:last-child [data-ci-pw]', 'hunter22')
+        app.click('#sheet-root > .sheet:last-child [data-ci-in]')
+        t.sub('A3f', 'Signing in with data on both sides asks: merge / upload / replace', app.wait_sheet('[data-ch="merge"]', timeout=6000)
+              and app.has('[data-ch="upload"]') and app.has('[data-ch="replace"]'), 'choice sheet', '3 choices', short(app.text(app.sheet()), 160))
+        m = app.toast_mark()
+        app.click('#sheet-root > .sheet:last-child [data-ch="merge"]')
+        t.sub('A3g', 'Merge links the account again', bool(app.wait_toast('merged', m, timeout=8000)) and app.store('store.getSessions().length') == n_bob,
+              'after merge', 'toast "…merged…", same sessions', app.toasts(m))
+    finally:
+        app.page.unroute('**/js/config.js*', cfg_route)
+        app.page.unroute(FakeSupabase.BASE + '/**', fake.handle)
+
+
 @test('E1', 'No console/page errors during flows')
 def t_errors(t, ctx):
     app = t.app

@@ -744,3 +744,91 @@ bodyGeometry({ ...girths, lengths: { upperArmL, upperArmR, forearmL, forearmR, t
 // Landmark-to-joint-centre conversions are documented (surface landmarks sit slightly off the joint centres).
 // Standing height stays fixed (it's measured), so leg-length differences shift the pelvis tilt/hip heights per side within limits.
 ```
+
+## 19. Accounts, test mode and cloud sync (2026-10-20)
+Bob: ship on the App Store in a few weeks with accounts on the device, a test mode for checking the app as other
+people on one phone, and cloud logins. **Data safety is the #1 rule: Bob's existing data must be untouched.**
+
+Ownership (ACCOUNTS): `js/store.js` (account namespacing + `accounts` API), `js/config.js`, `js/cloud/supabase.js`,
+`js/cloud/sync.js`, `js/ui/accounts.js`, `js/data/personas.js`, `css/accounts.css`, `supabase/schema.sql`,
+`docs/accounts-setup.md`, `test/accounts-*.test.js`, the A* tests in `e2e/run.py`; targeted edits to `js/main.js`
+(auth-redirect pickup, header account chip, `startCloud` after first draw), `js/ui/shell.js` (`setHeader({ account })`,
+`onAccount`), `js/ui/settings.js` (Accounts section, last), `index.html` (css link).
+
+### Storage layout (localStorage)
+| Keys | What |
+|---|---|
+| `fg_*` | **Default account.** The original keys, read and written exactly as before: no migration, copy or rewrite. |
+| `fga_<id>_*` | Every other account (`id` = `[a-z0-9]{1,24}`, so no prefix contains another and none starts with `fg_`). |
+| `fgx_accounts` | Registry `[{ id, name, kind:'local'\|'test', createdAt, persona?, cloud? }]`. Absent on Bob's phone until a 2nd account exists (then the default is listed implicitly, named from `fg_profile.name`). |
+| `fgx_active` | Active account id (absent = `'default'`). |
+| `fgx_sync_<id>` | Sync bookkeeping, only while the account is linked: `{ keys:{key:ms}, tomb:{sessionId:ms}, pushedAt, cursor, full }`. |
+| `fgx_stash_<id>` | One safety copy of the device data, taken before "Replace this device's data with the account's". |
+| `fgx_pending` | Sign-in intent carried across an OAuth / email-link redirect. |
+
+Every store read/write, `kv`, `exportAll`, `importAll` and `_reset` is scoped to the active account. `exportAll` writes
+canonical `fg_*` key names whatever the account (the default account's format is unchanged); `importAll` maps `fg_*` /
+`fga_<id>_*` keys into the active account and ignores everything else, so a backup can never write into another account.
+`accounts.list()` never hides data: the default account is listed while any `fg_` key exists, and orphaned `fga_<id>_`
+keys come back as "Recovered account". If localStorage is blocked the store behaves exactly as before accounts.
+
+### Store API additions
+```js
+import { store, accounts, DEFAULT_ACCOUNT, prefixOf, LOCAL_ONLY } from './store.js';
+accounts.list() / get(id) / active() / activeId() / kind(a) → 'local'|'test'|'cloud' / isLinked(a)
+accounts.create({ name, kind:'local'|'test', copyFrom?:id, seed?:{ profile, body, meas, food }, persona?, cloud? }) → record  // doesn't switch
+accounts.rename(id, name) / updateCloud(id, patch|null) / remove(id)   // remove: only its keys; never the last account; active → first remaining
+accounts.switchTo(id)               // sets fgx_active + re-reads; the UI then reloads the page (ui/accounts.js switchAccount)
+accounts.clearData(id) / clearSync(id) / hasData(id) / exportOf(id) / stash(id) / stashed(id) / dropStash(id) / pending(v?)
+store.saveSession(s)                // now stamps s.updatedAt (ISO; never earlier than the copy it replaces) — the per-session merge clock
+store.syncIO                        // raw, active-account-only access for js/cloud/sync.js (keys/get/put/putSessions/meta/saveMeta/changed)
+```
+New accounts get `defaultProfile()` with the typed name (other defaults kept). Switching = set pointer + `location.reload()`
+landing on Today, so all module state resets; an active workout is per-account data and simply stays in its account.
+
+### Test mode
+Settings → Accounts lists accounts (name, local / test / cloud, active) with switch, add, rename, delete (confirm sheet;
+the last account can't be deleted; the default account needs its name typed). Add: blank (by name), "Copy of <current>"
+(raw copy of every key), test people from `js/data/personas.js` (`woman28`: female, 64 in, 140 lb, 2 months, hips
+measured; `man52`: male, 70 in, 212 lb, returning lifter, cutting). A "Test account" checkbox makes blank/copy accounts
+test accounts; personas always are. Test accounts show a **TEST** badge in the header on every screen (plus an amber rule
+under it) and can never be linked to the cloud. With 2+ accounts the header shows the active account's name; tapping it
+opens a switcher.
+
+### Cloud (Supabase over plain REST, no SDK)
+`js/config.js`: `{ supabaseUrl, supabaseAnonKey, oauthProviders: [], redirectUrl }`. Blank = local-only: the Accounts
+section says cloud sign-in isn't set up, nothing touches the network, startup is unchanged. `startCloud` runs after the
+first draw and never blocks it. Auth (GoTrue): email + password sign-up / sign-in (`/auth/v1/signup`,
+`/auth/v1/token?grant_type=password`), refresh (`grant_type=refresh_token`, before expiry and once on a 401), password
+reset email (`/auth/v1/recover`, then "Set a new password" on return), sign-out (`/auth/v1/logout`), OAuth redirect
+(`/auth/v1/authorize?provider=…&redirect_to=…`, buttons only for `oauthProviders`); main.js takes `#access_token=…` /
+`error_description=…` off the URL before routing. Tokens live on the account record (`cloud.session`), never in
+account data or backups, and are never logged.
+
+Data (PostgREST, `supabase/schema.sql`): `forge_state(user_id, key, value jsonb, updated_at, synced_at)` with RLS (own
+rows only), `forge_push(rows)` (upsert that keeps a row only if newer), `delete_my_account()` (security definer; App Store
+5.1.1(v)). One row per store key, one row per session (`s:<id>`); `value null` = deleted. `active` and `kv_*` stay on the
+device. Only the active account syncs.
+
+**Conflict policy.** Keys: last write wins by `updated_at` (the writing device's clock when the key changed). Sessions:
+merge by id, newer `updatedAt` wins; a delete is a tombstone row, so it reaches other devices and the session can't come
+back; an unpushed local delete beats an older remote copy. Stamps never go backwards (an edit is always newer than the
+copy it edited, even if that copy came from a device whose clock runs ahead). The server refuses older rows, so two
+devices pushing at once can't undo a newer change. Pull = rows with `synced_at` after the last pull (2-min overlap;
+re-applying is harmless), on sign-in, app start, coming back online and returning to the app after 2+ min. Push =
+everything changed since the last good push, 4 s after the last write. Known limits: device clocks decide ties; if two
+devices change the same key (e.g. both log a weigh-in) before either syncs, the later change wins that whole key;
+auto-planned days generated offline on two devices can both appear until the next re-plan.
+
+**First sign-in** on an account: cloud empty → upload; this device empty → download; both have data → sheet with
+**Merge both (default/recommended:** union of sessions by id, newer wins, account deletes respected; dated logs unioned
+by date; settings from the account**)**, **Upload this device's data to the account** (account becomes this device), or
+**Replace this device's data with the account's** (a safety copy is kept in `fgx_stash_<id>`, restorable from the
+account sheet). Nothing syncs until a choice is made ("Finish setting up sync" resumes). Sign out: keep data (account
+becomes local) or remove it from the device. Delete cloud account: type DELETE → `delete_my_account` → then remove or
+keep the local copy. The same cloud user is never linked to two accounts on one device.
+
+Tests: `test/accounts-store.test.js` (isolation: default keys byte-identical through create/switch/write/delete,
+export/import/_reset scoping, recovery), `test/accounts-cloud.test.js` (fake GoTrue + PostgREST behind a mocked fetch:
+unconfigured, sign-up/in/refresh/sign-out, pull/push/merge/tombstones, first-sign-in choices, clock skew, OAuth fragment,
+deletion), e2e A1–A3 (A3 drives the cloud UI against a route-intercepted fake Supabase). Setup: `docs/accounts-setup.md`.

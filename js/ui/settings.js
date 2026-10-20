@@ -9,12 +9,14 @@ import { setTargets } from './targets.js';
 import { styleChipsHTML, customStylesListHTML, openStyleEditor, openStyleInfo, deleteStyle } from './styles.js';
 import { buildWorkout } from '../engine/generator.js';
 import { resolveTargets, unitTargets, maxNote, starredGroups, STAR_LEGEND, LIMITS, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
+import { accountsSectionHTML, bindAccountsSection } from './accounts.js';
 // CONTRACT-NOTE (INTEGRATOR §18): goal, sculpt focus, muscle priority, default length/style, the
 //   weekly cardio target and adherence all read resolveTargets and write through setTargets (planning
 //   changes re-plan upcoming auto days). The cardio slider spans 0–600 (the API allows up to 900).
 //   Volume policy (lengthen / ask / keep times + longest workout) is edited here too.
 // CONTRACT-NOTE (STYLES): default style chips list built-ins + custom styles; "My training styles" (#sec-styles)
 //   edits / deletes custom styles (ui/styles.js editor).
+// CONTRACT-NOTE (§19): the Accounts section (#sec-accounts, last) comes from ui/accounts.js.
 
 const CAT_ORDER = [['free', 'Free weights & benches'], ['cable', 'Cables'], ['machine', 'Machines'], ['bodyweight', 'Bodyweight stations'], ['cardio', 'Cardio'], ['other', 'Other']];
 const GOALS = [['recomp', 'Recomp', 'Lose fat, build muscle'], ['lean_bulk', 'Lean bulk', 'Small surplus, max growth'], ['cut', 'Cut', 'Get lean, keep muscle']];
@@ -175,7 +177,8 @@ function renderSettings(ctx) {
 
   <div class="section-title">Profile</div>
   <div class="card"><div class="field" style="margin:0"><label>Name</label><input type="text" data-name value="${esc(p.name || '')}"></div></div>
-  <div class="list"><button class="list-item" data-nav="measure"><span class="ic">📏</span><div class="grow"><div class="t">Body profile</div><div class="s">Height, birth year, activity, measurements</div></div><span class="chev">›</span></button></div>`;
+  <div class="list"><button class="list-item" data-nav="measure"><span class="ic">📏</span><div class="grow"><div class="t">Body profile</div><div class="s">Height, birth year, activity, measurements</div></div><span class="chev">›</span></button></div>
+  ${accountsSectionHTML()}`;
 }
 
 function goalInfoSheet(ctx, id) {
@@ -296,6 +299,7 @@ function bindSettings(root, ctx, params) {
   bw.addEventListener('change', () => { const v = parseFloat(bw.value); if (v > 50 && v < 600) { ctx.store.logBodyweight(ds(), v); ctx.toast(`Logged ${v} lb for today`); } });
   const nm = root.querySelector('[data-name]');
   nm.addEventListener('change', () => up({ name: nm.value.trim() || 'Bob' }));
+  bindAccountsSection(root, ctx);
   if (params?.section) {
     const el = root.querySelector('#sec-' + params.section);
     if (el && window.scrollY < 10) setTimeout(() => window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - 70, behavior: 'smooth' }), 60);
