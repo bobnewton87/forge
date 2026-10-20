@@ -979,3 +979,124 @@ frame, male unchanged), `test/mesh-female.test.js` (asset selection by sex incl.
 three female bodies fitted within ±1 % on bust / natural waist / hips and ±3 % elsewhere, head, poses, cup, modesty,
 bun, muscle shift, BF calibration smooth/monotone/shifted), e2e `S4` (female profile mounts the female 3D on Body and
 Projection, fetches `body-female.bin` and not `body.bin`, no page errors).
+
+## 23. Weight-loss goal and intentional lean loss (2026-10-20)
+
+Bob: *"the app doesn't really allow someone to lose muscle mass if they want to or if their primary goal is
+weight loss. It assumes you want to maintain — need to add a feature for that."*
+
+Forge assumed every user wanted to gain muscle or at worst keep all of it. Some people's goal is the number on
+the scale: a weight class, a race weight, or simply being smaller, and they accept losing some lean mass with
+the fat. This section adds that goal and makes the projection honest about what it costs. **Forge never blocks
+an adult from a legal goal; it shows the costs.** Evidence and DOIs: `docs/research/weight-loss-lean-mass.md`.
+
+Ownership: `js/engine/targets.js`, `js/engine/projection.js`, `js/engine/nutrition.js`, a one-line change in
+`js/engine/recovery.js` (`groupPriority` accepts 0), and targeted edits to `js/ui/{targets,settings,projection,nutrition}.js`,
+`test/weight-loss.test.js`, e2e `L1` → **GOALS**.
+
+### The goal
+`GOALS = ['recomp', 'lean_bulk', 'cut', 'weight_loss']`. `cut` keeps its meaning ("get lean, keep muscle");
+`weight_loss` is "Lose weight: fat first, lean mass allowed to follow". `GOAL_INFO` (name, blurb, long) is the
+single source of goal wording for every screen. `store.migrate()` is untouched: a saved `goal` is never
+rewritten, and an unknown goal still resolves to `recomp` exactly as before.
+
+### Profile fields (all optional, all read/written through `js/engine/targets.js`)
+```js
+profile.body.goalWeightLb        number|null              // scale target the projection aims at (70–600)
+profile.body.goalWeightDate      'YYYY-MM-DD'|null        // optional target date; sets the rate
+profile.body.lossRatePctPerWeek  number|null              // % of bodyweight per week (0.1–2, default 0.7)
+profile.body.leanProtection      'protect'|'balanced'|'minimal'    // preset: writes protein + set floors
+profile.volumePolicy.floors      'evidence'|'maintenance'|'minimum' // only honoured under weight_loss
+```
+
+### `js/engine/targets.js`
+```js
+resolveTargets(profile).goals   // + losing, goalWeightLb, goalWeightDate, lossRatePctPerWeek, leanProtection, plan
+resolveTargets(profile).minimums.floor   // { mode, factor, name, why, allowed, belowFloor, evidence }
+lossPlan(profile, { weightLb, now })     // THE rate/deficit resolver every screen reads:
+  // { goalWeightLb, goalWeightDate, pctPerWeek, lbPerWeek, deficitKcal, cardioMinPerWeek, toLoseLb,
+  //   weeks, endDate, tier, source:'date'|'rate'|'default', warnings:[string] }
+goalOf / isLossGoal / priorityLimits / priorityLimitsFor / volumeFloorOf / leanProtectionOf / goalWeightLimits
+GOAL_INFO, GOAL_ORDER, LOSS_GOALS, LOSS_RATES, DEFAULT_LOSS_RATE (0.7), KCAL_PER_LB,
+LEAN_PROTECTION, LEAN_PROTECTION_INFO, VOLUME_FLOORS, FLOOR_INFO, FLOOR_FACTOR, TARGET_FACTOR,
+MAINTENANCE_FRACTION (1/3), FLOOR_EVIDENCE
+LIMITS.priorityLoss [0, 2], LIMITS.goalWeightLb [70, 600], LIMITS.lossRatePctPerWeek [0.1, 2]
+```
+`applyTargetChange(profile, { goals: { goalWeightLb, goalWeightDate, lossRatePctPerWeek, leanProtection } })`
+and `{ training: { volumePolicy: { floors } } }` validate and clamp as usual. `leanProtection` is a **preset**:
+it writes `nutrition.proteinGPerLb` and `volumePolicy.floors` (pass `applyPreset:false` to set the label only).
+Nothing in the model reads `leanProtection` directly — the projection reads the protein and volume it produced.
+
+**Weekly set floors.** `unitTargets()` scales each unit's `min` by `FLOOR_FACTOR[mode]` and its base target by
+`TARGET_FACTOR[mode]`; `weeklyMinimums()` scales the displayed group minimums the same way. `evidence` (1, 1) is
+byte-identical to the previous behaviour. `maintenance` (1/3, 1/3) is Bickel 2011's preserving dose.
+`minimum` (0, 1/3) keeps maintenance-sized targets but removes the floor, so a slider at 0 means no planned
+sets for that muscle. Rows carry `growthMin`/`growthBase`/`floorMode` when lowered, so the UI can show both.
+All of this is inert unless the goal is `weight_loss`, even if the value is saved in the profile, so switching
+back to any other goal restores the evidence floors immediately.
+
+**Priority sliders** reach 0 under this goal (`LIMITS.priorityLoss`), and `recovery.groupPriority` now treats a
+stored 0 as 0 rather than "not set", so Today stops recommending a muscle the plan has deliberately dropped.
+
+### `js/engine/projection.js`
+The lean/fat partition in a deficit is now modelled from three things, all of which the user controls.
+Applied **only** under the `weight_loss` goal; `recomp` / `cut` / `lean_bulk` produce byte-identical results.
+1. **Forbes' rule** (already present, now exercised and explained in the loss direction):
+   `p = 10.4 / (10.4 + fat kg)` — leaner people lose proportionally more lean tissue.
+2. **Rate** — `lossRateFactor(pctPerWeek)`: 1.0 at 0.7 %/week, 1.6 at 1.0 %/week, clamped [0.5, 3]
+   (Garthe 2011's achieved 0.7 vs 1.0 %/week contrast).
+3. **Protein** — `proteinRetentionFactor(gPerLb)`, a deficit-specific curve separate from the growth curve
+   (Mettler 2010, Longland 2016, Helms 2014), plus the existing lifting-stimulus protection term.
+
+Intake comes from `lossPlan().deficitKcal` (via `nutrition.lossRateDeficit`, 3,500 kcal/lb) instead of
+`GOAL_OFFSET`; the simulation still does proper energy bookkeeping (1,250 kcal to build a lb of lean, 800
+released when lost), so the delivered rate differs from the requested one and both are reported. The deficit
+also **stops at the goal weight** as well as the goal body fat.
+
+New result fields (weight-loss goal only):
+```js
+result.weightLoss = { goalWeightLb, goalWeightDate, source, ratePctPerWeek, lbPerWeek, deficitKcal,
+  projectedRatePctPerWeek, projectedLbPerWeek, tier, reached, week, date,
+  atGoal:{ weightLb, leanLb, fatLb, bodyFatPct }, leanLostLb, fatLostLb, leanShareOfLoss,
+  leanProtection, proteinGPerLb, proteinRetention, rateFactor,
+  rates:[{ pctPerWeek, lbPerWeek, deficitKcal, calories, week, reached, leanLb, fatLb, weightLb,
+           endWeightLb, endLeanLb, endFatLb, bodyFatPct, leanShareOfLoss }],   // one lite simulation per rate
+  warnings:[string] }
+result.energyAvailability               // now returned for men too under this goal
+```
+Plus a `goal_weight` milestone (first in the list, naming the lean/fat split of the drop), weight-loss
+assumptions, and warnings for: a fast or aggressive rate, a deficit over ~500 kcal/day (Murphy & Koehler 2022),
+a goal weight that requires shedding lean mass to reach, the defended body-fat floor (Friedl 1994), low energy
+availability (Loucks & Thuma 2003 scoped to women; IOC REDs 2023 as the framework for men), and a delivered
+rate more than 20 % below the requested one. The projected 3D body and tape measurements shrink from the same
+numbers: every `FAT_COEF` site moves with fat mass in both directions, and per-group lean loss shrinks the
+limb sites and the 3D muscle scores.
+
+### `js/engine/nutrition.js`
+`weight_loss` is in `CYCLE` / `SIMPLE` (600 fallback) / `DEFAULT_PROTEIN` (1.0) / `GOAL_NOTES`.
+`dailyTargets()` sizes the deficit from the rate or goal weight + date, matching the projection exactly;
+`lossRateDeficit(weightLb, pctPerWeek)` is the one shared formula (`targets.lossPlan` calls it).
+`macrosFor()`'s low-protein warning becomes lean-loss framing under this goal, and `dailyTargets()` returns
+`energyAvailability` and the low-EA warning for both sexes under it. §20's female rules are unchanged:
+pregnancy still never plans a deficit.
+
+### UI
+- **Targets sheet** (`ui/targets.js`, the one shared editor): goal segment from `GOAL_ORDER`, a "Cut, or lose
+  weight?" explainer, and — under `weight_loss` — goal weight, rate chips with what each rate costs, the
+  cardio-vs-food line, the lean-protection preset and the set-floor picker. "Why these numbers?" leads with a
+  warning block when the floors are below the growth dose, shows each unit's growth floor beside its lowered
+  one, names every muscle sitting at 0×, and lists `FLOOR_EVIDENCE`.
+- **Settings**: the goal card shows the goal weight, rate, deficit and protection, with its warnings, and links
+  into the shared sheet. Priority sliders use `priorityLimits(profile)`.
+- **Projection**: a "Losing weight: what it costs" card (fat off, lean off, % of the loss that is lean, goal
+  weight date, a simulated row per rate with the user's choice in bold, every warning) plus a goal-weight line
+  on the weight chart.
+- **Nutrition**: "Losing weight, honestly" replaces the bulking card — the rate, the deficit and where it came
+  from, the goal weight, and what the protein number is buying.
+
+### Tests
+`test/weight-loss.test.js`: Forbes partitions in the loss direction and leaner means a larger lean share; faster
+deficits cost more lean; protein and lifting change retention; floors and warnings fire; below-floor targets are
+allowed only under this goal; the projected body shrinks; and a golden comparison that `recomp` / `cut` /
+`lean_bulk` are unchanged. e2e `L1` picks the goal with a goal weight and checks Projection, Nutrition, Plan and
+Body agree with no page errors.
