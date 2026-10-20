@@ -1,7 +1,8 @@
 # Raising your own testosterone: what the evidence actually supports
 
-Prepared for Bob (39, former 2:30 marathoner, ~7 months lifting, ~164 lb at ~19–22% body fat, Adderall).
-Written 2026-10-19 by the Forge research builder. Every study below was opened and checked; conversions use
+Prepared for Bob (39, former 2:30 marathoner, ~7 months lifting, ~164 lb at ~23% DXA body fat, Adderall).
+Written 2026-10-19 and substantially extended 2026-10-20 (interaction model, the Finkelstein fat term, the planner,
+oral and nasal testosterone, and several corrections — see §7–§10c) by the Forge research builder. Every study below was opened and checked; conversions use
 ng/dL = nmol/L × 28.84. **Not medical advice.** Everything in the prescription section needs a physician,
 a diagnosis and lab monitoring — none of it is appropriate to self-direct, and several items are
 investigational. Items marked UNVERIFIED could not be confirmed from a primary source and are not modeled.
@@ -23,7 +24,7 @@ Ranked by how much they move serum total T, with who they move it in:
 |---|---|---|---|---|
 | 1 | **Stop under-eating** | Reverses losses of 40–75% | Lean men in large deficits — *this is your lever* | Moderate |
 | 2 | **hCG** | ~+150% | Men with low T | Moderate (1 RCT) |
-| 3 | **Letrozole / anastrozole** | +31% to +232% | Low-T, often obese men | Strong for T, **strongly negative for muscle** |
+| 3 | **Letrozole / anastrozole** | +31% to +150% (and +58% in eugonadal men) | Low-T men, obese men, and healthy young men | Strong for T, **measured and null for muscle**, and a modeled fat cost |
 | 4 | **Clomiphene** | **+274 ng/dL (95% CI 192–356)** | Low T with a working pituitary | Strong for T |
 | 5 | **Fat loss, if obese** | +83 ng/dL (diet), +252 (surgery) | BMI ≥30 only | Strong |
 | 6 | **Enclomiphene** | +216 ng/dL (95% CI 188–245) | Low T, overweight | Moderate; not an approved drug |
@@ -57,7 +58,10 @@ so sperm production is preserved or improved.
 - **Hohl 2025 meta-analysis** (10 RCTs, 819 men, functional/secondary hypogonadism, baseline 67–303 ng/dL;
   PMID 41066380): total T **+273.8 ng/dL (95% CI 191.9–355.7)**, LH +4.66 IU/L, FSH +4.59, estradiol +34 pg/mL.
   GRADE moderate. Benefit shrank with higher age (p=0.043) and higher BMI (p=0.0008). Equal to testosterone gel
-  (difference 5 ng/dL, CI −43 to +54) but far below injections (−290 ng/dL).
+  (difference 5.41 ng/dL, CI −43.4 to +54.3). Free T SMD 1.57 (0.44–2.70), DHT +7.58 ng/dL (3.42–11.73). SHBG did
+  NOT move significantly (+3.63 nmol/L, CI −0.54 to 7.81, p=0.09). The meta-analysis did not compare SERMs with
+  injections; an earlier draft of this document said it did, which was wrong. Against hCG (Habous 2018, the only
+  RCT): SERM +158, SERM+hCG +153, hCG +134 ng/dL, and the combination was no better than the SERM alone (p=0.57).
 - **Fertility:** SERM vs gel kept sperm concentration **+70.4 million/mL** higher (CI 41.6–99.2) and cut the risk
   of falling under 15 million/mL by 90% (RR 0.10, CI 0.04–0.23).
 - **Body composition — one trial only.** Soares 2018 (RCT, 78 men with obesity, baseline ~220 ng/dL, 12 weeks;
@@ -245,58 +249,308 @@ and very high values can mean iron overload, a recognised cause of low testoster
 
 ## 6. How Forge models each of these
 
-Everything flows through one curve. `testosteroneEffect()` in `js/engine/metabolic.js` fits Bhasin's
-dose-response data (1996 NEJM; 2001 AJP-Endo) — fat-free mass changes roughly with the log of serum T — and
-`modifiersAt()` now computes an **effective serum testosterone** from four sources, then feeds that single
-number through the same curve:
+Everything flows through one curve. `testosteroneEffect()` in `js/engine/metabolic.js` fits Bhasin's dose-response
+data (1996 NEJM; 2001 AJP-Endo) — fat-free mass changes roughly with the log of serum T — and `modifiersAt()`
+computes an **effective serum testosterone** from four sources, then feeds that single number through the same curve:
 
-1. your **baseline** (a lab if you entered one; otherwise the age-average, reduced for short sleep);
-2. **testosterone therapy**, which overrides everything else and suppresses the rest;
-3. **endogenous therapies and boosters** (`kind: 'tEndogenous'` / `'tShift'`), combined into one level;
+1. your **baseline** (a lab if you entered one; otherwise the age-average, reduced for short sleep and for a
+   sustained calorie deficit);
+2. **exogenous testosterone by any route** — injections, gel, oral undecanoate, nasal — which overrides everything
+   else and suppresses the rest;
+3. **endogenous therapies and boosters** (`kind: 'tEndogenous'` / `'tShift'`), combined by the interaction engine
+   in §7, not added up;
 4. a **measured on-therapy lab**, which always wins — Forge never adds a modeled rise on top of a real number.
 
-Two rules keep the model honest, both drawn from this document:
+Three rules keep the model honest:
 
 - **Gates.** Each item declares who the evidence covers: `lowTOnly` (nothing for a man in the normal range),
-  `secondaryOnly` (nothing if LH is already high), `obesityOnly` (BMI ≥30), `deficiencyOnly` (a measured low
-  zinc), `highProlactin`, `shortSleepOnly`. Fail a gate and the item contributes zero, with a sentence saying
-  why.
-- **Muscle credit stops where the trials stopped.** `leanCapLevel` caps the level Forge is willing to turn into
-  lean mass — 500 ng/dL for clomiphene (where the one body-composition trial landed), 900 for hCG (where the
-  one placebo-controlled lean-mass result landed), 550 by default. `tLeanShare: 0` on aromatase inhibitors
-  means Forge raises your testosterone number and credits **no** muscle at all, because the year-long trials
-  measured body composition and found none.
-
-What that produces (12-week direct lean change, from `stackTimeline`; the ceiling multiplier separately scales
-training-driven gain):
-
-| Scenario | Natural | Effective T | Credited for muscle | Training ceiling | 12-wk lean | 12-wk fat |
-|---|---|---|---|---|---|---|
-| You, baseline | 548 | 548 | 548 | ×0.98 | +0.0 lb | 0.0 lb |
-| You, sleeping 5 h | 488 | 488 | 488 | ×0.87 | +0.0 lb | 0.0 lb |
-| You, back to 8 h sleep | 488 | 556 | 556 | ×0.91 | +0.7 lb | −0.2 lb |
-| You, still running big weeks | 548 | 411 | 411 | ×0.98 | −1.8 lb | +0.5 lb |
-| You + ashwagandha | 548 | 614 | 614 | ×1.02 | +0.4 lb | −0.1 lb |
-| You + clomiphene | 548 | 548 | 548 | ×0.98 | **+0.0 lb** | 0.0 lb |
-| Low T 300 + clomiphene | 300 | 573 | 500 | ×1.06 | +2.2 lb | −0.6 lb |
-| Low T 300 + enclomiphene | 300 | 516 | 516 | ×1.07 | +2.1 lb | −0.6 lb |
-| Low T 300 + hCG | 300 | 765 | 765 | ×1.21 | +4.3 lb | −1.2 lb |
-| Low T 300 + anastrozole | 300 | 495 | 300 | ×0.89 | **+0.0 lb** | 0.0 lb |
-| Low T 300 + testosterone therapy to 800 | 300 | 800 | 800 | ×1.23 | +6.1 lb | −1.8 lb |
-| Obese, T 220 + fat loss | 220 | 251 | 251 | ×0.79 | +0.3 lb | −0.1 lb |
-
-The hCG row is a useful sanity check: the model produces +4.3 lb of lean in 12 weeks, and the actual trial
-measured +2 kg (4.4 lb) in 3 months. The clomiphene row is the headline answer to the original question —
-**+2.2 lb of lean over 12 weeks for a man at 300 ng/dL, and nothing at all for you.**
-
-Items with no human body-composition or serum-T data (kisspeptin, pulsatile GnRH, nasal testosterone, Leydig
-regeneration, tribulus, maca, DHEA, fenugreek, boron, shilajit, forskolin, magnesium) are in the catalogue with
-their evidence written out and **no modeled effect**. Two new evidence grades were added for honesty:
-`refuted` ("tested and found not to work") and `preclinical` ("animal or lab research only").
+  `secondaryOnly` (nothing if LH is already high), `obesityOnly` (BMI ≥ 30), `deficiencyOnly` (a measured low zinc),
+  `highProlactin`, `shortSleepOnly`, `deficitOnly`. Fail a gate and the item contributes zero, with a sentence saying why.
+- **Non-additivity** (§7): routes that share a final common path do not add up.
+- **Muscle credit stops where the trials stopped** (§8): the flat 550 ng/dL ceiling is gone, replaced by a per-item,
+  evidence-bounded credit.
 
 ---
 
-## 7. Sources
+## 7. The interaction model (CONTRACT §22)
+
+`combineEndogenous()` in `js/engine/metabolic.js`. Three mechanisms, applied in order.
+
+### 7.1 Cause-correction items go first
+Fixing sleep, eating enough, losing fat if you are obese, repleting a measured zinc deficiency, normalizing a high
+prolactin, cutting endurance volume — these change the **set-point**, not the drive. They are applied first,
+multiplicatively (independent causes — an assumption), and because every drug's response shrinks as the baseline
+rises, correcting a cause **reduces** what a drug can still add. That is real non-additivity, not a fudge:
+clomiphene's `tPctByBaseline` curve falls from +91 % at 300 ng/dL to 0 at 450.
+
+### 7.2 LH-driven items share one path, so the largest wins
+SERMs (clomiphene, enclomiphene, tamoxifen), aromatase inhibitors, hCG and the herbals all end at the same place:
+Leydig cells making testosterone. The only randomized test of the combination settles it.
+
+**Habous 2018** (open-label RCT, 282 hypogonadal men wanting fertility, baseline ≈ 67 ng/dL, 12 weeks;
+doi:10.1111/bju.14401, reported in Hohl 2025 doi:10.20945/2359-4292-2025-0093): clomiphene **+158**, hCG **+134**,
+both together **+153 ng/dL**. The combination was **no better than clomiphene alone (p = 0.57)**, and the
+three-arm comparison against hCG alone was significant for both the SERM and the SERM + hCG arms (p < 0.002).
+
+So Forge combines LH-driven items as **the largest one wins** (`COMBO_BONUS = 0`, the measured point estimate), and
+the optimistic end of the range adds 25 % of the others (`COMBO_BONUS_HI`, an **assumption** — the CI does not
+exclude a small extra effect). Symptom scores did improve more on the combination in Habous, which Forge does not
+model because it does not model symptoms.
+
+### 7.3 Testicular capacity ceiling
+Total LH-driven output is bounded by what the testes can make:
+
+| Route | Ceiling | Where it comes from |
+|---|---|---|
+| Pituitary-driven (SERMs, AIs) | **800 ng/dL** | the highest group mean any SERM or AI trial reached is 790 (Krause 1992). Next: letrozole 620 (Loves 2013), enclomiphene 604 (Wiehle 2013), anastrozole 572 (Leder 2004) and 525 (Burnett-Bowie 2009), anastrozole + weight loss 530 (Colleluori 2020) |
+| Gonadotropin (hCG) | **1,100 ng/dL** | hCG replaces LH at the Leydig cell, so it can push past the pituitary plateau. The highest level actually observed is ≈ 870 (Liu 2002, inferred). 1,100 is the top of the male reference range and is an **assumption** |
+
+### 7.4 Primary hypogonadism blocks the whole class
+A raised LH (> 9.4 IU/L) with a low testosterone means the testis is the problem. Clomiphene, enclomiphene,
+tamoxifen, aromatase inhibitors and **hCG** all model zero: the first four push LH higher when LH is already
+maximal, and hCG replaces a signal the testis is already failing to answer. Cabergoline is gated the same way.
+The aromatase inhibitor still **blocks aromatase**, so it still lowers estradiol and still costs fat — correctly.
+
+### 7.5 Exogenous testosterone suppresses everything
+Any exogenous route — injections, gel, **oral undecanoate**, **nasal** — makes every own-axis item model zero.
+Nasal testosterone keeps its distinct partial-preservation data as text (LH normal in 72.7 %, FSH in 81.8 %, sperm
+above 5 M in 93.9 % at 6 months; Ramasamy 2020, single-arm, 6 months, heavy attrition), not as a modeled difference.
+
+### 7.6 Estradiol, SHBG and free testosterone
+Each item declares `e2Pct` (serum estradiol), `e2ActionPct` (estrogen **action**) and `shbgDelta`. Free testosterone
+is then computed from the combined total T and SHBG with the **Vermeulen** equations, which the app already used.
+
+| Item | Estradiol | SHBG | Source |
+|---|---|---|---|
+| Clomiphene / enclomiphene | **+34 pg/mL** pooled (95 % CI 19–49, I² 81 %) | **+3.63 nmol/L, not significant** (CI −0.54 to 7.81, p = 0.09) | Hohl 2025. Free T rose (SMD 1.57, CI 0.44–2.70) and DHT +7.58 ng/dL |
+| Aromatase inhibitor | **−35 %** (mean of the measured values) | 0 (Mauras 2000) | −24 % and −20 % (Burnett-Bowie 2009 ×2), −50 % (Loves 2013), −48 % (Mauras 2000), −52 % (Colleluori 2020) |
+| hCG | **+150 %**, in step with testosterone | 0 | Liu 2002 |
+| Fat loss (obese) | −25 % | +6 | Corona 2013 |
+
+**A SERM's serum-E2 rise is never turned into fat loss.** Finkelstein's finding is about estrogen *action*, and a
+SERM raises the hormone while blocking the receptor in some tissues; the direction in adipose is unknown, so it is
+modeled as zero and said out loud.
+
+### 7.7 Estradiol → fat: the Finkelstein term
+**Finkelstein 2013** (NEJM 369:1011, doi:10.1056/NEJMoa1206168; n = 400, goserelin + graded testosterone gel ±
+anastrozole, 16 weeks). With testosterone dose held constant, suppressing estradiol raised fat and did nothing to
+muscle:
+
+| Outcome | Cohort × dose interaction | Between-cohort, among men given testosterone |
+|---|---|---|
+| % body fat | **P = 0.001** | **P < 0.001** |
+| Subcutaneous fat area | P = 0.029 | P < 0.001 |
+| Intra-abdominal fat area | P = 0.021 | P = 0.002 |
+| Total-body lean mass | **P = 0.22 (ns)** | P = 0.52 (ns) |
+| Thigh-muscle area | P = 0.20 (ns) | P = 0.19 (ns) |
+| Leg-press strength | **P = 0.91 (ns)** | P = 0.90 (ns) |
+
+Hormone levels: cohort 1 (no AI) testosterone 44 / 191 / 337 / 470 / 805 ng/dL with estradiol 3.6 / 7.9 / 11.9 /
+18.2 / 33.3 pg/mL; cohort 2 (anastrozole) testosterone 41 / 231 / 367 / 485 / 924 with estradiol 1.0 / 1.2 / 2.0 /
+2.1 / 2.8. In cohort 2, % body fat rose by a **similar amount at every dose**, which is what identifies the effect
+as estrogenic rather than androgenic.
+
+**The per-arm kilogram magnitudes exist only in that paper's figures.** Every number in Forge's fat term is
+therefore an assumption (§9): near-total blockade (≈ 90 % loss of estrogen action, which is what cohort 2 had)
+costs **1.5 kg of fat over 16 weeks**, range 0.5–3.0 kg, scaled linearly with the fraction of estrogen action
+actually lost and following the same saturating time course as the testosterone term.
+
+**That scaling is what reconciles Finkelstein with every real-world AI trial.** Finkelstein's testes were switched
+off, so anastrozole had almost no substrate and estradiol crashed by ~90 %. In a man with a working axis the same
+1 mg only drops estradiol 20–50 %, because the rising testosterone feeds the enzyme more substrate. So the modeled
+penalty there is a few tenths of a kilogram — which is exactly why:
+
+- **Burnett-Bowie 2009** (RCT, 12 months): body composition (CT and DXA) and strength did not change.
+- **Burnett-Bowie 2009b** (RCT, 12 months): spine BMD fell 1.121 → 1.102 g/cm² on anastrozole while rising on
+  placebo (P = 0.0014). "Aromatase inhibition does not improve skeletal health in aging men."
+- **Loves 2013** (RCT, letrozole, BMI > 35, 6 months): testosterone 248 → 620 ng/dL and "significant effects on the
+  predefined endpoints were not observed".
+- **Mauras 2000** (anastrozole 1 mg, 10 weeks, males 15–22, estradiol −48 %): no change in fat mass, fat-free mass,
+  protein synthesis, muscle strength or calcium kinetics; testosterone +58 %, SHBG unchanged.
+- **Dias 2016 / 2017** (RCT, 12 months, men ≥ 65): the anastrozole arm **lost** abdominal subcutaneous fat
+  (−60.3 ± 3.2 cm², p = 0.003) and leptin (−1.5 ± 1.2 ng/mL, p = 0.04).
+
+**Sign-reversal gate — Colleluori 2020** (doi:10.3389/fendo.2020.00277; randomized, double-blind, 23 men, BMI ≥ 35,
+total T < 300, estradiol ≥ 10.9, LH < 9, anastrozole 1 mg + weight loss vs placebo + weight loss, 6 months).
+Testosterone 530 ± 166 vs 290 ± 133 ng/dL (p = 0.01); estradiol 14.0 ± 10.6 vs 29.1 ± 7.9 (p = 0.01); fat mass
+**−4.4 ± 3.9 vs −0.7 ± 1.9 kg** (adjusted p = 0.04); no difference in lean mass or in knee strength; LDL +5.7 vs
+−30.9 mg/dL (p = 0.03).
+
+Forge switches the fat **penalty off** in that population (BMI ≥ 35 with estradiol ≥ 25 pg/mL) and deliberately does
+**not** model a benefit, because the AI arm also lost **5.1 kg more weight** (−8.3 vs −3.2 kg, adjusted p = 0.17,
+not significant), which accounts for essentially all of the fat difference. The trial's raw direction is reported as
+the optimistic end of the range.
+
+---
+
+## 8. The muscle-credit ceiling: what replaced `T_NORMAL_MID = 550`
+
+The old model credited muscle up to a flat 550 ng/dL (with per-item overrides). That constant is **gone**. Muscle
+credit now follows achieved serum T on the Bhasin curve and is bounded per item by two things: whether that item's
+own trials measured body composition at all, and what level they reached.
+
+| Class | Meaning | What Forge does |
+|---|---|---|
+| **measured** | trials of this item measured body composition | credit the achieved level, bounded at `bcMaxLevel` = where those trials landed |
+| **extrapolated** | no body-composition data, but a measured T rise | run it through the Bhasin T→lean curve, bounded by the highest serum T this item's own trials reached, and **label it an extrapolation** everywhere it is shown; the lower end of its range is **zero**, because zero is what has been measured |
+| **none** | trials measured body composition and found none | credit **nothing** (`tLeanShare: 0`), and apply the estradiol fat term where it applies |
+
+| Item | Class | `bcMaxLevel` | Where the bound comes from |
+|---|---|---|---|
+| hCG | measured | **870** | Liu 2002: lean +2 kg (p < 0.001), fat −1 kg (p < 0.05), and **no** change in shoulder or knee strength, gait, balance or activity. Entry ≤ 15 nmol/L (433 ng/dL) with a reported +150 % → ≈ 870. The achieved mean is not published, so the bound is an **assumption** |
+| Clomiphene | measured | **500** | Soares 2018: lean (p < 0.001), fat-free (p = 0.004) and muscle mass (p < 0.001) improved **by bioimpedance** in obese men starting at 226 ± 70 ng/dL. The achieved level is not in the abstract; 500 is inferred from that baseline plus the pooled clomiphene rise in obese men (+333 ng/dL, Tienforti 2023) and is an **assumption** |
+| Enclomiphene | extrapolated | **604** | no enclomiphene trial has ever measured body composition. 604 ± 160 ng/dL is the highest on-treatment group mean (Wiehle 2013, 25 mg, day 42) |
+| Tamoxifen | extrapolated | **790** | nobody has measured body composition on tamoxifen in men. Krause 1992 is the only randomized rise in **eugonadal** men (490 → 790 vs 530 → 560 on placebo) |
+| Aromatase inhibitor | **none** | — | measured and null in four trials (above) |
+| Ashwagandha | extrapolated | **726** | Wankhede 2015 measured body composition but its end testosterone did not differ from placebo, so the body-composition result cannot be attributed to the hormone. 726 is the highest on-treatment mean |
+| Tongkat ali | extrapolated | **350** | Chinnappan 2021's men stayed below 300; the meta-analysis was only significant below 300 |
+| Zinc repletion | extrapolated | **500** | Prasad 1996 moved marginally deficient men 239 → 461 ng/dL; no body composition measured |
+| Cabergoline | extrapolated | **700** | Colao 2004 measured bone density, not body composition; 61 % normalized, 39 % still needed replacement |
+| Eating enough | measured | 1,100 | Murphy & Koehler 2021: a 500 kcal/day deficit abolished lean-mass gain from lifting |
+| Sleep 7–9 h | measured | 900 | Nedeltcheva 2010: 5.5 h vs 8.5 h shifted diet weight loss from fat to lean |
+| Fat loss (obese) | measured | 700 | Corona 2013; the fat loss itself is what the projection simulates |
+
+The bound is **composed the way the level is**: the cause-correction chain is bounded by the cause items' own
+evidence, and whatever a drug adds on top is bounded by that **drug's** bound. A lifestyle item with a generous
+bound cannot launder a drug's rise past the drug's own evidence — fixing sleep and taking clomiphene still credits
+muscle only to 500 ng/dL.
+
+**For a man already mid-normal there is almost no headroom, and Forge shows the number rather than hiding the
+option.** Clomiphene, enclomiphene and hCG model exactly zero above 450–500 ng/dL, with the reason on the row.
+The aromatase inhibitor is the exception that proves the point: it *does* raise a eugonadal man's testosterone
+(Mauras 2000: +58 %), Forge models that rise, and credits zero muscle plus a fat cost.
+
+---
+
+## 9. Assumptions — everything that is not a measured number
+
+Each of these is flagged in the code, in the UI and here. Nothing below was measured in a trial.
+
+| # | Assumption | Value | Why, and how wrong it could be |
+|---|---|---|---|
+| A1 | **Fat cost of full aromatase blockade** | 1.5 kg / 16 wk at ~90 % loss of estrogen action (range 0.5–3.0) | Finkelstein 2013's per-arm magnitudes are figure-only. Direction and significance are measured; the size is not |
+| A2 | **Linear scaling of A1 with estrogen-action loss** | linear | Convenient, and it is what makes the model agree with the real-world AI trials. The true shape could be threshold-like |
+| A3 | **Optimistic combination bonus** | +25 % of the subsumed items | The measured point estimate is 0 (Habous 2018); the CI does not exclude a little more |
+| A4 | **Testicular ceiling for hCG** | 1,100 ng/dL | Top of the male reference range. The highest level actually observed is ≈ 870 |
+| A5 | **hCG muscle-credit bound** | 870 ng/dL | Inferred from Liu 2002's ≤ 433 ng/dL entry and its reported +150 %; the achieved mean is unpublished |
+| A6 | **Clomiphene muscle-credit bound** | 500 ng/dL | Inferred from Soares 2018's baseline plus the pooled obese-men rise |
+| A7 | **Energy-availability suppression curve** | 0 % at 300 kcal/day, −10 % at 500, −40 % at 1,000, −65 % at 1,500 | Interpolated between two measured extremes: Koehler 2016 (null at mild restriction) and Friedl 2000 / Rossow 2013 (≈ −75 % at the severe end) |
+| A8 | **Cause-correction items multiply** | independent causes | Nobody has randomized sleep × food × fat loss against testosterone |
+| A9 | **Assumed estradiol and SHBG when no lab** | 25 pg/mL, 35 nmol/L | Mid adult male reference ranges |
+| A10 | **Oral / nasal testosterone level when no lab** | 500 ng/dL | Mid-point of the reported on-treatment means (Jatenzo Cavg ≈ 489 serum-equivalent, 617 at 2 years). Those trials reported proportions in range, not group means |
+| A11 | **Extrapolated items' lean effect** | the Bhasin curve applies to an endogenous rise | Bhasin's data are exogenous testosterone in GnRH-suppressed men. A SERM-driven rise comes with higher estradiol and a different free-T ratio. This is why the lower end of every extrapolated range is zero |
+| A12 | **Aromatase-inhibitor estradiol drop** | −35 % | Mean of five measured values spanning −20 % to −52 % |
+
+Also still true from earlier sections: the population-average baseline (548 ng/dL for a 39-year-old man), the
+assumed average vitamin D (27 ng/mL), sleep (7 h) and stress (3/5), all flagged "assumed average" in the app.
+
+---
+
+## 10. What the model produces
+
+12-month figures from `stackTimeline`, with items started a year ago so the ramps are complete. "Credited" is the
+level Forge is willing to turn into muscle; the ceiling multiplier separately scales training-driven gain.
+
+| Scenario | Natural | Effective T (range) | Credited | E2 | Free T | Ceiling | 52-wk lean | 52-wk fat |
+|---|---|---|---|---|---|---|---|---|
+| You, baseline (assumed 548) | 548 | 548 | 548 | — | — | ×0.98 | 0.0 lb | 0.0 lb |
+| You, sleeping 5 h | 488 | 488 | 488 | — | — | ×0.87 | 0.0 | 0.0 |
+| You, back to 8 h sleep | 488 | 556 (522–590) | 556 | 25→25 | 98.6→114.9 | ×0.91 | +1.1 | −0.3 |
+| You, 1,000 kcal/day deficit | 329 | 329 | 329 | — | — | ×0.93 | 0.0 | 0.0 |
+| **You + eating enough** | 329 | 548 (439–658) | 548 | 25→25 | 63.1→123.5 | ×1.09 | **+4.1** | **−1.2** |
+| You, still running big weeks | 548 | 411 | 411 | 25→25 | 112.9→75.7 | ×0.98 | −2.8 | +0.8 |
+| You + ashwagandha | 548 | 614 (574–653) | 614 | 25→25 | 112.9→129 | ×1.02 | +0.8 | −0.2 |
+| **You + clomiphene** | 548 | 548 | 548 | 25→25 | 112.9→112.9 | ×0.98 | **0.0** | **0.0** |
+| **You + anastrozole** | 548 | **800** (693–800) | **548** | 25→**16.3** | 112.9→177.5 | ×0.98 | **0.0** | **+1.5** |
+| You + tamoxifen *(extrapolated)* | 548 | 800 (712–800) | 790 | 25→40 | 112.9→177.5 | ×1.11 | +2.9 (0 to +2.9) | −0.8 |
+| Low T 300 + clomiphene | 300 | 573 (491–655) | 500 | 25→47.5 | 57→111.2 | ×1.05 | +4.0 | −1.2 |
+| Low T 300 + enclomiphene | 300 | 516 (488–544) | 516 | 25→36.3 | 57→100 | ×1.06 | +4.0 | −1.2 |
+| Low T 300 + hCG | 300 | 765 (579–951) | 765 | 25→62.5 | 57→168.1 | ×1.20 | +7.5 | −2.2 |
+| **Low T 300 + clomiphene + hCG** | 300 | **765** (579–1040) | 765 | 25→62.5 | 57→157.3 | ×1.20 | **+7.5** | **−2.2** |
+| Low T 300 + clomiphene + anastrozole | 300 | 573 (491–800) | 500 | 25→30.9 | 57→111.2 | ×1.06 | +4.1 | **+0.3** |
+| Low T 300 + anastrozole | 300 | 503 (391–746) | **300** | 25→16.3 | 57→102 | ×0.89 | **0.0** | **+1.5** |
+| **Low T 300, LH 14 (primary) + anything** | 300 | 300 | 300 | 25→25 | 57→57 | ×0.89 | **0.0** | **0.0** |
+| Low T 300 + testosterone therapy to 800 | 300 | 800 | 800 | — | —→177.5 | ×1.23 | +9.5 | −2.7 |
+| Obese BMI 38, T 280, E2 32 + fat loss | 280 | 358 (325–391) | 358 | 32→24 | 52.9→62.8 | ×0.94 | +1.0 | −0.3 |
+| …+ fat loss **+ anastrozole** | 280 | 591 (423–800) | **358** | 32→15.6 | 52.9→111.6 | ×0.94 | +1.0 | **−0.3** (penalty off) |
+| Lean BMI 24, T 280, E2 20 + anastrozole | 280 | 470 (366–699) | **280** | 20→13 | 52.9→94.5 | ×0.85 | −0.5 | **+1.6** |
+
+Sanity checks: hCG's +7.5 lb over a year against the trial's measured +2 kg (4.4 lb) in 3 months — the model is
+saturating, so most of that year's gain happens in the first 20 weeks. **Clomiphene + hCG is identical to hCG
+alone**, which is the Habous 2018 result. **The two anastrozole rows produce the biggest testosterone numbers in
+the whole table and the worst body composition**, which is the Finkelstein/Burnett-Bowie result.
+
+Items with no human body-composition or serum-T data (kisspeptin, pulsatile GnRH, Leydig regeneration, tribulus,
+maca, DHEA, fenugreek, boron, shilajit, forskolin, magnesium) are in the catalogue with their evidence written out
+and **no modeled effect**. Lifting itself is in there too, with `SMD 0.00` and the reason it does not belong in
+this list.
+
+---
+
+## 10b. New and corrected entries (2026-10-20)
+
+**Added**
+
+- **Oral testosterone undecanoate** (Jatenzo, Tlando, Kyzatrex) — exogenous testosterone that suppresses the axis.
+  Jatenzo: 87 % of men in range, plasma Cavg 403 ± 128 ng/dL (serum-equivalent ≈ 489 ± 155) (Swerdloff 2020,
+  doi:10.1210/clinem/dgaa238); 617 ± 427 ng/dL at 2 years with HDL −9.8 mg/dL and systolic BP +3–6 mmHg (Honig 2022,
+  doi:10.1016/j.jsxm.2022.09.002). Tlando: 87.4 % in range from a baseline of 205.7 ± 71.6 (Miner 2024,
+  doi:10.1111/andr.13747), 24-hour systolic +3.8 mmHg, hematocrit +3.2 %, haemoglobin +0.9 g/dL (White 2021,
+  doi:10.1177/10742484211027394). Kyzatrex: 88 % (CI 82–93) within 222–800 ng/dL at day 90. Boxed warning for blood
+  pressure. **No trial measured body composition.**
+- **Lifting itself**, as a null: resting testosterone SMD 0.00 (CI −0.20 to 0.20; Potter 2021).
+- **Energy availability** is now modeled from an entered `deficitKcal`, not just warned about.
+- **Alcohol** is now modeled: −6.8 % at the randomized 3 drinks/day (Sierksma 2004), plateauing there.
+
+**Corrected**
+
+- **Aromatase inhibitors are no longer gated to low-T men.** Mauras 2000 raised testosterone 58 % in eugonadal
+  males aged 15–22. The old model said zero at a normal baseline, which was wrong. The number now moves at any
+  baseline; the muscle credit is still zero and the fat term now applies.
+- **Nasal testosterone** was `kind: 'none'`. It is exogenous testosterone and is now modeled as such.
+- **hCG, tamoxifen, the aromatase inhibitors and cabergoline** are now blocked by a raised LH, as the SERMs already
+  were. hCG replacing LH does not help a testis that is already failing to answer its own LH.
+- **"Far below injections (−290 ng/dL)"** has been removed from the clomiphene entry: Hohl 2025 compared SERMs with
+  placebo, testosterone **gel** and hCG, not with injections. That number is not in the paper.
+- **Clomiphene's SHBG rise** is reported honestly: the pooled estimate is +3.63 nmol/L and **not significant**
+  (p = 0.09), even though the single body-composition trial (Soares 2018) did find a rise.
+
+---
+
+## 10c. The planner (`js/engine/tplan.js`)
+
+Ranks every single item and a curated set of combinations by **modeled 12-month lean and fat change**, not by the
+size of the testosterone rise — because those are different lists, and the aromatase inhibitor is the proof.
+
+- **Input**: his labs where present; population defaults for his age where not, each one flagged "assumed". When
+  the decisive labs (total T and LH) are missing, "get the panel" is the first and highest-value action, with the
+  exact list and why each one matters (`T_LAB_PANEL`).
+- **Output per row**: modeled total T, free T (Vermeulen) and estradiol with ranges; the projected lean and fat
+  delta computed through the same `project()` the Projection screen uses, so adding the row changes Projection by
+  exactly what the row said; evidence grade; the measured/extrapolated/none class; who it suits and who it does
+  not; the labs to monitor; fertility; and, for prescription items, that they need a prescriber.
+- **Honesty**: an option modeled at ~0 is shown as ~0 with the reason, not omitted and not padded. Lifestyle levers
+  rank in the same list on their own merits.
+- **One tap** adds the item or the whole combination to the stack; a second tap removes it.
+- **Anti-doping**: SERMs and other anti-estrogens are WADA-prohibited at all times under **S4.2**, aromatase
+  inhibitors under **S4.1**, hCG in males under **S2.2**, testosterone by any route under **S1**.
+- **Women** (§20): the planner returns `{ hidden: true }` and no rows, and the UI does not render it.
+
+### What it says to Bob today (39, ex-marathoner, ~164 lb, ~23 % DXA body fat, no labs)
+
+1. **Get the panel.** Everything else is gated on numbers he has not entered.
+2. Nothing in the prescription list has any headroom at an assumed 548 ng/dL: clomiphene, enclomiphene and hCG all
+   model **exactly zero**, with the reason on the row.
+3. The two levers that could matter for him both depend on a number only he can supply — his real sleep and his
+   real deficit. At 5 h of sleep, fixing it is worth ≈ **+1.1 lb lean / −0.3 lb fat** over a year. At a
+   1,000 kcal/day deficit, eating enough is worth ≈ **+4.1 lb lean / −1.2 lb fat**. On an appetite-suppressing
+   medication with a high training load, that is the assumption most likely to be wrong, and the planner says so.
+4. Ashwagandha is the only non-prescription item with a modeled effect at his level: ≈ +0.8 lb lean over a year,
+   labelled an extrapolation, from weak evidence in men who were not him.
+5. An aromatase inhibitor would give him the biggest testosterone number on the list (548 → 800) and is modeled at
+   **0 lb of lean and +1.5 lb of fat**.
+
+## 11. Sources
 
 All PMIDs below were opened during this review. Where a figure could not be verified from a primary source it
 is marked UNVERIFIED in the text above and is not modeled.
@@ -332,3 +586,22 @@ Topo 2009 · Willoughby & Leutholtz 2013 · Melville 2015 · Melville 2017 · Na
 Ferrando & Green 1993 · Qureshi 2014 · Neychev 2005 · Rogerson 2007 · Pandit 2016 · Saper 2008 ·
 Godard 2005 · Brown 1999 · Nair 2006 · Li 2020 · Gonzales 2003 · Clemesha 2020 · Balasubramanian 2019 ·
 Morgado 2023 · Whittaker & Wu 2021 (33741447) · Cignarelli 2019 (31496991) · Moro 2016 (27737674)
+
+### Added in the 2026-10-20 pass (all opened and checked)
+
+Finkelstein 2013 full text, PMC4142768 (doi:10.1056/NEJMoa1206168) · Habous 2018, PMID 29772111
+(doi:10.1111/bju.14401) · Hohl 2025 full text, PMC12510335 (doi:10.20945/2359-4292-2025-0093) ·
+Tienforti 2023, PMID 36604313 (doi:10.1111/andr.13373) · Colleluori 2020 full text, PMC7243137
+(doi:10.3389/fendo.2020.00277) · Mauras 2000, PMID 10902781 (doi:10.1210/jcem.85.7.6676) ·
+Dias 2017, PMID 27792869 (doi:10.1111/andr.12284) · Dias 2017b, PMID 28285644
+(doi:10.1016/j.metabol.2017.01.025) · Burnett-Bowie 2009, PMID 18616708 (doi:10.1111/j.1365-2265.2008.03327.x) ·
+Burnett-Bowie 2009b, PMID 19820017 (doi:10.1210/jc.2009-0739) · Loves 2013, PMID 23949882
+(doi:10.1530/EJE-13-0190) · Liu 2002, PMID 12107212 (doi:10.1210/jcem.87.7.8630) · Soares 2018, PMID 29777228
+(doi:10.1038/s41366-018-0105-2) · Kim 2016, PMID 26496621 (doi:10.1111/bju.13337) · Wiehle 2013, PMID 23875626
+(doi:10.1111/bju.12363) · Katz 2012, PMID 22044663 (doi:10.1111/j.1464-410X.2011.10702.x) ·
+Swerdloff 2020, PMID 32382745 (doi:10.1210/clinem/dgaa238) · Honig 2022, PMID 36272969
+(doi:10.1016/j.jsxm.2022.09.002) · Miner 2024, PMID 39252657 (doi:10.1111/andr.13747) · White 2021,
+PMID 34191621 (doi:10.1177/10742484211027394) · U.S. FDA, KYZATREX prescribing information (approved July 2022) ·
+Potter 2021, PMID 35134000 (doi:10.1007/s40279-021-01600-z) · Ferrando & Green 1993, PMID 7889883.
+
+Article metadata and full texts were retrieved from PubMed and PubMed Central.

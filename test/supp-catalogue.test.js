@@ -37,6 +37,13 @@ test('every model param is in a sane, evidence-matched range', () => {
       assert.ok(typeof m[k] === 'number' && Number.isFinite(m[k]), `${id}.${k} numeric`);
       assert.ok(m[k] >= lo && m[k] <= hi, `${id}.${k}=${m[k]} outside [${lo}, ${hi}]`);
     }
+    // §22: 'exogenousT' items (oral and nasal testosterone) are level-driven, not dose-driven — the dose unit
+    // differs per product, so they carry a trial-mean serum level instead and a measured lab always wins.
+    if (m.kind === 'exogenousT') {
+      assert.ok(Number.isFinite(m.trialLevel) && m.trialLevel > 0, `${id} needs a trial level`);
+      assert.ok(typeof m.trialLevelNote === 'string' && m.trialLevelNote.length > 10, `${id} must say where that level comes from`);
+      continue;
+    }
     if (isModeled(s)) {
       assert.ok(m.dose && m.dose.unit && Number.isFinite(m.dose.default) && m.dose.default > 0, `${id} needs a default dose`);
       assert.ok(Array.isArray(m.dose.studied) && m.dose.studied[0] <= m.dose.studied[1], `${id} studied range`);
