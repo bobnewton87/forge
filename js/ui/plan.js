@@ -7,6 +7,13 @@
 // CONTRACT-NOTE: "Move to…" swaps two days; moved sessions become plan.auto:false. If the target
 //   day was empty and the source day's schedule isn't rest, the source day gets a forced-rest
 //   session so re-planning doesn't refill it.
+// CONTRACT-NOTE (PLAN-FIX): quick "+10′ / +20′ cardio" on every upcoming day (card + day sheet)
+//   extends the day's last cardio block, appends an easy finisher, or creates a cardio day; the day
+//   becomes plan.auto:false and remembers plan.extraCardio (re-applied after a Re-suggest). The
+//   coverage card has a weekly cardio-target stepper (profile.cardioTargetMin, steps of 15).
+//   Re-suggest keeps the day's location/minutes (or the location picked in the sheet's Where row).
+//   planRange keeps every non-auto planned session (incl. ones without a plan field), and any open
+//   sheet closes on browser back (popstate) so a stale backdrop can't block taps.
 import { ds, parseDs, addDays, weekStart, fmtShort, fmtDay, daysBetween } from '../util.js';
 import { GROUPS, GROUP_ORDER } from '../data/muscles.js';
 import { expandEquipment } from '../data/equipment.js';
@@ -28,6 +35,9 @@ const DOW_NAME = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursd
 const DOW_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const KINDS = [['lift', 'Lift', '🏋️'], ['cardio', 'Cardio', '🏃'], ['class', 'Class', '🎟️'], ['flex', 'Flex', '🔀'], ['rest', 'Rest', '🌙']];
 const MINUTES = [15, 20, 30, 45, 60, 75, 90];
+const QUICK_CARDIO = [10, 20];
+const FINISHER_PREF = ['bike', 'walk_incline', 'elliptical', 'row', 'treadmill', 'run', 'walk'];
+const CARDIO_STEP = 15;
 const MAX_AHEAD = 12, MAX_BACK = 52;
 
 let weekOff = 0;          // weeks from this week
@@ -165,7 +175,46 @@ function dayCard(date, sessions, profile, t) {
       <span class="pl-meta">${esc(kindLabel(sch.kind))} · ${sch.minutes || '?'} min · ${esc(loc.icon || '')} ${esc(loc.name)}</span></span><span class="pl-plus">＋</span></button>`;
     cls = 'open';
   }
-  return `<div class="pl-day ${isToday ? 'today' : ''} ${cls}">${dateCol}<div class="pl-body">${doneLines}${main}</div></div>`;
+  const quick = `<div class="pl-quick" role="group" aria-label="Add cardio"><span class="pl-qlabel">🏃 Cardio</span>${QUICK_CARDIO.map(m => `<button type="button" class="pl-qc" data-qc="${m}" data-date="${date}" aria-label="Add ${m} minutes of cardio">+${m}′</button>`).join('')}</div>`;
+  return `<div class="pl-day ${isToday ? 'today' : ''} ${cls}">${dateCol}<div class="pl-body">${doneLines}${main}${quick}</div></div>`;
+}
+
+// ---------- quick cardio ----------
+function firstFinisher(loc) {
+  const opts = safe(() => cardioOptions(expandEquipment(loc.equipment || [])), []);
+  return FINISHER_PREF.find(m => opts.some(o => o.id === m)) || (opts[0] && opts[0].id) || 'walk';
+}
+// Add `mins` of cardio to a session (pure): extend the last cardio block or append an easy one.
+export function withExtraCardio(s, mins, loc) {
+  const out = JSON.parse(JSON.stringify(s));
+  out.blocks = out.blocks || [];
+  const last = [...out.blocks].reverse().find(b => b.kind === 'cardio');
+  if (last) last.minutes = (Number(last.minutes) || 0) + mins;
+  else out.blocks.push({ kind: 'cardio', modality: firstFinisher(loc), minutes: mins, intensity: 'easy', distance: null, calories: null, done: false, note: 'Easy Zone 2' });
+  out.minutes = (Number(out.minutes) || 0) + mins;
+  if (out.estMinutes != null) out.estMinutes = Math.round(Number(out.estMinutes) || 0) + mins;
+  const onlyCardio = out.blocks.every(b => b.kind === 'cardio');
+  if (onlyCardio && out.blocks.length === 1) { const b = out.blocks[0]; out.title = `${CARDIO[b.modality]?.name || 'Cardio'} · ${b.minutes} min`; }
+  return out;
+}
+function addCardio(ctx, date, mins) {
+  const store = ctx.store;
+  const profile = store.getProfile();
+  const plan = mainPlanned(store.getSessions(), date);
+  const loc = dayLoc(profile, date, plan);
+  let out;
+  if (plan && !isRestPlan(plan)) {
+    out = withExtraCardio(plan, mins, loc);
+    out.plan = { ...(plan.plan || {}), auto: false, kind: kindOf(plan), generatedAt: new Date().toISOString(), reason: plan.plan?.reason || 'Custom', extraCardio: (Number(plan.plan?.extraCardio) || 0) + mins };
+  } else {
+    out = stampCustom(cardioSession(store.newSessionId(), date, loc, { modality: firstFinisher(loc), minutes: mins, intensity: 'easy' }, 'Easy Zone 2 cardio'), 'cardio');
+    out.plan.extraCardio = mins;
+  }
+  putDay(store, date, out);
+  const sum = safe(() => weekPlanSummary(store.getSessions(), { weekStart: weekStart(parseDs(date)), profile, now: new Date() }), null);
+  const cm = sum?.cardioMinutes;
+  toast(ctx, `+${mins} min cardio on ${fmtDay(date).split(',')[0]}${cm ? ` · week ${Math.round((cm.done || 0) + (cm.planned || 0))}/${cm.target} min` : ''}`);
+  return out;
 }
 
 function summaryCard(sessions, profile, ws) {
@@ -215,6 +264,8 @@ function summaryCard(sessions, profile, ws) {
       <div class="pl-bar-top"><span>🏃 Cardio</span><span class="num"><b>${fmtNum((cm.done || 0) + (cm.planned || 0), 0)}</b><span class="muted">/${ctarget} min</span></span></div>
       <div class="pl-track"><i class="d" style="width:${((cm.done || 0) / cscale) * 100}%"></i><i class="p" style="left:${((cm.done || 0) / cscale) * 100}%;width:${((cm.planned || 0) / cscale) * 100}%"></i><span class="tick" style="left:${(ctarget / cscale) * 100}%"></span></div>
     </div>
+    <div class="pl-ctarget"><span class="muted small">Weekly cardio target</span>
+      <span class="pl-step" role="group" aria-label="Weekly cardio target"><button type="button" data-a="ct-dec" aria-label="Lower cardio target" ${ctarget <= 0 ? 'disabled' : ''}>−</button><b>${ctarget}′</b><button type="button" data-a="ct-inc" aria-label="Raise cardio target" ${ctarget >= 600 ? 'disabled' : ''}>+</button></span></div>
     ${capLine ? `<div class="pl-cap muted small">${esc(capLine)}</div>` : ''}
     ${warnings.length ? `<details class="pl-notes"><summary>Notes <span class="pl-notes-n">${warnings.length}</span></summary><ul>${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul></details>` : ''}
   </div>`;
@@ -274,6 +325,9 @@ function openDay(ctx, date) {
     ${groups.length ? `<div class="pl-chips mt">${groups.map(g => `<span class="pl-mchip">${esc(g.name)} <b>${fmtNum(g.sets, 0)}</b></span>`).join('')}</div>` : ''}
     ${rationale.length ? `<ul class="pl-why">${rationale.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
     ${has ? blocksHtml(plan, profile.units) : rest || sch.kind === 'rest' ? '<p class="muted small mt">Rest days let muscles rebuild. You can still plan something below.</p>' : '<p class="muted small mt">Get a suggestion that fits your recovery and weekly targets, or build your own.</p>'}
+    ${date >= t ? `<div class="pl-where"><div class="tiny muted bold">Where${has ? ' · tap to re-suggest there' : ''}</div>
+      <div class="pl-where-row">${(profile.locations || []).map(l => chip(`${l.icon || ''} ${l.name}`, { active: l.id === loc.id, attrs: `data-sloc="${esc(l.id)}"`, cls: 'sm' })).join('')}</div></div>
+    <div class="pl-sheet-quick"><span class="tiny muted bold">Cardio</span>${QUICK_CARDIO.map(m => `<button type="button" class="pl-qc" data-act="qc" data-m="${m}">+${m}′</button>`).join('')}${cmin ? `<span class="muted small">${cmin} min now</span>` : ''}</div>` : ''}
     <div class="pl-acts">${actions.map(([id, ic, label, kind]) => `<button type="button" class="pl-act ${kind || ''}" data-act="${id}"><span>${ic}</span>${esc(label)}</button>`).join('')}</div>
   </div>`;
   ctx.openSheet(html, (el, close) => {
@@ -281,30 +335,65 @@ function openDay(ctx, date) {
       const b = e.target.closest('[data-act]'); if (!b) return;
       dayAction(ctx, date, b.dataset.act, { plan, close, el, btn: b });
     };
+    el.querySelector('.pl-sheet-quick')?.addEventListener('click', e => {
+      const b = e.target.closest('[data-act="qc"]'); if (!b) return;
+      addCardio(ctx, date, Number(b.dataset.m)); openDay(ctx, date);
+    });
+    el.querySelector('.pl-where-row')?.addEventListener('click', async e => {
+      const b = e.target.closest('[data-sloc]'); if (!b || b.disabled) return;
+      if (b.classList.contains('active') && has) return;
+      el.querySelectorAll('[data-sloc]').forEach(x => { x.disabled = true; x.classList.toggle('active', x === b); });
+      const s = await suggestDay(ctx, date, { location: b.dataset.sloc });
+      if (!s) { toast(ctx, 'No suggestion for that location. Try Build my own.'); openDay(ctx, date); return; }
+      putDay(ctx.store, date, s);
+      toast(ctx, `${fmtDay(date).split(',')[0]} at ${locById(ctx.store.getProfile(), b.dataset.sloc)?.name || b.dataset.sloc}: ${s.title || 'Workout'}`);
+      openDay(ctx, date);
+    });
   });
 }
 
 function otherSessions(sessions, date) { return sessions.filter(s => !(s.status === 'planned' && s.date === date)); }
 
-async function suggestDay(ctx, date) {
+// Slot for a (re-)suggestion: the schedule's kind, but the day's current location/minutes win
+// (they may have been customized), and an explicit location pick wins over both.
+export function suggestSlot(profile, date, plan, location = null) {
+  const sch = daySched(profile, date);
+  const has = plan && !isRestPlan(plan);
+  let kind = sch.kind === 'rest' ? 'lift' : sch.kind;
+  const locId = location || (has && plan.location) || sch.location || profile.currentLocation || 'home';
+  const extra = has ? Number(plan.plan?.extraCardio) || 0 : 0;
+  let minutes = (has && Number(plan.minutes) - extra) || Number(sch.minutes) || profile.defaultMinutes || 45;
+  if (has && plan.plan?.kind === 'class') minutes = Number(plan.plan?.slot?.minutes) || Number(sch.minutes) || minutes;
+  const l = locById(profile, locId);
+  if (kind === 'class' && l && !l.hasClasses) kind = 'flex';
+  return { kind, minutes: Math.max(10, minutes), location: locId };
+}
+
+async function suggestDay(ctx, date, { location = null } = {}) {
   const store = ctx.store;
   const profile = store.getProfile();
-  const sessions = otherSessions(store.getSessions(), date);
+  const all = store.getSessions();
+  const prev = mainPlanned(all, date);
+  const sessions = otherSessions(all, date);
   const classSchedule = await ensureSchedule();
-  const sch = daySched(profile, date);
-  // On a scheduled rest day the user is explicitly asking for a workout: override the slot.
-  const slot = sch.kind === 'rest' ? { kind: 'lift', minutes: profile.defaultMinutes || 45, location: sch.location || profile.currentLocation } : undefined;
+  const slot = suggestSlot(profile, date, prev, location);
   let s = safe(() => suggestForDay(date, { profile, sessions, schedule: profile.schedule, classSchedule, now: new Date(), seed: Math.floor(Math.random() * 1e9), slot }), null);
-  if (!s) s = fallbackSuggest(date, profile, sessions);
+  if (!s) s = fallbackSuggest(date, profile, sessions, slot);
   if (!s) return null;
   if (!s.id) s.id = store.newSessionId();
   s.date = date;
-  return stampAuto(s, s.plan?.kind, s.plan?.reason);
+  const extra = Number(prev?.plan?.extraCardio) || 0;
+  if (extra > 0) {
+    // the user asked for more cardio on this day: keep it (and keep the day theirs)
+    const out = withExtraCardio(s, extra, locById(profile, slot.location) || dayLoc(profile, date, null));
+    return { ...stampCustom(out, s.plan?.kind, s.plan?.reason), plan: { ...(s.plan || {}), auto: false, kind: s.plan?.kind || kindOf(s), generatedAt: new Date().toISOString(), extraCardio: extra } };
+  }
+  return { ...stampAuto(s, s.plan?.kind, s.plan?.reason), plan: { ...(s.plan || {}), auto: true, kind: s.plan?.kind || kindOf(s), generatedAt: new Date().toISOString(), reason: s.plan?.reason || 'Suggested' } };
 }
 
-function fallbackSuggest(date, profile, sessions) {
-  const sch = daySched(profile, date);
-  const loc = dayLoc(profile, date, null);
+function fallbackSuggest(date, profile, sessions, slot = null) {
+  const sch = slot || daySched(profile, date);
+  const loc = (slot && locById(profile, slot.location)) || dayLoc(profile, date, null);
   const minutes = Number(sch.minutes) || profile.defaultMinutes || 45;
   if (sch.kind === 'cardio') return cardioSession(null, date, loc, { modality: firstCardio(loc), minutes, intensity: 'easy' }, 'Easy Zone 2 cardio');
   const s = safe(() => buildWorkout({ targets: [], minutes, location: loc, profile, sessions: sessions.filter(x => x.status === 'done'), now: noon(date), seed: Math.floor(Math.random() * 1e9), exclude: profile.avoidExercises || [] }), null);
@@ -444,7 +533,8 @@ async function runPlan(ctx, from, to, label) {
     const classSchedule = await ensureSchedule();
     await new Promise(r => setTimeout(r, 30));
     const days = daysBetween(from, to) + 1;
-    const res = safe(() => planRange({ from, days, profile, sessions: store.getSessions(), schedule: profile.schedule, classSchedule, now: new Date() }), []);
+    // Anything the user touched (or saved without a plan tag) is kept and planned around.
+    const res = safe(() => planRange({ from, days, profile, sessions: store.getSessions(), schedule: profile.schedule, classSchedule, now: new Date(), keep: x => !(x.plan && x.plan.auto) }), []);
     const list = (Array.isArray(res) ? res : []).filter(s => s && s.date >= from && s.date <= to)
       .map(s => stampAuto({ ...s, id: s.id || store.newSessionId() }, s.plan?.kind, s.plan?.reason));
     store.replacePlanned(from, to, list);
@@ -511,10 +601,18 @@ function openAvailability(ctx) {
 }
 
 // ---------- bind ----------
+let popBound = false;
 export function bind(root, ctx) {
   ensureSchedule();
+  if (!popBound && typeof window !== 'undefined') {
+    // Browser/iOS back while a sheet is open: close it, so its backdrop can't swallow taps.
+    popBound = true;
+    window.addEventListener('popstate', () => { try { ctx.closeSheet(); } catch (e) { /* ignore */ } });
+  }
   const pl = root.querySelector('.pl'); if (!pl) return;
   pl.onclick = e => {
+    const qc = e.target.closest('[data-qc]');
+    if (qc) { addCardio(ctx, qc.dataset.date, Number(qc.dataset.qc)); return; }
     const sid = e.target.closest('[data-sid]');
     if (sid) {
       const s = ctx.store.getSession(sid.dataset.sid);
@@ -537,6 +635,14 @@ export function bind(root, ctx) {
       }
       case 'plan-4': runPlan(ctx, t, ds(addDays(weekStart(new Date()), 27)), 'the next 4 weeks'); break;
       case 'avail': openAvailability(ctx); break;
+      case 'ct-inc': case 'ct-dec': {
+        const p = ctx.store.getProfile();
+        const cur = Number(p.cardioTargetMin ?? 120) || 0;
+        const next = Math.max(0, Math.min(600, Math.round((cur + (a.dataset.a === 'ct-inc' ? CARDIO_STEP : -CARDIO_STEP)) / 5) * 5));
+        ctx.store.updateProfile({ cardioTargetMin: next });
+        toast(ctx, `Weekly cardio target ${next} min. Re-plan to rebalance auto days; your edits stay.`);
+        break;
+      }
       case 'projection': ctx.nav('projection'); break;
       case 'history': ctx.nav('history'); break;
     }

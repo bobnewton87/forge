@@ -123,3 +123,103 @@
 .bd-card .btn-row { margin-top: 10px; gap: 8px; }
 .bd-card .btn-row .btn { min-height: 40px; font-size: 14px; padding: 0 10px; }
 .bd-viewseg > button { white-space: nowrap; }
+
+/* ===== Phase 3 (UI-LAB) ===== */
+/* 3D stage */
+.bd-stage { margin-top: 10px; min-height: 200px; position: relative; }
+.bd-stage.bd-stage3d { min-height: 0; }
+.bd-scrub { margin-top: 12px; }
+.bd-scrubhead { margin-top: 10px; }
+.bd-keys.delta em { font-style: normal; font-size: 11px; font-weight: 750; margin-top: 1px; }
+.bd-endcard .bd-deltas { margin-top: 10px; padding-top: 0; border-top: 0; }
+
+/* big sliders */
+input[type=range].bd-range { height: 44px; }
+input[type=range].bd-range::-webkit-slider-runnable-track { height: 8px; border-radius: 4px; }
+input[type=range].bd-range::-webkit-slider-thumb { width: 32px; height: 32px; margin-top: -12px; border: 3px solid var(--accent); }
+input[type=range].bd-range::-moz-range-thumb { width: 28px; height: 28px; border: 3px solid var(--accent); }
+
+/* what-if controls */
+.bd-grp { padding: 14px 0 12px; border-bottom: 1px solid var(--line); }
+.bd-grp:last-of-type { border-bottom: 0; }
+.bd-kcal { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+.bd-kcal b { font-size: 34px; font-weight: 850; letter-spacing: -.03em; line-height: 1; }
+.bd-kcal > span { color: var(--muted); font-size: 14px; font-weight: 650; }
+.bd-kcal em { font-style: normal; margin-left: auto; font-size: 14px; font-weight: 800; color: var(--accent2); }
+.bd-presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.bd-presets .chip { flex-direction: column; justify-content: center; line-height: 1.15; min-height: 46px; padding: 4px 6px; }
+.bd-presets .chip b { font-size: 13px; font-weight: 750; }
+.bd-presets .chip span { font-size: 11px; color: var(--muted); font-weight: 650; font-variant-numeric: tabular-nums; }
+.bd-presets .chip.active span { color: inherit; opacity: .85; }
+.bd-mbar { display: flex; gap: 2px; height: 12px; border-radius: 6px; overflow: hidden; }
+.bd-mbar i { display: block; height: 100%; min-width: 2px; }
+.bd-mleg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
+.bd-mleg > div { display: flex; flex-direction: column; min-width: 0; }
+.bd-mleg b { font-size: 18px; font-weight: 800; }
+.bd-mleg b small { font-size: 11px; color: var(--muted); font-weight: 650; margin-left: 1px; }
+.bd-mleg span:last-child { font-size: 11px; color: var(--muted); font-weight: 650; }
+.bd-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-bottom: 3px; }
+.bd-warn { list-style: none; margin-top: 8px; }
+.bd-warn li { font-size: 12.5px; line-height: 1.4; color: var(--warn); padding: 3px 0 3px 18px; position: relative; }
+.bd-warn li::before { content: "⚠"; position: absolute; left: 0; top: 2px; font-size: 12px; }
+.bd-step { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.bd-stepb { width: 56px; min-height: 52px; font-size: 26px; font-weight: 700; padding: 0; flex: none; }
+.bd-stepv { flex: 1; text-align: center; display: flex; flex-direction: column; }
+.bd-stepv b { font-size: 28px; font-weight: 850; letter-spacing: -.02em; line-height: 1.05; color: var(--cardio); }
+.bd-stepv span { font-size: 12px; color: var(--muted); font-weight: 650; }
+.bd-cquick { margin-top: 10px; gap: 6px; }
+.bd-ctrl select { width: 100%; min-height: 44px; background: var(--card2); border: 1px solid var(--line); border-radius: 12px; padding: 0 10px; font-size: 14px; }
+.bd-stackline { margin-top: 8px; color: #cfcfd8; line-height: 1.45; }
+.bd-stackline b { color: var(--text); }
+.bd-stackseg > button { min-height: 36px; font-size: 13px; }
+
+/* nutrition lab */
+.bd-labcard { border-color: rgba(61, 220, 151, .25); }
+.bd-labyou { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 12px; }
+.bd-labyou > div { background: var(--card2); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; min-width: 0; }
+.bd-labyou b { font-size: 20px; font-weight: 850; }
+.bd-labyou span { font-size: 11px; color: var(--muted); font-weight: 650; }
+.bd-lab { cursor: pointer; touch-action: pan-y; }
+.bd-take { margin-top: 10px; padding: 10px 12px; border-radius: 12px; background: var(--card2); font-size: 14px; line-height: 1.45; }
+.bd-explain { margin-top: 10px; }
+.bd-explain li { color: #cfcfd8; line-height: 1.5; }
+.bd-lablinks { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.bd-water { margin-top: 6px; color: var(--cardio); }
+
+/* measure: 3D snapshot, asymmetry, food log */
+.bd-snap3d { margin: -4px -4px 10px; min-height: 120px; }
+.bd-snap3d:not(.bd-3d-on) { max-width: 150px; margin: 0 auto 6px; }
+.bd-asym { margin-top: 12px; }
+.bd-asym li { font-size: 13px; line-height: 1.4; padding: 5px 0; border-bottom: 1px solid var(--line); list-style: none; }
+.bd-asym li:last-child { border-bottom: 0; }
+.bd-pairhead { grid-column: 1 / -1; font-size: 12px; color: var(--muted); font-weight: 750; text-transform: uppercase; letter-spacing: .05em; margin: 4px 0 6px; }
+.bd-food .grid2 { gap: 8px 10px; }
+.bd-tdee { margin-top: 12px; padding: 10px 12px; border-radius: 12px; background: var(--card2); font-size: 14px; line-height: 1.45; }
+.bd-tdee .bar { margin-top: 8px; height: 8px; }
+.bd-tdee b { color: var(--text); }
+
+/* nutrition screen */
+.bd-nseg > button { min-height: 38px; font-size: 14px; }
+.bd-ninput { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.bd-ninput input { font-size: 22px; font-weight: 800; text-align: center; }
+.bd-why table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 8px; }
+.bd-why th, .bd-why td { padding: 8px 4px; border-bottom: 1px solid var(--line); text-align: right; }
+.bd-why th:first-child, .bd-why td:first-child { text-align: left; }
+.bd-why thead th { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 750; }
+.bd-why tr:last-child td { border-bottom: 0; }
+
+/* Body tab card 3D */
+.bd-card-3d { width: 96px; flex: none; margin: -6px -2px -10px -6px; pointer-events: none; }
+.bd-card-3d.bd-3d-on { height: 170px; align-self: center; margin: -4px 0; }
+.bd-card .btn-row { flex-wrap: wrap; }
+.bd-snap.has3d .bd-snaprow { flex-direction: column; align-items: stretch !important; }
+.bd-snap.has3d .bd-snap-sil { width: auto; margin: -4px -4px 4px; }
+.bd-card .btn-row .btn-ghost { flex-basis: 100%; }
+.bd-card-3d .b3d-hint, .bd-card-3d .b3d-label { display: none !important; }
+.bd-more { margin-top: 6px; }
+.bd-more summary { color: var(--accent2); font-weight: 700; cursor: pointer; padding: 6px 0; list-style: none; }
+.bd-more summary::-webkit-details-marker { display: none; }
+.bd-more summary::before { content: "＋ "; }
+.bd-more[open] summary::before { content: "－ "; }
+.bd-card .btn-row .btn { white-space: nowrap; }
+.bd-card .btn-row .btn-ghost { font-size: 13px; }

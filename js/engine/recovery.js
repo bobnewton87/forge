@@ -11,6 +11,15 @@
 //   sets use the per-region credit from exercise.muscles, as described in §6.
 // CONTRACT-NOTE: lastTrained/daysSince only count a "meaningful" stimulus (>=1 effective
 //   set on the day). Smaller spill-over volume still adds a little fatigue to readiness.
+// CONTRACT-NOTE (PLAN-FIX): muscleStatus / groupStatus / recommend accept an optional
+//   `upcoming` array: planned sessions AFTER `now`, already simulated as done (planner.simulateDone).
+//   When it is an array (even empty) status switches to "plan mode": sets7d becomes this CALENDAR
+//   week's done + planned volume (before and after `now`, matching the Plan tab's coverage card),
+//   `planned` holds the part that comes from upcoming sessions, and groups get `aheadReadiness`
+//   (how recovered the next planned hit of that group would be if trained now) + `aheadDate`.
+//   recommend() then marks an option `recovering` (with `clash:[groups]`) when it would wreck a
+//   planned session's recovery, and its reasons say "… sets this week incl. planned".
+//   Without `upcoming` everything behaves exactly as before (rolling 7 days).
 import { REGIONS, GROUPS, GROUP_ORDER, PRESETS } from '../data/muscles.js';
 import { SCULPT_GOALS } from '../data/sculpt.js';
 import { getEx } from '../data/exercises.js';
@@ -169,10 +178,33 @@ export function volumeByGroup(sessions, { from, to } = {}) {
   return out;
 }
 
-function statusCore(entries, now, profile) {
-  const today = ds(now), from = ds(addDays(now, -6)), nowMs = now.getTime();
+// Upcoming planned sessions (after `now`) → the same entry shape as prep().
+function prepUpcoming(upcoming, now) {
+  if (!Array.isArray(upcoming)) return null;
+  const today = ds(now), nowMs = now.getTime();
+  const out = [];
+  for (const s of upcoming) {
+    if (!s || !s.date || s.date < today) continue;
+    const v = sessionVolume(s);
+    if (!hasWork(v)) continue;
+    const t = sessionTime(s);
+    if (s.date === today && t <= nowMs) continue;
+    out.push({ s, date: s.date, t, v });
+  }
+  out.sort((a, b) => a.date.localeCompare(b.date) || a.t - b.t);
+  return out;
+}
+
+const AHEAD_DOSE = 6;   // sets assumed for "if you train it now" when checking a planned day ahead
+
+function statusCore(entries, now, profile, ahead = null) {
+  const today = ds(now), nowMs = now.getTime();
+  const planMode = Array.isArray(ahead);
+  const from = planMode ? ds(weekStart(now)) : ds(addDays(now, -6));
+  const weekEnd = ds(addDays(weekStart(now), 6));
   const recent = entries.filter(e => e.date >= ds(addDays(now, -8)));
   const week = entries.filter(e => e.date >= from);
+  const aheadWeek = planMode ? ahead.filter(e => e.date <= weekEnd) : [];
   const extras = sculptExtras(profile);
 
   // last meaningful day per region / group
@@ -187,7 +219,19 @@ function statusCore(entries, now, profile) {
     for (const [d, w] of Object.entries(m)) if (w >= MEANINGFUL && (!best || d > best)) best = d;
     return best;
   };
-  const weekSum = (kind, k) => week.reduce((s, e) => s + (e.v[kind][k] || 0), 0);
+  const weekSum = (kind, k) => week.reduce((s, e) => s + (e.v[kind][k] || 0), 0) + aheadWeek.reduce((s, e) => s + (e.v[kind][k] || 0), 0);
+  const plannedSum = (kind, k) => aheadWeek.reduce((s, e) => s + (e.v[kind][k] || 0), 0);
+  // Next planned meaningful hit of a group after now → how recovered it would be if trained now.
+  const aheadOf = (gid, rh) => {
+    if (!planMode) return {};
+    for (const e of ahead) {
+      if ((e.v.groups[gid] || 0) < 2) continue;
+      const hours = (e.t - nowMs) / 3600e3;
+      if (hours > rh * 1.4) return { aheadDate: e.date, aheadReadiness: 1 };
+      return { aheadDate: e.date, aheadReadiness: r2(1 - fatigueFrom(AHEAD_DOSE, Math.max(0, hours), rh)) };
+    }
+    return { aheadDate: null, aheadReadiness: 1 };
+  };
 
   const regions = {};
   for (const r of Object.values(REGIONS)) {
@@ -202,6 +246,7 @@ function statusCore(entries, now, profile) {
       readiness: readinessFor(r.id, 'regions', recent, nowMs, r.recoveryHours || 48),
       need: needScore(sets7d, target, daysSince, prio),
       priority: r2(prio),
+      ...(planMode ? { planned: r2(plannedSum('regions', r.id)) } : {}),
     };
   }
 
@@ -226,19 +271,20 @@ function statusCore(entries, now, profile) {
       need: r2(clamp(0.6 * own + 0.4 * maxReg, 0, 1)),
       priority: r2(prio),
       regions: rs,
+      ...(planMode ? { planned: r2(plannedSum('groups', gid)), ...aheadOf(gid, g.recoveryHours || 48) } : {}),
     };
   }
   return { regions, groups };
 }
 
-export function muscleStatus(sessions, { now = new Date(), profile } = {}) {
+export function muscleStatus(sessions, { now = new Date(), profile, upcoming = null } = {}) {
   now = toDate(now);
-  return statusCore(prep(sessions, now), now, profile).regions;
+  return statusCore(prep(sessions, now), now, profile, prepUpcoming(upcoming, now)).regions;
 }
 
 export function groupStatus(sessions, opts = {}) {
   const now = toDate(opts.now);
-  return statusCore(prep(sessions, now), now, opts.profile).groups;
+  return statusCore(prep(sessions, now), now, opts.profile, prepUpcoming(opts.upcoming, now)).groups;
 }
 
 // ---------------------------------------------------------------- cardio
@@ -313,28 +359,39 @@ function daysText(d, sets = 0) { return d == null ? (sets > 0 ? 'no direct work 
 
 function groupReason(gid, st) {
   const name = groupName(gid);
+  const wk = st.planned != null ? 'sets this week incl. planned' : 'sets this week';
   const behind = st.target.min - st.sets7d;
   // Name a specific region when it lags clearly behind the rest of its group.
   let focus = null;
   for (const r of Object.values(st.regions)) {
     if (r.target.min >= 2 && r.need >= st.need + 0.15 && (!focus || r.need > focus.need)) focus = r;
   }
-  if (focus) return `${regionName(focus.region)}: ${daysText(focus.daysSince, focus.sets7d)}, ${fmtSets(focus.sets7d)}/${Math.round(focus.target.min)} sets this week`;
+  if (focus) return `${regionName(focus.region)}: ${daysText(focus.daysSince, focus.sets7d)}, ${fmtSets(focus.sets7d)}/${Math.round(focus.target.min)} ${wk}`;
+  if (st.planned != null) return `${name}: ${fmtSets(st.sets7d)}/${Math.round(st.target.min)} ${wk}${behind >= 2 && st.priority >= 1.1 ? ' (priority)' : ''}`;
   if (st.priority >= 1.1 && behind >= 2) return `${name} ${isPlural(name) ? 'are' : 'is'} a priority and ${fmtSets(behind)} sets behind`;
-  return `${name}: ${daysText(st.daysSince, st.sets7d)}, ${fmtSets(st.sets7d)}/${Math.round(st.target.min)} sets this week`;
+  return `${name}: ${daysText(st.daysSince, st.sets7d)}, ${fmtSets(st.sets7d)}/${Math.round(st.target.min)} ${wk}`;
 }
 
-export function recommend(sessions, { now = new Date(), profile, minutes, location } = {}) {
+export function recommend(sessions, { now = new Date(), profile, minutes, location, upcoming = null } = {}) {
   now = toDate(now);
   minutes = Number(minutes) || profile?.defaultMinutes || 45;
   const entries = prep(sessions, now);
-  const { groups: gs } = statusCore(entries, now, profile);
+  const ahead = prepUpcoming(upcoming, now);
+  const { groups: gs } = statusCore(entries, now, profile, ahead);
   const cardio = cardioStatus(sessions, { now, profile });
+  if (ahead) {
+    // plan mode: this calendar week's cardio, done + planned (before and after now)
+    const ws = ds(weekStart(now)), we = ds(addDays(weekStart(now), 6));
+    const m = Math.round(entries.filter(e => e.date >= ws).reduce((a, e) => a + e.v.cardioMin, 0) + ahead.filter(e => e.date <= we).reduce((a, e) => a + e.v.cardioMin, 0));
+    cardio.minutes7d = m; cardio.behind = cardio.target > 0 && m < cardio.target; cardio.planMode = true;
+  }
 
   const value = g => {
     const st = gs[g]; if (!st) return 0;
     const rf = st.readiness >= 0.5 ? 0.6 + 0.4 * st.readiness : st.readiness * 0.5;
-    return st.need * rf;
+    const ar = st.aheadReadiness ?? 1;      // plan mode: protect the next planned hit
+    const af = ar >= 0.5 ? 0.7 + 0.3 * ar : ar * 0.5;
+    return st.need * rf * af;
   };
   const size = g => (SMALL.has(g) ? 0.6 : 1);
   const ideal = clamp(minutes / 20, 0.8, 4.5);
@@ -348,10 +405,11 @@ export function recommend(sessions, { now = new Date(), profile, minutes, locati
     const mean = wsum / load;
     const fit = Math.exp(-0.5 * ((load - ideal) / (0.45 * ideal + 0.4)) ** 2);
     const breadth = Math.min(1, c.groups.reduce((s, g) => s + value(g), 0) / ideal);
-    const recovering = c.groups.some(g => (gs[g]?.readiness ?? 1) < 0.5);
+    const clash = c.groups.filter(g => (gs[g]?.aheadReadiness ?? 1) < 0.5);
+    const recovering = c.groups.some(g => (gs[g]?.readiness ?? 1) < 0.5) || clash.length > 0;
     let score = (0.75 * mean * fit + 0.25 * breadth * fit) * 100;
     if (recovering) score *= 0.3;
-    scored.push({ c, score, recovering });
+    scored.push({ c, score, recovering, clash });
   }
   scored.sort((a, b) => (a.recovering - b.recovering) || b.score - a.score);
 
@@ -360,22 +418,27 @@ export function recommend(sessions, { now = new Date(), profile, minutes, locati
   if (pick.length < 3) pick = pick.concat(scored.filter(x => x.recovering).slice(0, 3 - pick.length));
 
   const cardioReason = cardio.behind
-    ? `Cardio: ${cardio.minutes7d}/${cardio.target} min this week. Add a ${clamp(Math.round((cardio.target - cardio.minutes7d) / 5) * 5, 10, 30)}-min Zone 2 finisher or do a cardio day.`
+    ? `Cardio: ${cardio.minutes7d}/${cardio.target} min this week${cardio.planMode ? ' incl. planned' : ''}. Add a ${clamp(Math.round((cardio.target - cardio.minutes7d) / 5) * 5, 10, 30)}-min Zone 2 finisher or do a cardio day.`
     : null;
 
-  return pick.map(({ c, score, recovering }) => {
+  const dayName = d => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][parseDs(d).getDay()];
+  return pick.map(({ c, score, recovering, clash }) => {
     const ordered = [...c.groups].sort((a, b) => (ADDON_ONLY.has(a) - ADDON_ONLY.has(b)) || value(b) - value(a));
     const reasons = ordered.slice(0, 3).map(g => groupReason(g, gs[g]));
     for (const g of c.groups) {
       const rd = gs[g]?.readiness ?? 1;
       if (rd < 0.8) reasons.push(`${groupName(g)} only ${Math.round(rd * 100)}% recovered${rd < 0.5 ? ' (better tomorrow)' : ''}`);
     }
+    for (const g of clash) {
+      const st = gs[g];
+      reasons.unshift(`${groupName(g)} planned ${dayName(st.aheadDate)}: training ${isPlural(groupName(g)) ? 'them' : 'it'} now leaves only ~${Math.round(st.aheadReadiness * 100)}% recovery for that day`);
+    }
     if (cardioReason) reasons.push(cardioReason);
     const targetId = c.single || c.preset ? c.id : c.groups.join('+');
     const targets = c.single || c.preset ? [c.id] : [...c.groups];
     return {
       targetId, label: c.label, score: Math.round(score * 10) / 10, reasons,
-      groups: [...c.groups], targets, recovering, cardio: cardio.behind ? cardio.suggestion : null,
+      groups: [...c.groups], targets, recovering, ...(clash.length ? { clash } : {}), cardio: cardio.behind ? cardio.suggestion : null,
       location: location?.id || location || null,
     };
   });

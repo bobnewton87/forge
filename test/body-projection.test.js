@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { baseline } from '../js/engine/bodycomp.js';
-import { project, leanRatePctPerMonth, energyFactor, volumeFactor } from '../js/engine/projection.js';
+import { project, leanRatePctPerMonth, energyFactor, volumeFactor, setResponse, proteinFactor, interferenceFactor, MUSCLE_SHARE } from '../js/engine/projection.js';
 import { bobProfile, bobBodyLog, bobMeas, bobPlan, NOW, TODAY, findBad } from './body-fixtures.js';
 
 const bobBase = (profile = bobProfile(), meas = bobMeas()) => baseline({ profile, bodyLog: bobBodyLog(), measurements: meas, now: NOW });
@@ -14,9 +14,25 @@ const end = r => r.series[r.series.length - 1];
 test('model curves are monotone and sensible', () => {
   assert.ok(leanRatePctPerMonth(0) > leanRatePctPerMonth(12) && leanRatePctPerMonth(12) > leanRatePctPerMonth(36));
   assert.ok(energyFactor(-1000) < energyFactor(-300) && energyFactor(-300) < energyFactor(0) && energyFactor(0) < energyFactor(300));
-  assert.ok(Math.abs(energyFactor(-300) / energyFactor(250) - 0.5) < 0.01);  // a deficit roughly halves it
+  const ratio = energyFactor(-300) / energyFactor(250);
+  assert.ok(ratio > 0.4 && ratio < 0.55, String(ratio));                     // a deficit roughly halves it
+  assert.ok(energyFactor(-1000) < 0.2);                                       // a big deficit → near zero
+  assert.ok(energyFactor(1000) - energyFactor(500) < 0.05);                   // saturates in a surplus
   assert.equal(volumeFactor(0), 0);
   assert.ok(volumeFactor(50) < volumeFactor(105) && volumeFactor(105) <= 1.0001 && volumeFactor(400) <= 1.1);
+  // per-group set response: 0 → 0, 10 → 1, diminishing, plateau, no decline
+  assert.equal(setResponse(0), 0);
+  assert.ok(Math.abs(setResponse(10) - 1) < 1e-9);
+  assert.ok(setResponse(20) - setResponse(10) < setResponse(10) - setResponse(0));
+  assert.ok(setResponse(3) > 0.5 && setResponse(3) < 0.7, String(setResponse(3)));     // first sets do the most (Schoenfeld 2017)
+  assert.ok(setResponse(20) > 1.1 && setResponse(30) > setResponse(20) && setResponse(60) < 1.4);
+  for (let x = 0; x < 80; x += 1) assert.ok(setResponse(x + 1) >= setResponse(x));
+  assert.ok(Math.abs(Object.values(MUSCLE_SHARE).reduce((a, b) => a + b, 0) - 1) < 1e-9);
+  // protein: plateau at 1 g/lb, clearly reduced at 0.5
+  assert.equal(proteinFactor(1.0), 1); assert.equal(proteinFactor(1.4), 1);
+  assert.ok(proteinFactor(0.5) < 0.75 && proteinFactor(0.4) <= 0.5 + 1e-9 && proteinFactor(0.8) > 0.95);
+  // cardio interference: free up to 150 effective min, capped
+  assert.equal(interferenceFactor(100), 1); assert.ok(interferenceFactor(400) < 0.95 && interferenceFactor(5000) >= 0.8 - 1e-9);
 });
 
 test('Bob recomp (~300 kcal deficit, 4 lift + 120 cardio min) lands in the plausible range', () => {

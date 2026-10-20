@@ -1,0 +1,456 @@
+// Supplements, therapies & metabolic values (route 'supplements', SUPP, CONTRACT §17 + amendment).
+// CONTRACT-NOTE: reads/writes profile.supplements and profile.metabolic via store.updateProfile only.
+//   Stack entry dose is stored as { value, unit } (unit = the catalogue model's unit) or null (= studied/common dose).
+// CONTRACT-NOTE: the 12-week with/without comparison calls project() twice: once normally and once with
+//   useStack:false (and supplements:[] as a belt-and-braces fallback for engines without that option). If the
+//   two runs are identical while the stack clearly changes the modifiers, it says the engine isn't using the stack yet.
+import { esc } from './components.js';
+import { SUPPLEMENTS, NOT_MODELED, CATEGORIES, EVIDENCE, isUnapproved, isModeled } from '../data/supplements.js';
+import { modifiersAt, testosteroneEffect, averageTotalT, resolveDose, stackAt, T_MODEL } from '../engine/metabolic.js';
+import * as BC from '../engine/bodycomp.js';
+import * as PJ from '../engine/projection.js';
+import { ds, fmtShort, daysBetween } from '../util.js';
+
+export function title() { return 'Supplements & Metabolism'; }
+// Updates its own regions in place (impact card, lab badges) so editing labs never tears down the form.
+export const autoRerender = false;
+
+const ui = { cat: 'supplement', showStopped: false };
+const safe = (fn, fb) => { try { const v = fn(); return v == null ? fb : v; } catch (e) { console.error(e); return fb; } };
+const f1 = n => { n = Number(n); if (!isFinite(n)) return '—'; const r = Math.round(n * 10) / 10; return Math.abs(r - Math.round(r)) < 0.05 ? String(Math.round(r)) : r.toFixed(1); };
+const sgn = (n, dp = 1) => { n = Number(n) || 0; const a = Math.abs(n); const s = dp === 0 ? String(Math.round(a)) : (Math.round(a * 10 ** dp) / 10 ** dp).toString(); return (n > 0.0049 ? '+' : n < -0.0049 ? '−' : '±') + s; };
+const mult = n => '×' + (Math.round(Number(n) * 100) / 100).toFixed(2);
+const EV_CLS = { strong: 'good', moderate: 'cardio', weak: 'warn', none: 'bad' };
+const CAT_ICON = Object.fromEntries(CATEGORIES.map(c => [c.id, c.icon]));
+const evBadge = s => `<span class="badge ${EV_CLS[s.evidence] || ''}" title="${esc(EVIDENCE[s.evidence]?.text || '')}">${esc(EVIDENCE[s.evidence]?.short || s.evidence)}</span>`;
+function statusKind(s) {
+  if (isUnapproved(s)) return { label: 'Unapproved', cls: 'bad' };
+  if (/^prescription/i.test(s.status)) return { label: 'Rx', cls: 'accent' };
+  if (s.category === 'lifestyle') return { label: 'Lifestyle', cls: '' };
+  return { label: 'OTC', cls: '' };
+}
+const stBadge = s => { const k = statusKind(s); return `<span class="badge ${k.cls}">${esc(k.label)}</span>`; };
+const doseLabel = (entry, s) => {
+  if (!isModeled(s) || !s.model.dose) return '';
+  const d = resolveDose(entry?.dose, s.model);
+  return d ? `${+d.value.toFixed(2)} ${d.unit}${d.assumed ? ` (${s.model.dose.label.split(' (')[0]})` : ''}` : '';
+};
+
+function computeMods(I) {
+  const p = I.profile;
+  const bw = I.b?.weightLb || p.bodyweight || null;
+  const mods = safe(() => modifiersAt(p, I.today, { bodyweightLb: bw, age: I.b?.age }), null);
+  const off = safe(() => modifiersAt(p, I.today, { bodyweightLb: bw, age: I.b?.age, useStack: false }), null);
+  const activeIds = new Set(safe(() => stackAt(p, I.today), []).filter(a => a.phase === 'on').map(a => a.entry.id));
+  return { mods, off, activeIds };
+}
+function inputs(store) {
+  const profile = store.getProfile();
+  const bodyLog = safe(() => store.getBodyLog(), []);
+  const measurements = safe(() => store.getMeasurements(), []);
+  const sessions = safe(() => store.getSessions(), []);
+  const foodLog = safe(() => store.getFoodLog(), []);
+  const now = new Date();
+  const b = safe(() => BC.baseline({ profile, bodyLog, measurements, now, foodLog }), null);
+  return { profile, bodyLog, measurements, sessions, foodLog, now, b, today: ds(now) };
+}
+
+// ------------------------------------------------------------------ render
+export function render(ctx) {
+  const I = inputs(ctx.store);
+  const p = I.profile;
+  const list = Array.isArray(p.supplements) ? p.supplements : [];
+  const { mods, off, activeIds } = computeMods(I);
+  const hasAdderall = list.some(e => e && e.id === 'adderall' && e.active !== false && !e.end);
+
+  return `<div class="page-head"><h1>Stack & metabolism</h1><p class="sub">Supplements, therapies and lab values, modeled from the published studies.</p></div>
+  <div class="card sp-note"><div class="sp-note-ic">ⓘ</div><div class="small">
+    Forge projects <b>study averages</b>; your response can differ. Prescription items (testosterone, GLP-1s, GH, stimulants) need a prescriber and lab monitoring. Peptides and SARMs sold as research chemicals are unregulated, so what's in the vial isn't verified. Doses shown are what the trials used, for context.
+  </div></div>
+  ${hasAdderall ? '' : `<div class="card tight sp-hint row"><div class="grow small">You take Adderall. Add it so its appetite effect shows up in projections.</div><button class="btn btn-sm" data-quickadd="adderall">Add</button></div>`}
+
+  <div class="section-title">Your stack <button class="link" data-jump="sp-add">+ Add</button></div>
+  ${stackList(list, mods, I.today)}
+
+  <div class="section-title">What this does to your projection</div>
+  <div id="sp-impact-wrap">${impactCard(I, mods, off, activeIds)}</div>
+
+  <div class="section-title">Metabolic values</div>
+  ${metabolicForm(p, I)}
+
+  <div class="section-title" id="sp-add">Add to stack</div>
+  <div class="hscroll sp-cats">${CATEGORIES.map(c => `<button type="button" class="chip sm ${ui.cat === c.id ? 'active' : ''}" data-cat="${c.id}">${esc(c.icon)} ${esc(c.short || c.label)}</button>`).join('')}</div>
+  <div class="list mt">${Object.values(SUPPLEMENTS).filter(s => s.category === ui.cat).map(s => browseRow(s, activeIds.has(s.id))).join('')}</div>
+  <div class="sp-legend">${['strong', 'moderate', 'weak', 'none'].map(k => `<div><span class="badge ${EV_CLS[k]}">${esc(EVIDENCE[k].short)}</span><span class="tiny muted">${esc({ strong: 'meta-analyses agree', moderate: 'trials support it', weak: 'small or inconsistent', none: 'no human data' }[k])}</span></div>`).join('')}</div>
+
+  <div class="section-title">Not modeled</div>
+  <div class="card sp-nm">
+    <p class="small">Forge won't project these. They carry serious health risks and there's no responsible dose–response data to model. If you're considering any of them, talk to a physician.</p>
+    <ul class="sp-nm-list">${NOT_MODELED.map(n => `<li><b>${esc(n.name)}</b><span class="muted small">${esc(n.why)}</span></li>`).join('')}</ul>
+  </div>
+  <p class="tiny muted center mt2">Not medical advice. Effects are averages from the cited trials; individual responses vary widely.</p>`;
+}
+
+function stackList(list, mods, today) {
+  const rows = list.map((e, i) => ({ e, i, s: SUPPLEMENTS[e?.id] })).filter(x => x.s);
+  const current = rows.filter(x => x.e.active !== false && !(x.e.end && x.e.end <= today));
+  const stopped = rows.filter(x => !current.includes(x));
+  const contrib = new Map((mods?.contributions || []).filter(c => c.kind === 'stack').map(c => [c.id, c]));
+  if (!current.length && !stopped.length) {
+    return `<div class="card sp-empty"><div class="big">🧪</div><p class="small muted">Nothing in your stack. Add creatine, a prescription you take, or anything you're curious about to see its modeled effect.</p></div>`;
+  }
+  const row = ({ e, i, s }) => {
+    const c = contrib.get(s.id);
+    const future = e.start && e.start > today;
+    const wk = e.start && !future ? Math.floor(daysBetween(e.start, today) / 7) + 1 : null;
+    const ramp = c?.rampPct;
+    const meta = [future ? `Starts ${fmtShort(e.start)}` : e.start ? `Since ${fmtShort(e.start)} · week ${wk}` : 'Start date not set', doseLabel(e, s)].filter(Boolean).join(' · ');
+    return `<div class="list-item sp-row" data-edit="${i}" role="button" tabindex="0">
+      <span class="ic">${esc(CAT_ICON[s.category] || '•')}</span>
+      <div class="grow"><div class="t">${esc(s.name)}</div><div class="s">${esc(meta)}</div>
+        <div class="sp-badges">${evBadge(s)}${stBadge(s)}${isModeled(s) ? '' : '<span class="badge">No modeled effect</span>'}</div>
+        ${isModeled(s) && ramp != null && !future ? `<div class="sp-ramp"><div class="bar thin"><i style="width:${Math.max(2, ramp)}%"></i></div><span class="tiny muted">${ramp >= 100 ? 'Full effect' : ramp === 0 ? 'Just started' : `${ramp}% of full effect`}</span></div>` : ''}
+      </div>
+      <button class="btn btn-sm btn-ghost" data-stop="${i}" aria-label="Stop ${esc(s.name)}">Stop</button>
+    </div>`;
+  };
+  return `${current.length ? `<div class="list">${current.map(row).join('')}</div>` : '<p class="small muted sp-pad">No active items.</p>'}
+    ${stopped.length ? `<details class="sp-stopped" ${ui.showStopped ? 'open' : ''}><summary class="small muted">Stopped (${stopped.length})</summary>
+      <div class="list mt">${stopped.map(({ e, i, s }) => `<div class="list-item"><div class="grow"><div class="t">${esc(s.name)}</div><div class="s">${e.start ? fmtShort(e.start) : '?'} – ${e.end ? fmtShort(e.end) : 'stopped'}</div></div>
+        <button class="btn btn-sm" data-restart="${i}">Restart</button><button class="btn btn-sm btn-ghost" data-remove="${i}" aria-label="Remove">✕</button></div>`).join('')}</div></details>` : ''}`;
+}
+
+function browseRow(s, inStack) {
+  return `<button class="list-item sp-brow" data-detail="${s.id}">
+    <div class="grow"><div class="t">${esc(s.name)}</div>
+      <div class="sp-badges">${evBadge(s)}${stBadge(s)}${inStack ? '<span class="badge good">In stack</span>' : ''}</div>
+      <div class="s sp-sum">${esc(s.summary)}</div></div>
+    <span class="chev">›</span></button>`;
+}
+
+// ------------------------------------------------------------------ impact
+function projectionPair(I) {
+  if (!I.b || !I.b.weightLb || typeof PJ.project !== 'function') return { reason: 'weight' };
+  const base = { baseline: I.b, profile: I.profile, sessions: I.sessions, weeks: 12, now: I.now, bodyLog: I.bodyLog, foodLog: I.foodLog };
+  const withS = safe(() => PJ.project(base), null);
+  const without = safe(() => PJ.project({ ...base, profile: { ...I.profile, supplements: [] }, useStack: false }), null);
+  if (!withS?.summary || !without?.summary) return { reason: 'error' };
+  const pick = r => ({ lean: Number(r.summary.leanLb) || 0, fat: Number(r.summary.fatLb) || 0, weight: Number(r.summary.weightLb) || 0, water: Number(r.summary.waterLb) || 0 });
+  return { withS: pick(withS), without: pick(without), stack: withS.stack || null };
+}
+function compareBars(a, b) {
+  const rows = [['Lean mass', a.lean, b.lean], ['Fat mass', a.fat, b.fat], ['Scale weight', a.weight, b.weight]];
+  const max = Math.max(0.5, ...rows.flatMap(r => [Math.abs(r[1]), Math.abs(r[2])]));
+  const bar = (v, cls) => {
+    const w = Math.abs(v) / max * 50;
+    return `<div class="sp-cb-track"><span class="sp-cb-zero"></span><i class="${cls}" style="${v >= 0 ? `left:50%;width:${w}%;border-radius:0 4px 4px 0` : `left:${50 - w}%;width:${w}%;border-radius:4px 0 0 4px`}"></i></div>`;
+  };
+  return `<div class="sp-cmp">${rows.map(([l, w, wo]) => `<div class="sp-cb">
+      <div class="row between"><span class="small bold">${l}</span><span class="small num"><b>${sgn(w)} lb</b> <span class="muted">vs ${sgn(wo)} without</span></span></div>
+      <div class="sp-cb-line"><span class="tiny muted sp-cb-k"><i class="sp-key on"></i>Stack</span>${bar(w, 'on')}</div>
+      <div class="sp-cb-line"><span class="tiny muted sp-cb-k"><i class="sp-key off"></i>Without</span>${bar(wo, 'off')}</div>
+    </div>`).join('')}</div>`;
+}
+
+function impactCard(I, mods, off, activeIds) {
+  if (!mods) return '<div class="card"><p class="small muted">Couldn\'t compute modifiers.</p></div>';
+  const stackItems = mods.contributions.filter(c => c.kind === 'stack');
+  const metaItems = mods.contributions.filter(c => c.kind === 'metabolic');
+  const tiles = [];
+  tiles.push(['Muscle-gain ceiling', mult(mods.leanCeilingMult), `${mult(off?.leanCeilingMult ?? 1)} without stack · vs average lifter`]);
+  tiles.push(['Lean loss in a deficit', mult(mods.leanRetentionMult), mods.leanRetentionMult > 1.005 ? 'more muscle lost when cutting' : mods.leanRetentionMult < 0.995 ? 'better muscle protection' : 'baseline protection']);
+  if (Math.abs(mods.leanDirectLbPerWeek) >= 0.005) tiles.push(['Lean without training', `${sgn(mods.leanDirectLbPerWeek, 2)} lb/wk`, 'right now; tapers over time']);
+  if (Math.abs(mods.fatDirectLbPerWeek) >= 0.005) tiles.push(['Direct fat change', `${sgn(mods.fatDirectLbPerWeek, 2)} lb/wk`, 'independent of calories']);
+  if (mods.waterLb >= 0.05) tiles.push(['Water weight', `+${f1(mods.waterLb)} lb`, 'on the scale, not muscle or fat']);
+  if (mods.intakeDelta) tiles.push(['Appetite', `${sgn(mods.intakeDelta, 0)} kcal/day`, 'applied when calories aren\'t set']);
+  if (mods.tdeeDelta) tiles.push(['Calorie burn', `${sgn(mods.tdeeDelta, 0)} kcal/day`, 'added to maintenance']);
+
+  const pair = activeIds.size ? projectionPair(I) : null;
+  let cmp = '';
+  if (pair?.withS) {
+    const same = ['lean', 'fat', 'weight'].every(k => Math.abs(pair.withS[k] - pair.without[k]) < 0.05);
+    const modsDiffer = Math.abs(mods.leanCeilingMult - (off?.leanCeilingMult ?? 1)) > 0.01 || Math.abs(mods.leanDirectLbPerWeek) > 0.01 || mods.waterLb > 0.05 || mods.intakeDelta || mods.tdeeDelta;
+    cmp = same && modsDiffer && !pair.stack
+      ? '<p class="small muted mt">The projection engine isn\'t applying the stack yet, so only the modifiers are shown.</p>'
+      : `<div class="sp-sub">Next 12 weeks, same plan and calories</div>${compareBars(pair.withS, pair.without)}
+         ${pair.withS.water >= 0.1 ? `<p class="tiny muted">Scale weight includes ${sgn(pair.withS.water)} lb of water from the stack.</p>` : ''}
+         ${same ? '<p class="tiny muted">At your current settings the stack doesn\'t change the 12-week outcome (e.g. appetite effects only apply when calories aren\'t set).</p>' : ''}`;
+  } else if (pair?.reason === 'weight') cmp = '<p class="small muted mt">Log your bodyweight to see a 12-week with/without comparison.</p>';
+
+  const tShow = activeIds.has('trt') || (I.profile.metabolic?.totalT != null);
+  const t = mods.testosterone;
+  const tBlock = tShow && t ? `<div class="sp-sub">Testosterone dose–response (Bhasin 1996/2001 fit)</div>
+    <div class="sp-chart" data-tchart='${esc(JSON.stringify({ natural: t.natural, level: activeIds.has('trt') ? t.level : null, age: mods.levels?.age }))}'>${tChart({ natural: t.natural, level: activeIds.has('trt') ? t.level : null, age: mods.levels?.age })}<div class="sp-readout small muted">Drag across the chart to read values.</div></div>
+    <p class="tiny muted">Lean change over 20 weeks without training, vs serum total T, relative to your natural ${Math.round(t.natural)} ng/dL${t.naturalSource === 'assumed' ? ' (assumed average)' : ''}. Flat past ~${T_MODEL.studiedMax.toLocaleString()}: beyond the studied range Forge doesn't extrapolate. </p>` : '';
+
+  return `<div class="card sp-impact">
+    <div class="sp-tiles">${tiles.map(([l, v, s]) => `<div class="stat"><div class="l">${esc(l)}</div><div class="v">${esc(v)}</div><div class="tiny muted">${esc(s)}</div></div>`).join('')}</div>
+    ${cmp}
+    ${tBlock}
+    ${stackItems.length ? `<div class="sp-sub">What each item does</div><ul class="sp-contrib">${stackItems.map(c => {
+      const s = SUPPLEMENTS[c.id];
+      return `<li><div class="row between"><b class="small">${esc(c.name)}</b>${s ? evBadge(s) : ''}</div><div class="small muted">${esc(c.text)}${c.assumedAverage ? ' <span class="sp-assumed">assumed average</span>' : ''}</div></li>`;
+    }).join('')}</ul>` : '<p class="small muted mt">Your stack is empty, so the projection uses your metabolic values only.</p>'}
+    ${mods.warnings.length ? `<div class="sp-sub">Interactions & flags</div><ul class="sp-warn">${mods.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
+    ${mods.risks.length ? `<div class="sp-sub">Reported risks at your dose/level</div><ul class="sp-risk">${[...new Map(mods.risks.map(r => [r.text, r])).values()].map(r => `<li><b>${esc(SUPPLEMENTS[r.id]?.name.split(' (')[0] || r.name)}:</b> ${esc(r.text)}</li>`).join('')}</ul>` : ''}
+    <details class="sp-factors"><summary class="small">Metabolic factors (${metaItems.length})</summary>
+      <ul class="sp-contrib">${(mods.factors || []).map(f => `<li><div class="row between"><b class="small">${esc(f.label)}</b><span class="small num">${mult(f.mult)}${f.retention && Math.abs(f.retention - 1) > 0.004 ? ` · loss ${mult(f.retention)}` : ''}</span></div><div class="small muted">${esc(f.note)}${f.assumed ? ' <span class="sp-assumed">assumed</span>' : ''}</div></li>`).join('')}</ul>
+      ${mods.notes.length ? `<ul class="sp-notes">${mods.notes.map(n => `<li class="small muted">${esc(n)}</li>`).join('')}</ul>` : ''}
+    </details>
+  </div>`;
+}
+
+// Testosterone curve: x = serum total T (log scale), y = 20-week direct lean change (lb) vs the natural level.
+const TC = { W: 340, H: 186, L: 34, R: 12, T: 24, B: 30, lo: 200, hi: 3000 };
+function tScale(natural, age) {
+  const xs = [], N = 60;
+  for (let i = 0; i <= N; i++) xs.push(Math.exp(Math.log(TC.lo) + (Math.log(TC.hi) - Math.log(TC.lo)) * i / N));
+  const pts = xs.map(t => ({ t, y: testosteroneEffect(t, { baselineT: natural, weeksOn: 0, age }).lean20Lb }));
+  let yMin = Math.min(0, ...pts.map(p => p.y)), yMax = Math.max(1, ...pts.map(p => p.y));
+  const step = yMax - yMin > 16 ? 5 : yMax - yMin > 6 ? 2 : 1;
+  yMin = Math.floor(yMin / step) * step; yMax = Math.ceil(yMax / step) * step;
+  const X = t => TC.L + (Math.log(t) - Math.log(TC.lo)) / (Math.log(TC.hi) - Math.log(TC.lo)) * (TC.W - TC.L - TC.R);
+  const Y = y => TC.T + (yMax - y) / (yMax - yMin) * (TC.H - TC.T - TC.B);
+  return { pts, X, Y, yMin, yMax, step };
+}
+export function tChart({ natural, level = null, age = null }) {
+  const nat = Number(natural) || averageTotalT(age);
+  const { pts, X, Y, yMin, yMax, step } = tScale(nat, age);
+  const studied = pts.filter(p => p.t <= T_MODEL.studiedMax), beyond = pts.filter(p => p.t >= T_MODEL.studiedMax);
+  const path = arr => arr.map((p, i) => `${i ? 'L' : 'M'}${X(p.t).toFixed(1)},${Y(p.y).toFixed(1)}`).join('');
+  const grid = [];
+  for (let y = yMin; y <= yMax + 1e-9; y += step) grid.push(`<line x1="${TC.L}" x2="${TC.W - TC.R}" y1="${Y(y).toFixed(1)}" y2="${Y(y).toFixed(1)}" class="${y === 0 ? 'sp-g0' : 'sp-g'}"/><text x="${TC.L - 6}" y="${(Y(y) + 3.5).toFixed(1)}" text-anchor="end">${y > 0 ? '+' : ''}${y}</text>`);
+  const xt = [250, 500, 1000, 2400].map(t => `<line x1="${X(t).toFixed(1)}" x2="${X(t).toFixed(1)}" y1="${TC.H - TC.B}" y2="${TC.H - TC.B + 4}" class="sp-g"/><text x="${X(t).toFixed(1)}" y="${TC.H - TC.B + 15}" text-anchor="middle">${t.toLocaleString()}</text>`);
+  const dot = (t, cls, label, above) => {
+    const e = testosteroneEffect(t, { baselineT: nat, weeksOn: 0, age });
+    const x = X(Math.min(TC.hi, Math.max(TC.lo, e.levelUsed))), y = Y(e.lean20Lb);
+    const anchor = x > TC.W - 90 ? 'end' : x < TC.L + 60 ? 'start' : 'middle';
+    return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5.5" class="sp-dot ${cls}"/><text x="${x.toFixed(1)}" y="${(above ? y - 11 : y + 19).toFixed(1)}" text-anchor="${anchor}" class="sp-lbl">${esc(label)}</text>`;
+  };
+  const onE = level ? testosteroneEffect(level, { baselineT: nat, weeksOn: 0, age }) : null;
+  return `<svg viewBox="0 0 ${TC.W} ${TC.H}" class="sp-tsvg" role="img" aria-label="Testosterone level versus 20-week lean change">
+    ${grid.join('')}${xt.join('')}
+    <text x="${TC.W - TC.R}" y="${TC.H - 3}" text-anchor="end" class="sp-ax">serum total T, ng/dL (log)</text>
+    <text x="4" y="10" class="sp-ax">lean, lb / 20 wk</text>
+    <rect x="${X(T_MODEL.studiedMax).toFixed(1)}" y="${TC.T}" width="${(TC.W - TC.R - X(T_MODEL.studiedMax)).toFixed(1)}" height="${TC.H - TC.T - TC.B}" class="sp-beyond"/>
+    <path d="${path(studied)}" class="sp-line"/><path d="${path(beyond)}" class="sp-line sp-line-flat"/>
+    ${dot(nat, 'nat', `natural ${Math.round(nat)}`, !onE || onE.lean20Lb < 0)}
+    ${onE && Math.abs(onE.levelUsed - nat) > 5 ? dot(level, 'on', `you ${Math.round(onE.levelUsed)}: ${sgn(onE.lean20Lb)} lb`, true) : ''}
+    <line class="sp-cross" x1="0" x2="0" y1="${TC.T}" y2="${TC.H - TC.B}" visibility="hidden"/>
+    <circle class="sp-cross-dot" r="4.5" cx="0" cy="0" visibility="hidden"/>
+  </svg>`;
+}
+function bindTChart(host) {
+  const svg = host.querySelector('svg'), tip = host.querySelector('.sp-readout');
+  if (!svg || !tip) return;
+  let cfg; try { cfg = JSON.parse(host.dataset.tchart); } catch (e) { return; }
+  const nat = Number(cfg.natural) || averageTotalT(cfg.age);
+  const { X, Y } = tScale(nat, cfg.age);
+  const line = svg.querySelector('.sp-cross'), cd = svg.querySelector('.sp-cross-dot');
+  const show = ev => {
+    const r = svg.getBoundingClientRect();
+    const vx = (ev.clientX - r.left) / r.width * TC.W;
+    const frac = Math.min(1, Math.max(0, (vx - TC.L) / (TC.W - TC.L - TC.R)));
+    const t = Math.exp(Math.log(TC.lo) + frac * (Math.log(TC.hi) - Math.log(TC.lo)));
+    const e = testosteroneEffect(t, { baselineT: nat, weeksOn: 0, age: cfg.age });
+    const x = X(t), y = Y(e.lean20Lb);
+    line.setAttribute('x1', x); line.setAttribute('x2', x); line.setAttribute('visibility', 'visible');
+    cd.setAttribute('cx', x); cd.setAttribute('cy', y); cd.setAttribute('visibility', 'visible');
+    tip.innerHTML = `<b class="sp-rv">${Math.round(t).toLocaleString()} ng/dL</b> → ${sgn(e.lean20Lb)} lb lean in 20 wk without training · training ceiling ${mult(e.leanCeilingMult)}${e.beyondStudied ? ' · beyond studied range (plateau)' : ''}`;
+  };
+  const hide = () => { line.setAttribute('visibility', 'hidden'); cd.setAttribute('visibility', 'hidden'); };
+  svg.addEventListener('pointermove', show);
+  svg.addEventListener('pointerdown', show);
+  svg.addEventListener('pointerleave', hide);
+}
+
+// ------------------------------------------------------------------ metabolic form
+const LABS = [
+  { k: 'totalT', label: 'Total testosterone (natural)', unit: 'ng/dL', step: '1', ref: 'Normal ≈264–916 (men 19–39); under 300 is low. Morning draw, off therapy.',
+    status: v => v < 300 ? ['Low', 'bad'] : v < 400 ? ['Low-normal', 'warn'] : v <= 916 ? ['Normal', 'good'] : ['High', 'warn'] },
+  { k: 'freeT', label: 'Free testosterone', unit: 'pg/mL', step: '0.1', ref: 'Roughly 50–210 (calculated or dialysis). Assays vary a lot.',
+    status: v => v < 50 ? ['Low', 'warn'] : v <= 210 ? ['Normal', 'good'] : ['High', 'warn'] },
+  { k: 'onTrtT', label: 'Total T on therapy (trough)', unit: 'ng/dL', step: '1', ref: 'Only if you\'re on testosterone. Modeled up to ~2,400 (highest studied).',
+    status: v => v > T_MODEL.studiedMax ? ['Beyond studied', 'warn'] : v > 1100 ? ['Above normal', 'warn'] : v >= 400 ? ['Normal range', 'good'] : ['Low', 'warn'] },
+  { k: 'vitD', label: 'Vitamin D, 25(OH)D', unit: 'ng/mL', step: '0.1', ref: '<20 deficient · 20–30 adequate · 30–100 sufficient.',
+    status: v => v < 20 ? ['Deficient', 'bad'] : v < 30 ? ['Adequate', ''] : v <= 100 ? ['Sufficient', 'good'] : ['High', 'warn'] },
+  { k: 'hba1c', label: 'HbA1c', unit: '%', step: '0.1', ref: '<5.7 normal · 5.7–6.4 prediabetes · ≥6.5 diabetes range.',
+    status: v => v < 5.7 ? ['Normal', 'good'] : v < 6.5 ? ['Prediabetes', 'warn'] : ['Diabetes range', 'bad'] },
+  { k: 'tsh', label: 'TSH', unit: 'mIU/L', step: '0.01', ref: 'Typical ≈0.4–4.5. High = underactive thyroid (lower calorie burn).',
+    status: v => v < 0.4 ? ['Low', 'warn'] : v <= 4.5 ? ['Normal', 'good'] : ['High', 'warn'] },
+];
+function labBadge(L, v) {
+  const st = v != null && v !== '' && isFinite(Number(v)) ? L.status(Number(v)) : null;
+  return st ? `<span class="badge ${st[1]}">${esc(st[0])}</span>` : '';
+}
+const sleepNoteFor = sleep => sleep < 6 ? 'Short: lowers the muscle ceiling and, in a deficit, more of what you lose is muscle.' : sleep < 7 ? 'A bit short of the 7–9 h baseline.' : sleep <= 9 ? 'In the 7–9 h baseline range.' : 'Plenty.';
+const stressNoteFor = stress => stress >= 4 ? 'High stress modestly slows strength gains and recovery.' : 'No adjustment at 1–3.';
+function metabolicForm(p, I) {
+  const m = p.metabolic || {};
+  const age = I.b?.age ?? (p.body?.birthYear ? new Date().getFullYear() - p.body.birthYear : null);
+  const placeholders = { totalT: `avg ≈${averageTotalT(age)}`, vitD: 'avg ≈27' };
+  const sleep = m.sleepHours ?? 7, stress = m.stress ?? 3;
+  const sleepNote = sleepNoteFor(sleep);
+  return `<div class="card sp-form">
+    <p class="small muted">Blank values use population averages for your age (flagged as "assumed average"). Testosterone and vitamin D are modeled by level.</p>
+    <div class="sp-lab"><div class="grow"><div class="t">Lab date</div><div class="s">When these were drawn</div></div>
+      <input type="date" data-met="labDate" value="${esc(m.labDate || '')}" class="sp-in sp-date"></div>
+    ${LABS.map(L => {
+      const v = m[L.k];
+      return `<div class="sp-lab"><div class="grow"><div class="t">${esc(L.label)} <span data-badge="${L.k}">${labBadge(L, v)}</span></div><div class="s">${esc(L.ref)}</div></div>
+        <label class="sp-inwrap"><input type="number" inputmode="decimal" step="${L.step}" min="0" data-met="${L.k}" value="${v ?? ''}" placeholder="${esc(placeholders[L.k] || '—')}" class="sp-in"><span class="sp-unit">${esc(L.unit)}</span></label></div>`;
+    }).join('')}
+    <div class="sp-lab sp-col"><div class="row between"><div class="t">Typical sleep</div><div class="num bold"><span data-sleepv>${f1(sleep)}</span> h</div></div>
+      <input type="range" min="4" max="10" step="0.25" value="${sleep}" data-met="sleepHours" style="--pct:${(sleep - 4) / 6 * 100}%">
+      <div class="s" data-sleepn>${esc(sleepNote)}</div></div>
+    <div class="sp-lab sp-col"><div class="row between"><div class="t">Life stress</div><div class="s">1 calm · 5 maxed out</div></div>
+      <div class="tabs" data-stress>${[1, 2, 3, 4, 5].map(n => `<button type="button" class="${Number(stress) === n ? 'active' : ''}" data-v="${n}">${n}</button>`).join('')}</div>
+      <div class="s" data-stressn>${stressNoteFor(stress)}</div></div>
+  </div>`;
+}
+
+// ------------------------------------------------------------------ detail / edit sheet
+function detailSheet(s, entry, today) {
+  const modeled = isModeled(s);
+  const md = s.model || {};
+  const d = modeled && md.dose ? resolveDose(entry?.dose, md) : null;
+  const studied = md.dose ? `${md.dose.default} ${md.dose.unit}` : '';
+  const unapproved = isUnapproved(s);
+  return `<div class="sp-sheet">
+    <div class="sp-badges">${evBadge(s)}${stBadge(s)}<span class="badge">${esc(CATEGORIES.find(c => c.id === s.category)?.label || s.category)}</span></div>
+    <h2>${esc(s.name)}</h2>
+    <p class="small muted">${esc(s.status)}</p>
+    <p class="mt">${esc(s.summary)}</p>
+    <h3 class="sp-h">How it works</h3><p class="small">${esc(s.mechanism)}</p>
+    <h3 class="sp-h">What the evidence shows</h3><ul class="tip-list">${s.effects.map(x => `<li class="small">${esc(x)}</li>`).join('')}</ul>
+    ${s.id === 'trt' ? `<div class="sp-chart mt" data-tchart='${esc(JSON.stringify({ natural: null, level: null, age: null }))}'>${tChart({ natural: null })}<div class="sp-readout small muted">Drag across the chart to read values.</div></div><p class="tiny muted">Lean change over 20 weeks without training vs serum T, for an average 39-year-old (natural ≈${averageTotalT(39)}). Your own curve is on the projection card once T is in your stack or labs.</p>` : ''}
+    ${s.risks.length ? `<h3 class="sp-h">Risks</h3><ul class="tip-list sp-risks">${s.risks.map(x => `<li class="small">${esc(x)}</li>`).join('')}${(md.levelRisks || []).map(r => `<li class="small"><span class="muted">At ≥${r.min.toLocaleString()} ${esc(s.id === 'trt' ? 'ng/dL' : md.dose?.unit || '')}:</span> ${esc(r.text)}</li>`).join('')}</ul>` : ''}
+    ${s.typicalUse ? `<h3 class="sp-h">Typical use</h3><p class="small">${esc(s.typicalUse)}</p>` : modeled && md.dose ? `<h3 class="sp-h">Studied dose</h3><p class="small">${esc(studied)} in the cited trials. Shown for context, not as a recommendation; it's what the model uses when you leave the dose blank.</p>` : ''}
+    <div class="sp-addform">
+      <div class="grid2">
+        <div class="field"><label>Start date</label><input type="date" data-f="start" value="${esc(entry?.start || today)}"></div>
+        ${modeled && md.dose ? `<div class="field"><label>Dose (${esc(md.dose.unit)})</label><input type="number" inputmode="decimal" step="any" min="0" data-f="dose" value="${entry?.dose && d && !d.assumed ? +d.value.toFixed(3) : ''}" placeholder="${esc(String(md.dose.default))}"></div>` : '<div></div>'}
+      </div>
+      ${modeled && md.dose ? `<p class="tiny muted">Blank = ${esc(studied)}, the ${esc(md.dose.label)}. Studied range ${md.dose.studied[0]}–${md.dose.studied[1]} ${esc(md.dose.unit)}; above that Forge plateaus.${md.dose.note ? ' ' + esc(md.dose.note) : ''}${unapproved ? ' Unregulated products may not contain what the label says.' : ''}</p>` : ''}
+      ${!modeled ? `<p class="tiny muted">${esc(md.note || 'No modeled effect')}. You can still track it.</p>` : ''}
+      <div class="sheet-actions">
+        ${entry ? `<button class="btn btn-primary btn-block" data-save>Save changes</button>
+          <div class="btn-row"><button class="btn" data-stopit>Stop today</button><button class="btn btn-danger" data-del>Remove</button></div>`
+          : `<button class="btn btn-primary btn-block" data-add>Add to stack</button>`}
+        <button class="btn btn-ghost btn-block" data-close>Close</button>
+      </div>
+    </div>
+    <h3 class="sp-h">Sources</h3><ol class="sp-src">${s.sources.map(x => `<li>${esc(x)}</li>`).join('')}</ol>
+  </div>`;
+}
+
+function openDetail(ctx, id, index = null) {
+  const s = SUPPLEMENTS[id]; if (!s) return;
+  const p = ctx.store.getProfile();
+  const list = Array.isArray(p.supplements) ? [...p.supplements] : [];
+  let idx = index;
+  if (idx == null) { const i = list.findIndex(e => e && e.id === id && e.active !== false && !e.end); idx = i >= 0 ? i : null; }
+  const entry = idx != null ? list[idx] : null;
+  const today = ds();
+  ctx.openSheet(detailSheet(s, entry, today), (el, close) => {
+    el.querySelectorAll('[data-tchart]').forEach(bindTChart);
+    const read = () => {
+      const start = el.querySelector('[data-f=start]')?.value || today;
+      const dv = el.querySelector('[data-f=dose]')?.value;
+      const n = dv === '' || dv == null ? null : Number(dv);
+      const dose = n != null && isFinite(n) && n >= 0 ? { value: n, unit: s.model.dose.unit } : null;
+      return { start, dose };
+    };
+    const save = fn => { const pp = ctx.store.getProfile(); const l = Array.isArray(pp.supplements) ? [...pp.supplements] : []; fn(l); ctx.store.updateProfile({ supplements: l }); setTimeout(() => ctx.rerender(), 0); };
+    el.querySelector('[data-close]')?.addEventListener('click', close);
+    el.querySelector('[data-add]')?.addEventListener('click', () => {
+      const { start, dose } = read();
+      save(l => l.push({ id, start, end: null, dose, active: true }));
+      close(); ctx.toast(`${s.name.split(' (')[0]} added`);
+    });
+    el.querySelector('[data-save]')?.addEventListener('click', () => {
+      const { start, dose } = read();
+      save(l => { if (l[idx]) l[idx] = { ...l[idx], start, dose }; });
+      close(); ctx.toast('Saved');
+    });
+    el.querySelector('[data-stopit]')?.addEventListener('click', () => { save(l => { if (l[idx]) l[idx] = { ...l[idx], end: today, active: false }; }); close(); ctx.toast(`${s.name.split(' (')[0]} stopped`); });
+    el.querySelector('[data-del]')?.addEventListener('click', () => { save(l => l.splice(idx, 1)); close(); ctx.toast('Removed'); });
+  });
+}
+
+// ------------------------------------------------------------------ bind
+export function bind(root, ctx) {
+  const store = ctx.store;
+  const upd = fn => { const p = store.getProfile(); const l = Array.isArray(p.supplements) ? [...p.supplements] : []; fn(l, p); store.updateProfile({ supplements: l }); ctx.rerender(); };
+  const refresh = () => {
+    const I = inputs(store);
+    const { mods, off, activeIds } = computeMods(I);
+    const wrap = root.querySelector('#sp-impact-wrap');
+    if (wrap) { wrap.innerHTML = impactCard(I, mods, off, activeIds); wrap.querySelectorAll('[data-tchart]').forEach(bindTChart); }
+    const m = I.profile.metabolic || {};
+    for (const L of LABS) { const el = root.querySelector(`[data-badge="${L.k}"]`); if (el) el.innerHTML = labBadge(L, m[L.k]); }
+    const sn = root.querySelector('[data-sleepn]'); if (sn) sn.textContent = sleepNoteFor(m.sleepHours ?? 7);
+    const tn = root.querySelector('[data-stressn]'); if (tn) tn.textContent = stressNoteFor(m.stress ?? 3);
+    root.querySelectorAll('[data-stress] button').forEach(b => b.classList.toggle('active', Number(b.dataset.v) === Number(m.stress ?? 3)));
+  };
+  const setMet = (k, v) => {
+    const p = store.getProfile();
+    if ((p.metabolic || {})[k] === v) return;
+    store.updateProfile({ metabolic: { ...(p.metabolic || {}), [k]: v } });
+    refresh();
+  };
+  const timers = {};
+
+  root.querySelectorAll('[data-cat]').forEach(b => b.addEventListener('click', () => { ui.cat = b.dataset.cat; ctx.rerender(); }));
+  root.querySelectorAll('[data-detail]').forEach(b => b.addEventListener('click', () => openDetail(ctx, b.dataset.detail)));
+  root.querySelectorAll('[data-edit]').forEach(r => {
+    const open = () => { const p = store.getProfile(); const e = p.supplements?.[Number(r.dataset.edit)]; if (e) openDetail(ctx, e.id, Number(r.dataset.edit)); };
+    r.addEventListener('click', open);
+    r.addEventListener('keydown', ev => { if (ev.key === 'Enter') open(); });
+  });
+  root.querySelectorAll('[data-stop]').forEach(b => b.addEventListener('click', ev => {
+    ev.stopPropagation();
+    const i = Number(b.dataset.stop); const name = SUPPLEMENTS[store.getProfile().supplements?.[i]?.id]?.name || 'Item';
+    upd(l => { if (l[i]) l[i] = { ...l[i], end: ds(), active: false }; });
+    ctx.toast(`${name.split(' (')[0]} stopped`);
+  }));
+  root.querySelectorAll('[data-restart]').forEach(b => b.addEventListener('click', () => {
+    const i = Number(b.dataset.restart);
+    upd(l => { const e = l[i]; if (e) l.push({ id: e.id, start: ds(), end: null, dose: e.dose ?? null, active: true }); });
+  }));
+  root.querySelectorAll('[data-remove]').forEach(b => b.addEventListener('click', () => { const i = Number(b.dataset.remove); upd(l => l.splice(i, 1)); }));
+  root.querySelector('.sp-stopped')?.addEventListener('toggle', e => { ui.showStopped = e.target.open; });
+  root.querySelectorAll('[data-quickadd]').forEach(b => b.addEventListener('click', () => {
+    const id = b.dataset.quickadd;
+    upd(l => l.push({ id, start: ds(), end: null, dose: null, active: true }));
+    ctx.toast(`${SUPPLEMENTS[id].name.split(' (')[0]} added. Tap it to set your dose.`);
+  }));
+  root.querySelectorAll('[data-jump]').forEach(b => b.addEventListener('click', () => {
+    const t = root.querySelector('#' + b.dataset.jump); if (t) window.scrollTo({ top: t.getBoundingClientRect().top + window.scrollY - 70, behavior: 'smooth' });
+  }));
+
+  // metabolic inputs
+  root.querySelectorAll('input[data-met]').forEach(inp => {
+    const k = inp.dataset.met;
+    if (inp.type === 'range') {
+      inp.addEventListener('input', () => {
+        const v = Number(inp.value);
+        inp.style.setProperty('--pct', ((v - 4) / 6 * 100) + '%');
+        const lab = root.querySelector('[data-sleepv]'); if (lab) lab.textContent = f1(v);
+      });
+      inp.addEventListener('change', () => setMet(k, Number(inp.value)));
+      return;
+    }
+    const commit = () => {
+      clearTimeout(timers[k]);
+      if (inp.type === 'date') { setMet(k, inp.value || null); return; }
+      const raw = inp.value.trim();
+      const n = raw === '' ? null : Number(raw);
+      setMet(k, n != null && isFinite(n) && n >= 0 ? n : null);
+    };
+    inp.addEventListener('change', commit);
+    if (inp.type !== 'date') inp.addEventListener('input', () => { clearTimeout(timers[k]); timers[k] = setTimeout(commit, 700); });
+  });
+  root.querySelectorAll('[data-stress] button').forEach(b => b.addEventListener('click', () => setMet('stress', Number(b.dataset.v))));
+  root.querySelectorAll('.sp-impact [data-tchart]').forEach(bindTChart);
+}

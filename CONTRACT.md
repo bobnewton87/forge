@@ -587,3 +587,100 @@ export function supported() → boolean   // WebGL2 available
 - Drag (touch and mouse) to rotate around the vertical axis (plus a slight tilt), pinch or wheel to zoom, pose chips, and smooth pose transitions (joint angles for shoulders, elbows and hips). An optional `compareShape` renders a translucent ghost of the "now" body.
 - Tasteful studio lighting (key/rim/ambient, soft shadow/AO), a skin-ish or app-accent gradient material, and a dark backdrop matching the app. Must run at ≥30 fps on a recent iPhone: adaptive resolution (render scale 0.5–1.0 based on frame time), rendering only on interaction or animation (no idle loop).
 - When `supported() === false`, the caller falls back to `silhouetteSVG` (js/ui/silhouette.js).
+
+## 17. Supplements, therapies & metabolic values (SUPP), added 2026-10-20
+
+Bob: "Add options for lean mass acceleration like creatine, maybe TRT, other peptides and supplements.
+Make the relevant growth, fat loss and other effects depend on the supplements and metabolic values."
+
+Ownership: `js/data/supplements.js`, `js/engine/metabolic.js`, `js/ui/supplements.js` (route
+'supplements', already wired), `css/supp.css`, `test/supp-*.test.js` → **SUPP**. Targeted edit: a
+link in `js/ui/settings.js` (More hub). ENGINE-NUTRI calls `modifiersAt()` inside `project()`/`nutritionLab()`;
+UI-LAB adds a "with my stack / without" toggle and links.
+
+Profile fields (lead, done in store.js):
+```js
+profile.supplements = [{ id, start:'YYYY-MM-DD', end:null|'YYYY-MM-DD', dose:null|string, active:true }]
+profile.metabolic = { totalT, freeT, labDate, onTrtT, vitD, hba1c, tsh, sleepHours:7, stress:3 }  // ng/dL, pg/mL, ng/mL, %, mIU/L, h, 1-5
+```
+```js
+// js/data/supplements.js
+export const SUPPLEMENTS = { [id]: { id, name, category:'supplement'|'prescription'|'peptide'|'lifestyle',
+   evidence:'strong'|'moderate'|'weak'|'none',
+   status: string,            // e.g. 'OTC, well studied' | 'Prescription only (requires diagnosed hypogonadism)' | 'Not FDA approved; research chemical; WADA prohibited'
+   summary, mechanism, effects:[string], risks:[string], typicalUse:string|null,   // typicalUse only for OTC + prescription (e.g. 'Creatine monohydrate 3–5 g/day'); null for unapproved peptides
+   sources:[string],          // real citations only
+   model: { leanCeilingMult?, leanRetentionMult?, partitionShift?, tdeeDelta?, intakeDelta?, waterLb?, rampWeeks?, requiresLab?:'totalT' } } }
+export const NOT_MODELED = [{ name, why }]   // supraphysiologic AAS cycles, SARMs, clenbuterol, DNP, insulin, etc.
+
+// js/engine/metabolic.js (pure)
+export function metabolicBaseline(profile, { age }) → { leanCeilingMult, leanRetentionMult, factors:[{id,label,mult,note}], notes:[] }
+   // testosterone (low T reduces ceiling), sleep (<6 h: lower ceiling, worse lean retention in deficit), age, stress, vit D deficiency, HbA1c
+export function modifiersAt(profile, date /* 'YYYY-MM-DD' */, { age, inDeficit } = {}) → {
+   leanCeilingMult,           // multiply max lean-gain rate (baseline × active stack, ramped by weeks since start)
+   leanRetentionMult,         // multiply lean LOSS in a deficit (<1 = better protection)
+   partitionShift,            // add to the lean fraction of a surplus (-0.1…+0.1)
+   tdeeDelta,                 // kcal/day
+   intakeDelta,               // kcal/day appetite effect, applied ONLY when intake isn't user-set (GLP-1 agonists, stimulants)
+   waterLb,                   // non-tissue scale weight (creatine, MK-677), NOT lean or fat
+   contributions:[{ id, name, evidence, text }], warnings:[string] }
+```
+Rules: be evidence-honest and conservative. Creatine is the only OTC supplement with a clearly modeled
+lean effect. TRT is modeled as **physician-supervised therapy only**: the effect is a function of baseline vs
+achieved total T, with the achieved level capped at the upper normal range (~1,000–1,100 ng/dL). Never model
+supraphysiologic doses. Unapproved peptides get their (mostly null or water-only) evidence-based effects,
+`typicalUse:null`, and clear status/risk text. No dosing protocols for unapproved compounds.
+
+### §17 amendment (2026-10-20, Bob's direction, supersedes the TRT cap above)
+"Effect for testosterone should not be capped at normal range, just model it as the studies show. Same with
+any of these supplements: model them as science shows, based on the level. If no values are given, use
+average values."
+- **Level/dose-driven:** every modeled item's effect is a function of its level or dose: serum total T (ng/dL),
+  creatine g/day (saturation plateau), caffeine mg/day, vitamin D ng/mL, GLP-1 drug + dose (STEP/SURMOUNT),
+  MK-677 mg/day, HGH dose, etc. Stack entries carry `dose` as `{ value:number, unit:string }` (string doses
+  stay readable); metabolic labs carry levels.
+- **Testosterone:** model the dose-response as published (Bhasin 1996 NEJM, 600 mg/wk TE ± training, 10 wk;
+  Bhasin 2001 AJP-Endo, 25–600 mg/wk with GnRH suppression, 20 wk; FFM change vs serum T is roughly log-linear, and fat
+  mass falls at higher levels). No cap at the normal range. Above the highest studied mean level (~2,400–2,500 ng/dL),
+  plateau and add a warning "beyond studied range: extrapolation not modeled".
+- **Defaults when values are missing:** population averages for age/sex (e.g. total T ≈ 550 ng/dL for a ~39-year-old
+  man; vitamin D ≈ 25–30 ng/mL; sleep 7 h; stress 3), flagged in `assumptions` as "assumed average".
+- **New modifier fields** (ENGINE-NUTRI applies them per simulated week):
+  `leanDirectLbPerWeek` = training-independent lean accrual (e.g. supraphysiologic T, which the studies show even without
+  exercise); `fatDirectLbPerWeek` = direct fat-mass change, usually ≤ 0 (e.g. T at high levels, GH). Training interaction:
+  T × training effects are roughly additive per Bhasin 1996, so leanCeilingMult also scales the training-driven ceiling.
+  Replace the earlier fixed 0.6–1.3 clamp with study-bounded curves (no extrapolation beyond the studied doses).
+- **Risks:** each item lists study-reported risks, level-dependent where known (high T: hematocrit, HDL ↓, HPTA
+  suppression/fertility, BP, acne). Shown as information, not a blocker.
+- **Still not modeled:** DNP and clenbuterol (lethal or cardiac risk at doses people use).
+
+## 16b. 3D accuracy program (2026-10-20): shared geometry + renderer bake-off
+Bob: "need the 3D to look correct, needs to be accurate and to scale."
+| Path | Owner |
+|---|---|
+| `js/engine/anthro.js`, `test/anthro-*.test.js` | ANTHRO (pure geometry, single source of truth) |
+| `js/ui/body3d.js`, `css/body3d.css`, `tools/body3d-demo.html`, `test/body3d-*.test.js` | MODEL-3D (SDF raymarch renderer) |
+| `js/ui/body3d-mesh.js`, `assets/body/*`, `tools/body3d-mesh-demo.html`, `test/mesh-*.test.js`, `scripts/build-body-mesh.mjs` | MESH (CC0 base-mesh renderer) |
+Both renderers export the §16 API (`mountBody3D`, `POSES`, `supported`). The lead picks the winner, and the
+loser's file stays as an alternate.
+
+```js
+// js/engine/anthro.js (pure, Node-testable)
+export const LANDMARKS = ['vertex','chin','neck','shoulder','chest','underbust','waist','hip','crotch','thigh','knee','calf','ankle',
+                          'arm','elbow','forearm','wrist']
+export function bodyGeometry({ heightIn, neck, shoulders, chest, waist, hips, arm, forearm, thigh, calf,
+                               bodyFatPct, muscle /* {chest,delts,lats,arms,abs,quads,calves,traps} 0..1 */, sex = 'male' }) → {
+   heightIn, units:'in',
+   landmarks: { [name]: { y /* height above floor, in */, rx /* half-width */, rz /* half-depth */, n /* superellipse exponent */,
+                          cx, cz /* center offset */, girth /* perimeter in, must equal the tape input where one is given */ } },
+   segments: { upperArm, forearm, hand, thigh, shank, foot, torso, head } ,   // lengths, in
+   joints:   { neck, shoulderL, shoulderR, elbowL, …, hipL, kneeL, ankleL, … } // rest-pose positions {x,y,z}, in
+   breadths: { biacromial, chest, waist, hip },
+   estimated: [names of inputs filled from typical ratios], warnings: [] }
+export function perimeter(rx, rz, n = 2)            // superellipse perimeter (numeric)
+export function solveSection(girth, aspect, n)      // → { rx, rz } hitting the girth exactly
+export function crossSectionAt(geom, y, part)       // interpolated section between landmarks ('torso' | 'thighL' | 'armR' …)
+```
+Ratios: standard anthropometry scaled by height (Drillis & Contini; NASA-STD-3000 / ANSUR II male medians). Depth:width
+aspects are realistic per site and vary with body fat and muscle (more fat → rounder waist; more lats → wider
+underbust; etc.). Every given tape girth must be reproduced within ±1% by `perimeter(rx, rz, n)` at its landmark.

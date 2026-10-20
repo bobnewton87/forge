@@ -13,6 +13,14 @@
 //   kv 'planDraft' so Today's own draft is untouched. Without a date, Today shows a "Today's plan"
 //   card for today's planned session and the saved list shows only today's/overdue items
 //   (overdue auto-planned sessions are treated as missed suggestions and hidden).
+// CONTRACT-NOTE (PLAN-FIX): recommendations, tiles and builds use planner.contextFor(): in planning
+//   mode the planned days before the date count as history and the planned days after it are passed
+//   as `upcoming` (reasons read "… sets this week incl. planned"); on plain Today, later planned days
+//   are passed as `upcoming` when there are any. A visible draft is rebuilt when the location changes
+//   (header pill or chips), drafts from previous days are dropped, and in planning mode a header-pill
+//   change also moves the planned day's location. Builder: cardio-minutes stepper next to the
+//   finisher switch; preview: "+10′ cardio". Today's plan card offers "Rebuild for <here>" when the
+//   plan is for another location.
 import { ds, fmtDay, fmtShort, parseDs } from '../util.js';
 import { GROUPS, GROUP_ORDER, PRESETS, REGIONS } from '../data/muscles.js';
 import { SCULPT_GOALS } from '../data/sculpt.js';
@@ -21,6 +29,7 @@ import { cardioOptions, CARDIO, INTENSITIES } from '../data/cardio.js';
 import { getEx } from '../data/exercises.js';
 import { recommend, groupStatus, weekSummary, cardioStatus, streak } from '../engine/recovery.js';
 import { buildWorkout, estimateMinutes, swapBlock, addExercise } from '../engine/generator.js';
+import { contextFor, suggestForDay } from '../engine/planner.js';
 import { renderClassPicker, bindClassPicker } from './classes.js';
 import {
   esc, chip, readinessColor, fmtNum, exName, targetName, unitLabel, safe, openSheet, closeSheet, toast,
@@ -31,7 +40,8 @@ const TIMES = [15, 20, 30, 45, 60, 75, 90];
 const STYLES = [['hypertrophy', 'Hypertrophy'], ['pump', 'Pump'], ['strength', 'Strength'], ['circuit', 'Circuit']];
 const STYLE_HINT = { hypertrophy: '8-12 reps, 60-120 s rest', pump: 'Supersets, short rests', strength: 'Heavier, 5-8 reps, longer rests', circuit: 'Circuit, minimal rest' };
 const PRESET_CHIPS = ['push', 'pull', 'legs', 'upper', 'arms', 'full', 'v_taper'];
-const FINISHER_MIN = [5, 10, 15, 20];
+const FINISHER_STEP = 5, FINISHER_MAX = 60;
+const FINISHER_PREF = ['bike', 'walk_incline', 'elliptical', 'row', 'treadmill', 'run', 'walk'];
 
 let lastParams = null;
 let showBuilderOverride = false;  // params.targets arrived → show builder even if a draft exists
@@ -40,6 +50,8 @@ let customTime = false;
 // ---------- planning mode (params.date) ----------
 let planDate = null;     // 'YYYY-MM-DD' when building for the plan
 let planLocId = null;    // location chosen for that planned day
+let planPillLoc = null;  // profile.currentLocation when planning started (header pill changes adopt it)
+let rebuiltNote = null;  // 'Rebuilt for …' after a location change rebuilt the visible draft
 const DOW_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 // Reference "now" for engines: the planned day at noon, or the real now.
 function refNow() {
@@ -58,13 +70,29 @@ function enterPlanMode(ctx, date, profile) {
   const existing = ctx.store.getSessions().find(s => s.status === 'planned' && s.date === date && s.plan?.kind !== 'rest');
   const day = (profile.schedule || {})[DOW_KEYS[parseDs(date).getDay()]] || {};
   planLocId = existing?.location || day.location || profile.currentLocation;
+  planPillLoc = profile.currentLocation;
   B = JSON.parse(JSON.stringify(builderState(ctx, profile)));
   const m = Number(existing?.minutes) || (day.kind !== 'rest' && Number(day.minutes)) || 0;
   if (m) B.minutes = m;
   customTime = !TIMES.includes(B.minutes);
   B.targets = Array.isArray(existing?.targets) ? existing.targets.filter(t => GROUPS[t] || SCULPT_GOALS[t] || PRESETS[t]) : [];
 }
-function exitPlanMode(ctx, profile) { planDate = null; planLocId = null; B = builderState(ctx, profile); customTime = false; }
+function exitPlanMode(ctx, profile) { planDate = null; planLocId = null; planPillLoc = null; B = builderState(ctx, profile); customTime = false; }
+
+// Engine inputs for the day being built: history (real sessions + planned days before it, simulated)
+// and upcoming (planned days after it, simulated). Plain Today only switches recovery into plan
+// mode when something is actually planned ahead.
+function engineCtx(sessions) {
+  const c = safe(() => contextFor(planDate || ds(), sessions, { now: new Date() }), null);
+  if (!c) return { history: sessions, upcoming: null };
+  return { history: c.history, upcoming: planDate || c.upcoming.length ? c.upcoming : null };
+}
+function cardioAt(loc, modality) {
+  const opts = safe(() => cardioOptions(expandEquipment(loc.equipment || [])), []);
+  if (!opts.length) return null;
+  if (modality && opts.some(o => o.id === modality)) return modality;
+  return (FINISHER_PREF.find(m => opts.some(o => o.id === m)) || opts[0].id);
+}
 
 // Muscle groups a session works, weighted by sets: [{ g, name, sets }] (strongest first).
 export function sessionGroups(s, { min = 1.5 } = {}) {
@@ -134,9 +162,21 @@ export function render(ctx, params = {}) {
       showBuilderOverride = true;
     }
   }
+  // Planning mode: a header-pill change means "I'll be there": move the planned day too.
+  if (planDate && profile.currentLocation !== planPillLoc) { planPillLoc = profile.currentLocation; if (locById(profile, planPillLoc)) planLocId = planPillLoc; }
   const loc = currentLoc(ctx, profile);
   const active = store.getActiveSession();
-  const draft = getDraft(ctx);
+  let draft = getDraft(ctx);
+  // A draft from an earlier day is a stale suggestion: drop it so recommendations show again.
+  if (!planDate && draft?.session && draft.session.date && draft.session.date < ds()) { setDraft(ctx, null); draft = null; }
+  // Location changed under a visible draft: rebuild it for the new equipment (same targets/time).
+  if (draft?.session && draft.params && draft.params.locationId && draft.params.locationId !== loc.id) {
+    const params = { ...draft.params, locationId: loc.id };
+    if (params.cardio) { const m = cardioAt(loc, params.cardio.modality); params.cardio = m ? { ...params.cardio, modality: m } : null; }
+    const ns = runBuild(ctx, params, profile, sessions, loc);
+    if (ns) { draft = { session: ns, params }; setDraft(ctx, draft); rebuiltNote = `Rebuilt for ${loc.icon || ''} ${loc.name}`; }
+    else { draft = { ...draft, params }; setDraft(ctx, draft); }   // don't retry on every render
+  }
   const showPreview = draft?.session && !showBuilderOverride;
 
   if (planDate) {
@@ -193,10 +233,11 @@ function resumeCard(s) {
 }
 
 function recsSection(sessions, profile, loc) {
-  const recs = safe(() => recommend(sessions, { now: refNow(), profile, minutes: B.minutes, location: loc }), []).slice(0, 3);
+  const ec = engineCtx(sessions);
+  const recs = safe(() => recommend(ec.history, { now: refNow(), profile, minutes: B.minutes, location: loc, upcoming: ec.upcoming }), []).slice(0, 3);
   if (!recs.length) return '';
   return `<section class="tr-sec">
-    <div class="section-title">What should I train?</div>
+    <div class="section-title">What should I train?${ec.upcoming ? ' <span class="tr-ctx muted">around your plan</span>' : ''}</div>
     <div class="tr-recs">${recs.map((r, i) => `<button type="button" class="tr-rec ${i === 0 && !r.recovering ? 'top' : ''} ${r.recovering ? 'recovering' : ''}" data-t="rec" data-i="${i}">
       <div class="tr-rec-head"><span class="tr-rec-label">${esc(r.label || targetName(r.targetId))}</span>${r.recovering ? '<span class="badge warn">Recovering</span>' : i === 0 ? '<span class="badge tr-best">Best pick</span>' : ''}</div>
       <ul class="tr-rec-reasons">${(r.reasons || []).slice(0, 3).map(x => `<li>${esc(x)}</li>`).join('')}</ul>
@@ -206,7 +247,8 @@ function recsSection(sessions, profile, loc) {
 }
 
 function builderSection(sessions, profile, loc) {
-  const gs = safe(() => groupStatus(sessions, { now: refNow(), profile }), {});
+  const ec = engineCtx(sessions);
+  const gs = safe(() => groupStatus(ec.history, { now: refNow(), profile, upcoming: ec.upcoming }), {});
   const sculpt = [...new Set([...(profile.sculptGoals || []), ...B.targets])].filter(id => SCULPT_GOALS[id]);
   const isCustom = customTime || !TIMES.includes(B.minutes);
   const eq = safe(() => expandEquipment(loc.equipment || []), new Set(['bodyweight']));
@@ -234,7 +276,7 @@ function builderSection(sessions, profile, loc) {
     <div class="tr-chiprow scroll">${TIMES.map(m => chip(`${m}`, { active: !isCustom && B.minutes === m, attrs: `data-t="time" data-m="${m}"` })).join('')}
       ${chip(isCustom ? `${B.minutes} min` : 'Custom', { active: isCustom, attrs: 'data-t="custom"' })}</div>
     ${isCustom ? `<div class="tr-inline tr-custom"><input type="number" inputmode="numeric" min="5" max="180" value="${B.minutes}" data-f="minutes"> <span class="muted">minutes total</span></div>` : ''}
-    <div class="tr-label">Where</div>
+    <div class="tr-label">Where${planDate ? ` <span class="muted">· on ${esc(fmtDay(planDate).split(',')[0])}</span>` : ''}</div>
     <div class="tr-chiprow scroll">${(profile.locations || []).map(l => chip(`${l.icon || ''} ${l.name}`, { active: l.id === loc.id, attrs: `data-t="loc" data-id="${esc(l.id)}"` })).join('')}</div>
     <div class="tr-label tr-label-row"><span>Muscles <span class="muted">${B.targets.length ? '' : '· none = auto pick'}</span></span>${B.targets.length ? '<button type="button" class="tr-link" data-t="clear">Clear</button>' : ''}</div>
     <div class="tr-chiprow scroll">${PRESET_CHIPS.filter(p => PRESETS[p]).map(p => chip(PRESETS[p].name, { active: presetActive(p), attrs: `data-t="preset" data-id="${p}"`, cls: 'sm' })).join('')}</div>
@@ -244,10 +286,14 @@ function builderSection(sessions, profile, loc) {
     <div class="tr-label">Style <span class="muted">· ${esc(STYLE_HINT[B.style] || '')}</span></div>
     <div class="tr-seg">${STYLES.map(([id, n]) => `<button type="button" class="${B.style === id ? 'active' : ''}" data-t="style" data-id="${id}">${n}</button>`).join('')}</div>
     <div class="tr-label tr-label-row"><span>Cardio finisher</span>
-      <button type="button" class="tr-switch ${c.on ? 'on' : ''}" data-t="cardio-on" aria-pressed="${c.on}" ${copts.length ? '' : 'disabled'}><span></span></button></div>
+      <span class="tr-cardio-ctl">${copts.length ? `<span class="tr-step ${c.on ? 'on' : ''}" role="group" aria-label="Cardio minutes">
+        <button type="button" data-t="c-dec" aria-label="Less cardio" ${c.on && c.minutes > FINISHER_STEP ? '' : c.on ? 'disabled' : ''}>−</button>
+        <b data-cmin>${c.on ? `${c.minutes}′` : 'Off'}</b>
+        <button type="button" data-t="c-inc" aria-label="More cardio" ${c.minutes >= FINISHER_MAX && c.on ? 'disabled' : ''}>+</button></span>` : ''}
+      <button type="button" class="tr-switch ${c.on ? 'on' : ''}" data-t="cardio-on" aria-pressed="${c.on}" ${copts.length ? '' : 'disabled'}><span></span></button></span></div>
     ${c.on && copts.length ? `<div class="tr-finisher">
       <div class="tr-chiprow scroll">${copts.map(o => chip(`${o.icon || ''} ${o.name}`, { active: o.id === c.modality, attrs: `data-t="c-mod" data-id="${o.id}"`, cls: 'sm' })).join('')}</div>
-      <div class="tr-chiprow">${FINISHER_MIN.map(m => chip(`${m} min`, { active: c.minutes === m, attrs: `data-t="c-min" data-m="${m}"`, cls: 'sm' })).join('')}</div>
+      <div class="muted small tr-cnote">${c.minutes} of your ${B.minutes} min go to cardio${B.minutes - c.minutes < 10 ? ' (no time left to lift)' : `, ${B.minutes - c.minutes} to lifting`}</div>
       <div class="tr-chiprow scroll">${Object.entries(INTENSITIES).map(([id, it]) => chip(it.name, { active: c.intensity === id, attrs: `data-t="c-int" data-id="${id}"`, cls: 'sm' })).join('')}</div>
     </div>` : ''}
     <button type="button" class="btn btn-primary tr-big" data-t="build">${B.targets.length ? `Build ${B.minutes}-min ${esc(B.targets.slice(0, 3).map(targetName).join(' + '))}${B.targets.length > 3 ? '…' : ''}` : `Build ${B.minutes}-min smart workout`}</button>
@@ -279,6 +325,8 @@ function todayPlanCard(sessions, profile, active) {
       <button type="button" class="btn btn-ghost btn-sm" data-t="plan-open">Plan</button></div>`;
   }
   const loc = (profile.locations || []).find(l => l.id === s.location);
+  const here = (profile.locations || []).find(l => l.id === profile.currentLocation);
+  const elsewhere = here && loc && here.id !== loc.id && !(s.blocks || []).some(b => b.kind === 'class');
   const groups = sessionGroups(s).slice(0, 5);
   const cardio = (s.blocks || []).filter(b => b.kind === 'cardio').reduce((n, b) => n + (Number(b.minutes) || 0), 0);
   const cls = (s.blocks || []).find(b => b.kind === 'class');
@@ -289,6 +337,8 @@ function todayPlanCard(sessions, profile, active) {
     <div class="pl-today-meta">~${Math.round(s.estMinutes || s.minutes || 0) || '?'} min${loc ? ` · ${esc(loc.icon || '')} ${esc(loc.name)}` : ''}${n ? ` · ${n} exercise${n === 1 ? '' : 's'}` : ''}${cls?.time ? ` · ${esc(cls.time)}` : ''}</div>
     ${groups.length || cardio || cls ? `<div class="pl-chips">${groups.map(g => `<span class="pl-mchip">${esc(g.name)}</span>`).join('')}${cls ? `<span class="badge warn">🎟️ Class</span>` : ''}${cardio ? `<span class="badge cardio">${cardio} min cardio</span>` : ''}</div>` : ''}
     ${s.plan?.reason ? `<div class="pl-today-why muted small">${esc(s.plan.reason)}</div>` : ''}
+    ${elsewhere ? `<div class="pl-today-where"><span>Planned for ${esc(loc.icon || '')} ${esc(loc.name)}. You're at ${esc(here.icon || '')} ${esc(here.name)}.</span>
+      <button type="button" class="btn btn-sm" data-t="p-rebuild" data-id="${esc(s.id)}">Rebuild for ${esc(here.name)}</button></div>` : ''}
     <div class="pl-today-btns">
       <button type="button" class="btn btn-primary" data-t="p-start" data-id="${esc(s.id)}">▶ Start</button>
       <button type="button" class="btn btn-ghost" data-t="plan-change">Change</button>
@@ -351,11 +401,13 @@ function preview(draft, profile) {
       <h2>${esc(s.title || 'Workout')}</h2>
       ${est ? `<div class="tr-est ${over ? 'over' : ''}"><b>~${Math.round(est)}</b><span>/ ${budget || '?'} min</span></div>` : ''}
     </div>
+    ${rebuiltNote ? `<div class="tr-rebuilt">↻ ${esc(rebuiltNote)}</div>` : ''}
     ${(s.rationale || []).length ? `<ul class="tr-rationale">${s.rationale.slice(0, 6).map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
     <div class="tr-plan">${items || '<div class="empty muted">No exercises. Add one below.</div>'}</div>
     <div class="tr-plan-tools">
       <button type="button" class="btn btn-ghost" data-t="add">+ Add exercise</button>
       ${draft.params ? '<button type="button" class="btn btn-ghost" data-t="shuffle">🔀 Shuffle</button>' : ''}
+      <button type="button" class="btn btn-ghost" data-t="add-cardio">+10′ cardio</button>
     </div>
     ${planDate ? `<button type="button" class="btn btn-primary tr-big" data-t="save-plan">Save to plan · ${esc(fmtDay(planDate))}</button>
     <div class="tr-plan-tools"><button type="button" class="btn btn-ghost tr-danger-text" data-t="discard">Discard</button></div>`
@@ -400,25 +452,30 @@ function scrollTop() {
   try { window.scrollTo(0, 0); document.getElementById('content')?.scrollTo?.(0, 0); } catch (e) { /* ignore */ }
 }
 
-function build(ctx, targets) {
+function build(ctx, targets, label = null) {
   const store = ctx.store;
   const profile = store.getProfile();
   const sessions = store.getSessions();
   const loc = currentLoc(ctx, profile);
   const c = B.cardio;
-  const cardio = c.on && c.modality ? { modality: c.modality, minutes: c.minutes, intensity: c.intensity } : null;
+  const cmod = c.on ? cardioAt(loc, c.modality) : null;
+  const cardio = cmod ? { modality: cmod, minutes: c.minutes, intensity: c.intensity } : null;
   const params = { targets: [...targets], minutes: B.minutes, locationId: loc.id, style: B.style, cardio };
   const s = runBuild(ctx, params, profile, sessions, loc);
   if (!s) return;
+  // A recommendation keeps its own name ("Shoulders & Arms"), plus the generator's sculpt suffix.
+  if (label && s.blocks.some(b => b.kind === 'lift')) s.title = label + (/ · /.test(s.title || '') ? ' · ' + s.title.split(' · ').slice(1).join(' · ') : '');
   setDraft(ctx, { session: s, params });
   showBuilderOverride = false;
+  rebuiltNote = null;
   ctx.rerender();
   scrollTop();
 }
 
 function runBuild(ctx, params, profile, sessions, loc) {
+  const ec = engineCtx(sessions);
   const s = safe(() => buildWorkout({
-    targets: params.targets, minutes: params.minutes, location: loc, profile, sessions, now: refNow(),
+    targets: params.targets, minutes: params.minutes, location: loc, profile, sessions: ec.history, upcoming: ec.upcoming, now: refNow(),
     style: params.style, cardio: params.cardio, seed: Math.floor(Math.random() * 1e9), exclude: profile.avoidExercises || [],
   }), null);
   if (!s || !Array.isArray(s.blocks)) { toast(ctx, 'Could not build a workout. Try other muscles or more time.'); return null; }
@@ -571,9 +628,10 @@ export function bind(root, ctx, params = {}) {
       }
       case 'resume': { const a = store.getActiveSession(); ctx.nav('session', a ? { id: a.id } : {}); break; }
       case 'rec': {
-        const recs = safe(() => recommend(store.getSessions(), { now: refNow(), profile, minutes: B.minutes, location: loc }), []);
+        const ec = engineCtx(store.getSessions());
+        const recs = safe(() => recommend(ec.history, { now: refNow(), profile, minutes: B.minutes, location: loc, upcoming: ec.upcoming }), []);
         const r = recs[i]; if (!r) return;
-        build(ctx, r.targets?.length ? r.targets : (r.groups || []));
+        build(ctx, r.targets?.length ? r.targets : (r.groups || []), r.label || null);
         break;
       }
       case 'time': customTime = false; B.minutes = Number(el.dataset.m); saveB(ctx); ctx.rerender(); break;
@@ -595,7 +653,37 @@ export function bind(root, ctx, params = {}) {
       case 'style': B.style = el.dataset.id; saveB(ctx); ctx.rerender(); break;
       case 'cardio-on': B.cardio.on = !B.cardio.on; saveB(ctx); ctx.rerender(); break;
       case 'c-mod': B.cardio.modality = el.dataset.id; saveB(ctx); ctx.rerender(); break;
-      case 'c-min': B.cardio.minutes = Number(el.dataset.m); saveB(ctx); ctx.rerender(); break;
+      case 'c-inc': case 'c-dec': {
+        const c = B.cardio;
+        if (!c.on) { c.on = true; c.minutes = Math.max(FINISHER_STEP, Number(c.minutes) || 10); }
+        else c.minutes = Math.max(FINISHER_STEP, Math.min(FINISHER_MAX, (Number(c.minutes) || 10) + (t === 'c-inc' ? FINISHER_STEP : -FINISHER_STEP)));
+        if (c.minutes > B.minutes - 5) B.minutes = Math.min(180, c.minutes + 10);   // keep the total honest
+        if (!TIMES.includes(B.minutes)) customTime = true;
+        saveB(ctx); ctx.rerender(); break;
+      }
+      case 'add-cardio': updateDraft(ctx, s => {
+        const blocks = s.blocks || (s.blocks = []);
+        const last = [...blocks].reverse().find(b => b.kind === 'cardio');
+        if (last) last.minutes = (Number(last.minutes) || 0) + 10;
+        else {
+          const l = locById(profile, s.location) || loc;
+          const m = cardioAt(l, B.cardio.modality);
+          if (!m) { toast(ctx, 'No cardio equipment here'); return s; }
+          blocks.push({ kind: 'cardio', modality: m, minutes: 10, intensity: 'easy', distance: null, calories: null, done: false, note: null });
+        }
+        s.minutes = (Number(s.minutes) || 0) + 10;
+        return s;
+      }); break;
+      case 'p-rebuild': {
+        const old = store.getSession(el.dataset.id); if (!old) return;
+        const kind = old.plan?.kind === 'cardio' ? 'cardio' : 'lift';
+        const ns = safe(() => suggestForDay(old.date, { profile, sessions: store.getSessions(), now: new Date(), slot: { kind, minutes: old.minutes || B.minutes, location: loc.id } }), null);
+        if (!ns) { toast(ctx, 'Could not rebuild. Try the builder below.'); return; }
+        const out = { ...ns, id: store.newSessionId(), date: old.date, plan: { ...(ns.plan || {}), auto: false, kind: ns.plan?.kind || kind, generatedAt: new Date().toISOString(), reason: `Rebuilt for ${loc.name}` } };
+        store.replacePlanned(old.date, old.date, [out], x => x.id === old.id);
+        toast(ctx, `Rebuilt for ${loc.icon || ''} ${loc.name}`);
+        break;
+      }
       case 'c-int': B.cardio.intensity = el.dataset.id; saveB(ctx); ctx.rerender(); break;
       case 'build': build(ctx, B.targets); break;
       case 'back': showBuilderOverride = true; ctx.rerender(); scrollTop(); break;
@@ -603,7 +691,7 @@ export function bind(root, ctx, params = {}) {
         if (!draft?.params) return;
         const l = locById(profile, draft.params.locationId) || loc;
         const s = runBuild(ctx, draft.params, profile, store.getSessions(), l);
-        if (s) { setDraft(ctx, { ...draft, session: s }); ctx.rerender(); }
+        if (s) { rebuiltNote = null; setDraft(ctx, { ...draft, session: s }); ctx.rerender(); }
         break;
       }
       case 'up': case 'down': updateDraft(ctx, s => {

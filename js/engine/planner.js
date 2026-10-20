@@ -22,6 +22,12 @@
 //   sessions dated before today(now) count as missed (neither done nor planned).
 // CONTRACT-NOTE: session ids are 's_plan_<date>_<n>', n starting at 1 and bumped past any id
 //   already present in `sessions`.
+// CONTRACT-NOTE (PLAN-FIX, bidirectional context): every day is decided against the planned days
+//   BEFORE it (simulated history) and AFTER it (`upcoming`, passed to recovery/generator in plan
+//   mode): weekly volume = done + planned before + planned after (calendar week), and a group that a
+//   following planned day trains is avoided when today's hit would land inside its recovery window.
+//   suggestForDay now keeps done sessions on `date` as history (only planned ones there are ignored).
+//   New export contextFor(date, sessions, { now, horizon }) → { before, after, history, upcoming }.
 import { recommend, groupStatus, muscleStatus, sessionVolume } from './recovery.js';
 import { buildWorkout } from './generator.js';
 import { CARDIO, INTENSITIES, cardioOptions } from '../data/cardio.js';
@@ -142,6 +148,26 @@ export function simulateDone(session) {
   return s;
 }
 
+// ---------------------------------------------------------------- context
+// Planned days around `date`, simulated as done, plus the history a builder for that date should
+// see. before: planned sessions in [today, date); after: planned sessions in (date, date+horizon];
+// history: real (non-planned) sessions + before; upcoming = after (pass to recommend/buildWorkout).
+export function contextFor(date, sessions = [], { now = new Date(), horizon = 7 } = {}) {
+  now = toDate(now);
+  date = toDs(date) || ds(now);
+  const today = ds(now);
+  const end = ds(addDays(parseDs(date), horizon));
+  const before = [], after = [], real = [];
+  for (const s of sessions || []) {
+    if (!s || !s.date) continue;
+    if (s.status !== 'planned') { if (s.date <= date) real.push(s); continue; }
+    if (isRestPlan(s) || !(s.blocks || []).length || s.date < today) continue;
+    if (s.date < date) before.push(simulateDone(s));
+    else if (s.date > date && s.date <= end) after.push(simulateDone(s));
+  }
+  return { before, after, history: [...real, ...before], upcoming: after };
+}
+
 // ---------------------------------------------------------------- week state
 function weekBounds(date) {
   const ws = weekStartOf(parseDs(date));
@@ -157,7 +183,7 @@ function isHardBlock(b) {
 // What this week looks like before `date`, plus what's still coming from the schedule.
 function weekState(ctx, date) {
   const { ws, we } = weekBounds(date);
-  const proj = {};
+  const proj = {}, after = {};
   let cardioMin = 0, hard = 0, lifts = 0, classes = 0, futureCardio = 0, futureLiftDays = 0;
   const recentCardio = [];   // modalities in the last 10 days, most recent first
   const tenAgo = ds(addDays(parseDs(date), -10));
@@ -170,7 +196,10 @@ function weekState(ctx, date) {
       if (v.liftSets > 0) lifts++;
       if ((s.blocks || []).some(b => b.kind === 'class')) classes++;
       if ((s.blocks || []).some(isHardBlock)) hard++;
-    } else if (s.date > date) futureCardio += v.cardioMin;   // kept sessions later this week
+    } else if (s.date > date) {                               // kept/planned sessions later this week
+      futureCardio += v.cardioMin;
+      for (const [g, w] of Object.entries(v.groups)) after[g] = (after[g] || 0) + w;
+    }
   }
   const rc = [];
   for (const s of ctx.history) {
@@ -187,7 +216,7 @@ function weekState(ctx, date) {
     else if (sl.kind === 'lift') { futureLiftDays++; if (sl.minutes >= 40 && hasMachineCardio(locationFor(ctx.profile, sl.location))) futureCardio += 10; }
     else if (sl.kind === 'flex' || sl.kind === 'class') { futureLiftDays += 0.5; futureCardio += sl.minutes * 0.4; }
   }
-  return { ws, we, proj, cardioMin, hard, lifts, classes, futureCardio, futureLiftDays, recentCardio };
+  return { ws, we, proj, after, cardioMin, hard, lifts, classes, futureCardio, futureLiftDays, recentCardio };
 }
 
 function hasMachineCardio(loc) {
@@ -230,8 +259,10 @@ function liftDay(ctx, date, slot, st, R, why = null) {
   const loc = locationFor(ctx.profile, slot.location);
   const minutes = Math.max(10, slot.minutes || ctx.profile?.defaultMinutes || 45);
   const now = noonOf(date);
-  const recs = recommend(ctx.history, { now, profile: ctx.profile, minutes, location: loc }) || [];
-  const gs = groupStatus(ctx.history, { now, profile: ctx.profile });
+  const upcoming = ctx.history.filter(s => s.date > date);
+  const recs = recommend(ctx.history, { now, profile: ctx.profile, minutes, location: loc, upcoming }) || [];
+  const gs = groupStatus(ctx.history, { now, profile: ctx.profile, upcoming });
+  const clear = g => (gs[g]?.aheadReadiness ?? 1) >= 0.6;   // a later planned day doesn't need it fresh
 
   // Variety: same weekday last week / previous lift session with identical targets gets a penalty;
   // seeded jitter breaks near-ties differently each week.
@@ -262,20 +293,20 @@ function liftDay(ctx, date, slot, st, R, why = null) {
     const T = weeklyTargets(ctx.profile).groups;
     const left = st.futureLiftDays + 1;
     const cands = priorityGroups(ctx.profile)
-      .filter(g => !groups.includes(g) && T[g] && (gs[g]?.readiness ?? 1) >= 0.65)
-      .map(g => ({ g, def: T[g].target.min - (st.proj[g] || 0) }))
+      .filter(g => !groups.includes(g) && T[g] && (gs[g]?.readiness ?? 1) >= 0.65 && clear(g))
+      .map(g => ({ g, def: T[g].target.min - (st.proj[g] || 0) - (st.after[g] || 0) }))
       .filter(x => x.def / left >= 3)
       .sort((a, b) => b.def * T[b.g].priority - a.def * T[a.g].priority);
     for (const c of cands) {
       if (groups.length >= maxGroupsFor(minutes)) break;
       groups.push(c.g); targets.push(c.g); nudged.push(c.g);
-      reasons.push(`Added ${gName(c.g).toLowerCase()}: ${fmt(st.proj[c.g] || 0)}/${Math.round(T[c.g].target.min)} sets so far this week`);
+      reasons.push(`Added ${gName(c.g).toLowerCase()}: ${fmt((st.proj[c.g] || 0) + (st.after[c.g] || 0))}/${Math.round(T[c.g].target.min)} sets this week incl. planned`);
       break;   // one nudge per day keeps sessions focused
     }
     // Legs are maintenance-only, but not zero: after ~8 days without quads, add them once.
     const q = gs.quads;
     const qStale = q && (q.lastTrained ? q.daysSince >= 8 : (ctx.firstDate && daysApart(ctx.firstDate, date) >= 7));
-    if (!nudged.length && minutes >= 40 && qStale && !groups.some(g => LEG_GROUPS.has(g)) && (q.readiness ?? 1) >= 0.8 && groups.length < maxGroupsFor(minutes)) {
+    if (!nudged.length && minutes >= 40 && qStale && !groups.some(g => LEG_GROUPS.has(g)) && (q.readiness ?? 1) >= 0.8 && clear('quads') && groups.length < maxGroupsFor(minutes)) {
       groups.push('quads'); targets.push('quads'); nudged.push('quads');
       reasons.push(`Added quads for maintenance: ${q.lastTrained ? q.daysSince + ' days since' : 'none planned in over a week'} (legs stay low volume)`);
     }
@@ -291,7 +322,7 @@ function liftDay(ctx, date, slot, st, R, why = null) {
   }
 
   const seed = hashStr(date + '|lift|' + ctx.seed);
-  const w = buildWorkout({ targets, minutes, location: loc, profile: ctx.profile, sessions: ctx.history, now, seed, cardio });
+  const w = buildWorkout({ targets, minutes, location: loc, profile: ctx.profile, sessions: ctx.history, now, seed, cardio, upcoming });
   const label = pick.label + (nudged.length ? ' + ' + nudged.map(gName).join(' & ') : '');
   const recWhy = (pick.reasons || []).filter(x => !/^Cardio:/.test(x)).slice(0, 2);
   const reason = why || `${label}: best fit for recovery and this week's targets`;
@@ -301,7 +332,7 @@ function liftDay(ctx, date, slot, st, R, why = null) {
   return {
     ...w,
     id: ctx.newId(date), date, status: 'planned', startedAt: null, endedAt: null,
-    location: loc.id, minutes, title: w.title || label,
+    location: loc.id, minutes, title: label + (/ · /.test(w.title || '') ? ' · ' + w.title.split(' · ').slice(1).join(' · ') : ''),
     rationale: rationale.slice(0, 7),
     plan: planMeta(ctx, 'lift', slot, reason, { groups: [...new Set([...groups])], nudged, baseGroups: [...pick.groups] }),
   };
@@ -407,7 +438,9 @@ function classValue(ctx, x, st, gs, cardioGap, slot) {
   const leftover = (slot.minutes || x.dur) - x.dur;
   const addOn = leftover >= 10 && cardioGap - cm > 0 ? clamp(Math.floor((Math.min(leftover - 5, 20, cardioGap - cm)) / 5) * 5, 0, 20) : 0;
   cardio += addOn / CARDIO_MIN_PER_SET * 0.8;
-  let v = muscle + cardio + 1.5;                      // +1.5: variety / fun of a class
+  // Variety / fun of a class: Bob likes Crunch classes, so a class at a class location gets a
+  // bigger nudge when it also covers real cardio.
+  let v = muscle + cardio + (cm >= 20 ? 4 : 1.5);
   if (isHardBlock({ kind: 'class', classify: x.info }) && st.hard >= 1) v -= 2;
   if (x.t != null && (x.t < 7 * 60 || x.t > 19 * 60 + 30)) v *= 0.85;  // early-bird / late slots
   return { v, hits, addOn, cm };
@@ -530,8 +563,8 @@ function balanceWeek(ctx, out, ws, we) {
       if (hi < 0) continue;
       const hist = ctx.history.filter((_, j) => j !== hi);
       const now = noonOf(old.date);
-      const gs = groupStatus(hist, { now, profile: ctx.profile });
-      if ((gs[g]?.readiness ?? 1) < 0.65) continue;
+      const gs = groupStatus(hist, { now, profile: ctx.profile, upcoming: hist.filter(h => h.date > old.date) });
+      if ((gs[g]?.readiness ?? 1) < 0.65 || (gs[g]?.aheadReadiness ?? 1) < 0.6) continue;
       // next day shouldn't be hammering the same group
       const next = ds(addDays(parseDs(old.date), 1));
       if (hist.some(h => h.date === next && (vol(h).groups[g] || 0) >= 4)) continue;
@@ -611,10 +644,10 @@ export function suggestForDay(date, { profile, sessions = [], schedule, classSch
   const sl = slot ? { kind: slot.kind || 'lift', minutes: Number(slot.minutes) || profile.defaultMinutes || 45, location: slot.location || profile.currentLocation || 'home' } : slotFor(schedule, date);
   if (sl.kind === 'rest' || sl.minutes < 10) return null;
   const ctx = makeCtx({ profile, sessions, schedule, classSchedule, now, seed });
-  // Everything planned before `date` is history; nothing on `date` itself is.
-  const others = (sessions || []).filter(s => s && s.date !== date);
-  seedHistory(ctx, others, date, () => false);
-  for (const s of others) if (s.status === 'planned' && s.date > date && s.date >= ctx.today) ctx.keptDates.add(s.date);
+  // Planned days before AND after `date` are context (simulated as done); planned sessions on
+  // `date` itself are what we're replacing. Done/active work on `date` still counts.
+  const others = (sessions || []).filter(s => s && !(s.status === 'planned' && s.date === date));
+  seedHistory(ctx, others, date, () => true);
   return planDay(ctx, date, sl);
 }
 

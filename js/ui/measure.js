@@ -2,11 +2,16 @@
 // body-comp snapshot and history.
 // CONTRACT-NOTE: params.edit === true opens the body-profile editor even when it is complete.
 // CONTRACT-NOTE: deleting a history row removes that date's tape entry AND its weigh-in.
+// CONTRACT-NOTE (Phase 3, UI-LAB): thigh/calf are logged per side (thighL/thighR/calfL/calfR); legacy
+//   single `thigh`/`calf` values count as both sides for placeholders, asymmetry and history.
+//   The snapshot mounts the 3D body (fallback SVG). Optional food log + adaptiveTdee status.
 import { esc } from './components.js';
-import { ds, fmtShort } from '../util.js';
-import { baseline } from '../engine/bodycomp.js';
+import { ds, fmtShort, addDays } from '../util.js';
+import * as BC from '../engine/bodycomp.js';
+import * as NU from '../engine/nutrition.js';
 import { silhouetteSVG } from './silhouette.js';
-import { lineChart, bindCharts, f1, safe } from './projection.js';
+import { lineChart, bindCharts, f1, safe, mount3D, body3d, supports3D, estMuscle, maintenanceEstimate } from './projection.js';
+const baseline = a => BC.baseline(a);
 
 export function title() { return 'Measurements'; }
 
@@ -16,16 +21,31 @@ const SITES = [
   { k: 'chest', label: 'Chest', tip: 'Around the nipple line, under the armpits, after a normal exhale. Don\'t puff up.' },
   { k: 'waist', label: 'Waist', tip: 'At the navel, belly relaxed (don\'t suck in), after a normal exhale. Best first thing after waking.', req: true },
   { k: 'hips', label: 'Hips', tip: 'Around the widest part of the glutes, feet together.' },
-  { k: 'armL', label: 'Arm L (flexed)', tip: 'Flex the biceps hard, arm out level with the shoulder. Tape around the peak, which is the biggest point.' },
+  { k: 'armL', label: 'Arm L (flexed)', tip: 'Flex the biceps hard, arm out level with the shoulder. Tape around the peak, which is the biggest point.', pair: 'Arms (flexed)' },
   { k: 'armR', label: 'Arm R (flexed)', tip: 'Same as the left: flexed, arm level, around the peak.' },
+  { k: 'thighL', label: 'Thigh L', tip: 'Standing relaxed, just below the glute fold (the top of the thigh), weight on both feet. Same spot on both legs.', legacy: 'thigh', pair: 'Thighs' },
+  { k: 'thighR', label: 'Thigh R', tip: 'Same as the left: just below the glute fold, standing relaxed with weight on both feet.', legacy: 'thigh' },
+  { k: 'calfL', label: 'Calf L', tip: 'Widest point of the calf, standing with weight on both feet.', legacy: 'calf', pair: 'Calves' },
+  { k: 'calfR', label: 'Calf R', tip: 'Same as the left: widest point, standing with weight on both feet.', legacy: 'calf' },
   { k: 'forearm', label: 'Forearm', tip: 'Widest point just below the elbow, fist clenched, arm straight.' },
-  { k: 'thigh', label: 'Thigh', tip: 'Standing relaxed, just below the glute fold (the top of the thigh), weight on both feet.' },
-  { k: 'calf', label: 'Calf', tip: 'Widest point of the calf, standing with weight on both feet.' },
 ];
-const LABEL = Object.fromEntries(SITES.map(s => [s.k, s.label]));
+const LABEL = { ...Object.fromEntries(SITES.map(s => [s.k, s.label])), thigh: 'Thigh (both)', calf: 'Calf (both)', arm: 'Arm' };
+// Latest value per site, with legacy single thigh/calf filling both sides.
+function latestSites(meas) {
+  const last = {};
+  for (const e of meas) {
+    for (const s of SITES) {
+      if (e[s.k] != null) last[s.k] = e[s.k];
+      else if (s.legacy && e[s.legacy] != null) last[s.k] = e[s.legacy];
+    }
+    if (e.bodyFat != null) last.bodyFat = e.bodyFat;
+  }
+  return last;
+}
 const ACT = [['desk', 'Desk', 'Mostly sitting'], ['light', 'Light', 'On your feet some'], ['active', 'Active', 'On your feet most of the day']];
 const SRC = { manual: 'scale / DEXA', navy: 'Navy tape formula', estimate: 'BMI estimate (rough)' };
 let editProfile = false;
+let cur3d = null;
 
 export function ffmiScale(v) {
   if (v == null) return null;
@@ -60,28 +80,37 @@ function profileCard(p, open) {
 }
 
 function formCard(meas, log) {
-  const last = {};
-  for (const e of meas) for (const s of SITES) if (e[s.k] != null) last[s.k] = e[s.k];
-  for (const e of meas) if (e.bodyFat != null) last.bodyFat = e.bodyFat;
+  const last = latestSites(meas);
   const lastW = log.length ? log[log.length - 1].w : null;
   const field = (k, label, tip, ph, req, unit = 'in') => `<div class="field bd-field">
       <label for="m-${k}">${esc(label)}${req ? ' <span class="bd-req" title="Needed for the body-fat estimate">•</span>' : ''}
         <button type="button" class="bd-i" data-tip="${k}" aria-label="How to measure ${esc(label)}">ⓘ</button></label>
-      <div class="bd-inp"><input type="number" inputmode="decimal" step="0.1" id="m-${k}" data-m="${k}" placeholder="${ph != null ? esc(f1(ph)) : '—'}"><span>${unit}</span></div>
+      <div class="bd-inp"><input type="number" inputmode="decimal" step="0.1" id="m-${k}" data-m="${k}" placeholder="${ph != null ? +(+ph).toFixed(2) : '—'}"><span>${unit}</span></div>
       <div class="bd-tip tiny" data-tipbox="${k}" hidden>${esc(tip)}</div></div>`;
   return `<div class="card" id="bd-log">
     <div class="row between"><div class="card-title">New entry</div><input type="date" id="mDate" value="${ds()}" max="${ds()}" class="bd-date"></div>
     <p class="small muted" style="margin-top:6px">Fill in what you have. <span class="bd-req">•</span> Weight, waist and neck are enough for a body-fat estimate. Placeholders show your last values.</p>
     <div class="grid2 mt">
       ${field('weight', 'Weight', 'Morning, after the bathroom, before eating or drinking. Same scale each time.', lastW, true, 'lb')}
-      ${SITES.map(s => field(s.k, s.label, s.tip, last[s.k], s.req)).join('')}
+      ${SITES.map(s => (s.pair ? `<div class="bd-pairhead">${esc(s.pair)} · left / right</div>` : '') + field(s.k, s.label, s.tip, last[s.k], s.req)).join('')}
       ${field('bodyFat', 'Body fat (optional)', 'Only if you have a reading from a smart scale, calipers or a DEXA scan. DEXA is the most accurate; smart scales swing with hydration. Leave blank to use the tape formula.', last.bodyFat, false, '%')}
     </div>
     <button class="btn btn-primary btn-block" data-savem>Save measurements</button>
   </div>`;
 }
 
-function snapshot(b) {
+function asymNotes(meas) {
+  const last = latestSites(meas), out = [];
+  for (const [l, r, name] of [['armL', 'armR', 'arm'], ['thighL', 'thighR', 'thigh'], ['calfL', 'calfR', 'calf']]) {
+    const a = last[l], b = last[r]; if (a == null || b == null) continue;
+    const d = b - a, pct = Math.abs(d) / ((a + b) / 2) * 100;
+    if (Math.abs(d) < 0.05) out.push(`<li><b>${name[0].toUpperCase() + name.slice(1)}s:</b> L ${+a.toFixed(2)} · R ${+b.toFixed(2)}. Even.</li>`);
+    else out.push(`<li><b>${d > 0 ? 'Right' : 'Left'} ${name}</b> is ${+Math.abs(d).toFixed(2)}″ bigger (${pct.toFixed(1)}%). ${pct < 3 ? 'Under ~3% is normal.' : 'Worth evening out: start unilateral sets with the smaller side and match its reps on the other.'}</li>`);
+  }
+  return out.length ? `<div class="bd-asym"><div class="label">Left vs right</div><ul style="margin-top:4px">${out.join('')}</ul></div>` : '';
+}
+
+function snapshot(b, meas = []) {
   if (!b || !b.weightLb) return `<div class="card"><div class="empty" style="padding:16px"><div class="big">📏</div><h3>No snapshot yet</h3><p>Log your weight (plus waist and neck) above to see body fat, lean mass and your ratios.</p></div></div>`;
   const c = b.comp || {}, m = b.measurements || {}, r = b.ratios || {};
   const ff = ffmiScale(c.ffmiNormalized ?? c.ffmi);
@@ -92,8 +121,8 @@ function snapshot(b) {
   const tile = (v, unit, l, sub = '') => `<div class="stat"><div class="v">${v ?? '—'}${v != null && unit ? `<small>${unit}</small>` : ''}</div><div class="l">${l}</div>${sub ? `<div class="tiny muted" style="margin-top:2px">${sub}</div>` : ''}</div>`;
   const miss = (b.missingInfo || []).filter(x => x.field !== 'weight');
   return `<div class="card hero bd-snap">
-    <div class="row" style="align-items:flex-start;gap:12px">
-      <div class="bd-snap-sil">${silhouetteSVG(m, { bodyFatPct: b.bodyFatPct, heightIn: b.heightIn || 69 })}</div>
+    <div class="row bd-snaprow" style="align-items:flex-start;gap:12px">
+      <div class="bd-snap-sil" id="msFig">${silhouetteSVG(m, { bodyFatPct: b.bodyFatPct, heightIn: b.heightIn || 69 })}</div>
       <div class="grow">
         <div class="label">Current · ${fmtShort(b.weightDate || b.date)}</div>
         <div class="bd-big num">${f1(b.weightLb)}<small> lb</small></div>
@@ -115,14 +144,19 @@ function snapshot(b) {
       <div class="tiny muted" style="margin-top:6px">${sw ? (sw >= 1.618 ? 'At the "Adonis" golden ratio. 👑' : sw >= 1.5 ? 'Clear V-taper. Wider delts + a smaller waist close the gap.' : 'Side delts and lats widen the top; dropping fat shrinks the waist.') : 'Measure shoulders and waist to see your V-taper.'}</div>
     </div>
     <div class="row between mt"><div class="label">Waist : height</div><div class="num bold">${wh ? wh.toFixed(2) : '—'} <span class="small" style="font-weight:600;color:${wh == null ? 'var(--muted)' : wh < 0.45 ? 'var(--good)' : wh < 0.5 ? 'var(--accent2)' : 'var(--warn)'}">${wh == null ? '' : wh < 0.45 ? 'lean' : wh < 0.5 ? 'healthy' : 'above 0.5'}</span></div></div>
+    ${asymNotes(meas)}
     ${miss.length ? `<div class="bd-miss mt"><div class="label">Missing for better accuracy</div><ul>${miss.map(x => `<li><b>${esc(x.label)}</b> <span class="muted">${esc(x.why)}</span></li>`).join('')}</ul></div>` : ''}
   </div>`;
 }
 
+function avgLR(e, k) {
+  const l = e[k + 'L'], r = e[k + 'R'];
+  return l != null && r != null ? (l + r) / 2 : l ?? r ?? e[k] ?? null;
+}
 function history(meas, log) {
   const series = [['weight', 'Weight', 'lb', log.map(e => ({ d: e.d, v: e.w }))],
-    ...['waist', 'neck', 'shoulders', 'chest', 'arm', 'thigh', 'hips', 'forearm', 'calf', 'bodyFat'].map(k => [k, k === 'arm' ? 'Arms (avg)' : k === 'bodyFat' ? 'Body fat' : LABEL[k], k === 'bodyFat' ? '%' : 'in',
-      meas.map(e => ({ d: e.d, v: k === 'arm' ? (e.armL && e.armR ? (e.armL + e.armR) / 2 : e.armL || e.armR || e.arm) : e[k] })).filter(x => x.v != null)])];
+    ...['waist', 'neck', 'shoulders', 'chest', 'arm', 'thigh', 'hips', 'forearm', 'calf', 'bodyFat'].map(k => [k, ({ arm: 'Arms (avg)', thigh: 'Thighs (avg)', calf: 'Calves (avg)', bodyFat: 'Body fat' })[k] || LABEL[k], k === 'bodyFat' ? '%' : 'in',
+      meas.map(e => ({ d: e.d, v: ['arm', 'thigh', 'calf'].includes(k) ? avgLR(e, k) : e[k] })).filter(x => x.v != null)])];
   const has = series.filter(s => s[3].length);
   if (!has.length) return '<p class="small muted">Nothing logged yet. Measure every 2-4 weeks, same time of day, same conditions.</p>';
   const charts = has.map(([k, label, unit, pts]) => {
@@ -136,13 +170,43 @@ function history(meas, log) {
   const dates = [...new Set([...meas.map(e => e.d), ...log.map(e => e.d)])].sort().reverse();
   const wBy = Object.fromEntries(log.map(e => [e.d, e.w]));
   const mBy = Object.fromEntries(meas.map(e => [e.d, e]));
-  const cols = ['neck', 'shoulders', 'chest', 'waist', 'hips', 'armL', 'armR', 'forearm', 'thigh', 'calf', 'bodyFat'];
+  const cols = ['neck', 'shoulders', 'chest', 'waist', 'hips', 'armL', 'armR', 'thighL', 'thighR', 'thigh', 'calfL', 'calfR', 'calf', 'forearm', 'bodyFat'];
   const used = cols.filter(c => meas.some(e => e[c] != null));
-  const head = ['Wt', ...used.map(c => ({ armL: 'Arm L', armR: 'Arm R', bodyFat: 'BF%' }[c] || LABEL[c]))];
+  const head = ['Wt', ...used.map(c => ({ armL: 'Arm L', armR: 'Arm R', thighL: 'Thigh L', thighR: 'Thigh R', calfL: 'Calf L', calfR: 'Calf R', thigh: 'Thigh', calf: 'Calf', bodyFat: 'BF%' }[c] || LABEL[c]))];
   const rows = dates.map(d => `<tr><th>${fmtShort(d)}<div class="tiny muted">${d.slice(0, 4)}</div></th><td>${wBy[d] != null ? f1(wBy[d]) : ''}</td>${used.map(c => `<td>${mBy[d]?.[c] != null ? f1(mBy[d][c]) : ''}</td>`).join('')}<td><button class="bd-del" data-del="${d}" aria-label="Delete ${d}">✕</button></td></tr>`).join('');
   return `<div class="bd-sparks">${charts}</div>
     <div class="section-title">All entries</div>
     <div class="card bd-tablewrap" style="padding:0"><table class="bd-table num"><thead><tr><th>Date</th>${head.map(h => `<th>${esc(h)}</th>`).join('')}<th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+// ---------------- food log + adaptive TDEE ----------------
+function tdeeStatus(store, p, b, log, food) {
+  const now = new Date(), from = ds(addDays(now, -42)), to = ds(now);
+  const formula = safe(() => maintenanceEstimate(store)?.formula, null) ?? safe(() => BC.tdee({ comp: b?.comp, activity: p.body?.activity || 'desk', sessions: store.getSessions(), from: ds(addDays(now, -14)), to, now })?.total, null);
+  const r = typeof NU.adaptiveTdee === 'function' ? safe(() => NU.adaptiveTdee({ bodyLog: log, foodLog: food, from, to }), null) : null;
+  if (r && r.tdee) {
+    return `<div class="bd-tdee">Your measured TDEE: <b class="num">${Math.round(r.tdee).toLocaleString()} kcal</b>${formula ? ` <span class="muted">(formula said ${Math.round(formula).toLocaleString()})</span>` : ''}
+      <div class="tiny muted" style="margin-top:4px">${r.confidence ? `${esc(r.confidence)} confidence` : ''}${r.note ? `${r.confidence ? ' · ' : ''}${esc(r.note)}` : r.days ? ` · ${r.days} days` : ''}</div></div>`;
+  }
+  const fd = new Set(food.filter(e => e.d >= from && e.d <= to && e.kcal > 0).map(e => e.d));
+  const wd = new Set(log.filter(e => e.d >= from && e.d <= to).map(e => e.d));
+  const n = Math.min(fd.size, wd.size);
+  return `<div class="bd-tdee">Need <b>10+ days</b> of weigh-ins and food logs to calibrate your real burn rate. <b class="num">${Math.min(n, 10)}/10</b> so far${formula ? ` · formula estimate ${Math.round(formula).toLocaleString()} kcal` : ''}.
+    <div class="bar"><i style="width:${Math.min(100, n * 10)}%;background:var(--cardio)"></i></div>
+    <div class="tiny muted" style="margin-top:6px">${fd.size} food day${fd.size === 1 ? '' : 's'} and ${wd.size} weigh-in${wd.size === 1 ? '' : 's'} in the last 6 weeks. Rough logs are fine; consistency beats precision.</div></div>`;
+}
+function foodCard(store, p, b, log) {
+  const food = safe(() => store.getFoodLog(), []);
+  const rows = [...food].reverse().slice(0, 10).map(e => `<tr><th>${fmtShort(e.d)}</th><td>${e.kcal != null ? Math.round(e.kcal).toLocaleString() : ''}</td><td>${e.protein ?? ''}</td><td>${e.carbs ?? ''}</td><td>${e.fat ?? ''}</td><td><button class="bd-del" data-fdel="${e.d}" aria-label="Delete food ${e.d}">✕</button></td></tr>`).join('');
+  const inp = (id, label, ph, unit) => `<div class="field bd-field"><label for="${id}">${label}</label><div class="bd-inp"><input type="number" inputmode="numeric" id="${id}" placeholder="${ph}"><span>${unit}</span></div></div>`;
+  return `<div class="card bd-food" id="bd-food">
+    <div class="row between"><div class="card-title">Daily intake</div><input type="date" id="fDate" value="${ds()}" max="${ds()}" class="bd-date"></div>
+    <p class="small muted" style="margin-top:6px">Log a day's totals from any tracker. With your weigh-ins, Forge works out what you really burn instead of guessing.</p>
+    <div class="grid2 mt">${inp('fKcal', 'Calories', '2600', 'kcal')}${inp('fP', 'Protein', '165', 'g')}${inp('fC', 'Carbs (opt.)', '—', 'g')}${inp('fF', 'Fat (opt.)', '—', 'g')}</div>
+    <button class="btn btn-primary btn-block" data-savefood>Save day</button>
+    ${tdeeStatus(store, p, b, log, food)}
+    ${rows ? `<div class="bd-tablewrap mt"><table class="bd-table num"><thead><tr><th>Date</th><th>kcal</th><th>P</th><th>C</th><th>F</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+  </div>`;
 }
 
 export function render(ctx, params = {}) {
@@ -152,14 +216,18 @@ export function render(ctx, params = {}) {
   const log = safe(() => store.getBodyLog(), []);
   const b = safe(() => baseline({ profile: p, bodyLog: log, measurements: meas, now: new Date() }), null);
   const open = editProfile || params.edit === true;
+  const H = b?.heightIn || 69;
+  cur3d = b && b.weightLb ? { shape: { ...(b.shape || b.measurements || {}), heightIn: H }, muscle: b.muscle || estMuscle({ leanLb: b.comp?.leanLb }, H), bodyFatPct: b.bodyFatPct ?? null } : null;
   return `<div class="page-head"><p class="sub">Where you're starting, measured properly.</p></div>
     ${profileCard(p, open)}
     <div class="section-title">Snapshot <button class="link" data-nav="projection">Projection ›</button></div>
-    ${snapshot(b)}
+    ${snapshot(b, meas)}
     <div class="section-title">Log measurements</div>
     ${formCard(meas, log)}
     <div class="section-title">History</div>
-    ${history(meas, log)}`;
+    ${history(meas, log)}
+    <div class="section-title">Food log <span class="tiny muted" style="text-transform:none;letter-spacing:0">optional</span></div>
+    ${foodCard(store, p, b, log)}`;
 }
 
 export function bind(root, ctx) {
@@ -231,5 +299,32 @@ export function bind(root, ctx) {
     store.deleteMeasurement(d); store.deleteBodyweight(d);
     ctx.toast(`Deleted ${fmtShort(d)}`);
   });
+  // food log
+  root.querySelector('[data-savefood]')?.addEventListener('click', () => {
+    const d = root.querySelector('#fDate').value || ds();
+    if (d > ds()) { ctx.toast('Date is in the future'); return; }
+    const g = id => { const v = parseFloat(root.querySelector(id).value); return v >= 0 ? v : null; };
+    const kcal = g('#fKcal'), protein = g('#fP'), carbs = g('#fC'), fat = g('#fF');
+    if (!(kcal >= 500 && kcal <= 10000)) { ctx.toast('Enter calories (500–10,000)'); return; }
+    if (protein != null && protein > 600) { ctx.toast('Protein looks off'); return; }
+    if (document.activeElement) document.activeElement.blur();
+    const e = { d, kcal: Math.round(kcal) }; if (protein != null) e.protein = Math.round(protein); if (carbs != null) e.carbs = Math.round(carbs); if (fat != null) e.fat = Math.round(fat);
+    store.logFood(e);
+    ctx.toast(`Saved ${Math.round(kcal).toLocaleString()} kcal for ${fmtShort(d)}`);
+  });
+  root.querySelectorAll('[data-fdel]').forEach(b => b.onclick = () => {
+    if (!b.dataset.armed) { b.dataset.armed = '1'; b.textContent = 'Delete?'; b.classList.add('armed'); setTimeout(() => { if (b.isConnected) { delete b.dataset.armed; b.textContent = '✕'; b.classList.remove('armed'); } }, 3000); return; }
+    store.deleteFood(b.dataset.fdel); ctx.toast(`Deleted food log for ${fmtShort(b.dataset.fdel)}`);
+  });
+
+  // 3D snapshot of the current body
+  const fig = root.querySelector('#msFig');
+  if (fig && cur3d) {
+    body3d().then(() => {
+      if (!fig.isConnected || !supports3D()) return;
+      fig.closest('.bd-snap')?.classList.add('has3d');
+      mount3D('measure', root, fig, { ...cur3d, height: 320, showPoses: true, label: 'Now' });
+    });
+  }
   bindCharts(root);
 }

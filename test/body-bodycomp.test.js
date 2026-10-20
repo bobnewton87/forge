@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { navyBodyFat, bodyComp, baseline, tdee, sessionCalories } from '../js/engine/bodycomp.js';
+import { navyBodyFat, bodyComp, baseline, tdee, sessionCalories, rfmBodyFat, bmiBodyFat } from '../js/engine/bodycomp.js';
 import { bobProfile, bobBodyLog, bobMeas, bobPlan, NOW, TODAY, findBad } from './body-fixtures.js';
 
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg ?? ''} expected ${b}±${tol}, got ${a}`);
@@ -131,4 +131,54 @@ test('tdee: NEAT by activity plus exercise', () => {
   assert.equal(none.exercise, 0);
   assert.ok(t.total > 2000 && t.total < 2800, String(t.total));
   assert.deepEqual(findBad([t, active, none, tdee({})]), []);
+});
+
+test('baseline: L/R limbs, legacy thigh/calf count as both sides, asymmetry notes', () => {
+  const meas = [
+    { d: '2026-09-01', thigh: 22, calf: 14.5, arm: 13 },                          // legacy = both sides
+    { d: '2026-10-10', thighL: 22.5, thighR: 23.25, armL: 13.25 },
+    { d: '2026-10-15', calfR: 15 },
+  ];
+  const b = baseline({ profile: bobProfile(), bodyLog: bobBodyLog(), measurements: meas, now: NOW });
+  const l = b.measurements.limbs;
+  assert.deepEqual(l, { armL: 13.25, armR: 13, thighL: 22.5, thighR: 23.25, calfL: 14.5, calfR: 15 });
+  assert.equal(b.measurements.thigh, 22.88);                // (22.5 + 23.25) / 2, rounded
+  assert.equal(b.measurements.calf, 14.75);
+  assert.equal(b.measurements.arm, 13.13);
+  assert.equal(b.measuredOn.calf, '2026-10-15');
+  const sites = b.asymmetry.map(a => a.site).sort();
+  assert.deepEqual(sites, ['thigh']);                        // 0.75 > 0.5; calf diff 0.5 is not flagged
+  assert.match(b.asymmetry[0].note, /right thigh/);
+  // only legacy values → both sides equal, no asymmetry
+  const leg = baseline({ profile: bobProfile(), bodyLog: bobBodyLog(), measurements: bobMeas(), now: NOW });
+  assert.equal(leg.measurements.limbs.thighL, 22); assert.equal(leg.measurements.limbs.thighR, 22);
+  assert.equal(leg.measurements.thigh, 22);
+  assert.deepEqual(leg.asymmetry, []);
+  // one side only → used as the site value
+  const one = baseline({ profile: bobProfile(), bodyLog: bobBodyLog(), measurements: [{ d: '2026-10-01', calfL: 15 }], now: NOW });
+  assert.equal(one.measurements.calf, 15); assert.equal(one.measurements.limbs.calfR, null);
+  assert.deepEqual(findBad([b, leg, one]), []);
+});
+
+test('baseline: body-fat sources, spread and uncertainty; RFM estimate when only waist is known', () => {
+  near(rfmBodyFat({ sex: 'male', heightIn: 69, waistIn: 33.5 }), 64 - 20 * 69 / 33.5, 0.06);
+  near(rfmBodyFat({ sex: 'female', heightIn: 64, waistIn: 30 }), 76 - 20 * 64 / 30, 0.06);
+  assert.equal(rfmBodyFat({ heightIn: 69 }), null);
+  assert.ok(bmiBodyFat({ weightLb: 164, heightIn: 69, age: 39 }) > 15);
+  const p = bobProfile();
+  const all = baseline({ profile: p, bodyLog: bobBodyLog(), measurements: bobMeas(), now: NOW });
+  assert.equal(all.bodyFatMethod, 'manual');
+  for (const k of ['manual', 'navy', 'rfm', 'bmi']) assert.ok(all.bodyFatSources[k] > 5, k);
+  const vals = Object.values(all.bodyFatSources);
+  near(all.bodyFatSpread, Math.max(...vals) - Math.min(...vals), 0.11);
+  assert.ok(all.bodyFatUncertainty >= 3 && all.bodyFatUncertainty >= all.bodyFatSpread / 2 - 0.05);
+  assert.ok(all.bodyFatRange.low < 22 && all.bodyFatRange.high > 22);
+  assert.match(all.bodyFatNote, /Navy/);
+  // waist but no neck → RFM estimate (not the BMI formula)
+  const waistOnly = baseline({ profile: p, bodyLog: bobBodyLog(), measurements: [{ d: '2026-10-18', waist: 33.5 }], now: NOW });
+  assert.equal(waistOnly.bodyFatSource, 'estimate'); assert.equal(waistOnly.bodyFatMethod, 'rfm');
+  near(waistOnly.bodyFatPct, 22.8, 0.1);
+  const none = baseline({ profile: p, bodyLog: bobBodyLog(), measurements: [], now: NOW });
+  assert.equal(none.bodyFatMethod, 'bmi'); assert.equal(none.bodyFatSpread, null); assert.ok(none.bodyFatUncertainty >= 5);
+  assert.deepEqual(findBad([all, waistOnly, none]), []);
 });

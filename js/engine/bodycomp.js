@@ -8,6 +8,17 @@
 //   measuredOn:{site:'YYYY-MM-DD'}, missingInfo:[{ field, label, why }] (same fields as `missing`,
 //   with plain-English reasons), bodyFatEstimated (true when bodyFatSource === 'estimate'),
 //   weighIns30 / weighInCount / measurementCount (data-quantity counts used for projection confidence).
+// CONTRACT-NOTE (Phase 3): L/R limbs. Entries may carry armL/armR, thighL/thighR, calfL/calfR; legacy
+//   `arm`/`thigh`/`calf` count as BOTH sides. Per side the most recent value wins. measurements.arm /
+//   .thigh / .calf = average of the two sides (used by the model); measurements.limbs = { armL, armR,
+//   thighL, thighR, calfL, calfR } (null when unknown); baseline.asymmetry = [{ site, left, right,
+//   diff, note }] for any pair differing by more than 0.5 in.
+// CONTRACT-NOTE (Phase 3): body fat. Priority stays manual > navy > estimate. The estimate is now the
+//   Relative Fat Mass formula (Woolcott & Bergman 2018, height/waist, validated against DEXA) when a
+//   waist is known, else Deurenberg's BMI formula. Extra fields: bodyFatMethod ('manual'|'navy'|'rfm'|
+//   'bmi'|null), bodyFatSources:{ manual, navy, rfm, bmi } (every available value), bodyFatUncertainty
+//   (± points for the chosen value), bodyFatSpread (max − min of the available sources, or null),
+//   bodyFatRange:{ low, high }, bodyFatNote (plain English).
 // CONTRACT-NOTE: tdee() returns extra { neatFactor, days, sessions } and sessionCalories() counts
 //   GROSS kcal; tdee() subtracts the resting calories already covered by BMR+NEAT during the
 //   session minutes so exercise calories are not double-counted.
@@ -92,6 +103,9 @@ export function bodyComp({ weightLb, heightIn, bodyFatPct, age, sex = 'male', wa
 
 // ---------------------------------------------------------------- baseline
 const SITES = ['neck', 'shoulders', 'chest', 'waist', 'hips', 'arm', 'forearm', 'thigh', 'calf'];
+const LIMBS = ['arm', 'thigh', 'calf'];
+// Typical error (± BF points, ~1 SD) of each method vs a lab reference.
+const BF_ERR = { manual: 3, navy: 3.5, rfm: 4, bmi: 5.5 };
 
 const MISSING_INFO = {
   weight: ['Bodyweight', 'Everything starts from your weight: lean/fat split, calorie burn and the projection.'],
@@ -104,7 +118,7 @@ const MISSING_INFO = {
   chest: ['Chest', 'Tracks upper-body growth and the chest-to-waist ratio.'],
   arm: ['Arms (flexed)', 'Tracks arm growth and draws the silhouette.'],
   thigh: ['Thigh', 'Draws the silhouette and tracks leg size.'],
-  bodyFat: ['Body fat %', 'Without a measured or Navy body fat, a BMI-based estimate is used, which can be off by 5+ points for muscular or very lean people.'],
+  bodyFat: ['Body fat %', 'Without a measured or Navy body fat, a waist- or BMI-based estimate is used, which can be off by 4-6 points for muscular or very lean people.'],
 };
 
 function latest(list, key) {
@@ -114,6 +128,28 @@ function latest(list, key) {
     if (v != null && e.d && (!best || e.d >= best.d)) best = { d: e.d, v };
   }
   return best;
+}
+// Most recent of several keys (e.g. thighL or legacy thigh).
+function latestOf(list, keys) {
+  let best = null;
+  for (const k of keys) { const l = latest(list, k); if (l && (!best || l.d > best.d)) best = l; }
+  return best;
+}
+
+// Relative Fat Mass (Woolcott & Bergman 2018): 64 − 20 × height/waist (+12 for women).
+export function rfmBodyFat({ sex = 'male', heightIn, waistIn } = {}) {
+  const h = pos(heightIn), w = pos(waistIn);
+  if (!h || !w) return null;
+  const bf = 64 - 20 * (h / w) + (sex === 'female' ? 12 : 0);
+  return Number.isFinite(bf) && bf >= 3 && bf <= 60 ? r1(bf) : null;
+}
+// Deurenberg 1991 BMI-based adult formula.
+export function bmiBodyFat({ sex = 'male', weightLb, heightIn, age } = {}) {
+  const w = pos(weightLb), h = pos(heightIn);
+  if (!w || !h) return null;
+  const bmi = (w / LB_PER_KG) / ((h * CM_PER_IN / 100) ** 2);
+  const est = 1.2 * bmi + 0.23 * (pos(age) ?? DEFAULT_AGE) - 10.8 * (sex === 'male' ? 1 : 0) - 5.4;
+  return Number.isFinite(est) ? r1(Math.max(4, Math.min(55, est))) : null;
 }
 
 export function baseline({ profile = {}, bodyLog = [], measurements = [], now = new Date() } = {}) {
@@ -136,31 +172,63 @@ export function baseline({ profile = {}, bodyLog = [], measurements = [], now = 
   const birthYear = pos(body.birthYear);
   const age = birthYear ? toDate(now).getFullYear() - birthYear : null;
 
-  // Latest value per site. Arm = average of the latest armL/armR (or whichever exists, or legacy `arm`).
+  // Latest value per site; limbs: per side (side key or legacy both-sides key), then averaged.
   const measurementsOut = {}, measuredOn = {};
   for (const s of SITES) {
-    if (s === 'arm') continue;
+    if (LIMBS.includes(s)) continue;
     const l = latest(meas, s);
     measurementsOut[s] = l ? l.v : null;
     if (l) measuredOn[s] = l.d;
   }
-  const aL = latest(meas, 'armL'), aR = latest(meas, 'armR'), aX = latest(meas, 'arm');
-  if (aL && aR) { measurementsOut.arm = r2((aL.v + aR.v) / 2); measuredOn.arm = aL.d > aR.d ? aL.d : aR.d; }
-  else if (aL || aR || aX) { const x = [aL, aR, aX].filter(Boolean).sort((p, q) => q.d.localeCompare(p.d))[0]; measurementsOut.arm = x.v; measuredOn.arm = x.d; }
-  else measurementsOut.arm = null;
+  const limbs = {};
+  const asymmetry = [];
+  for (const s of LIMBS) {
+    const L = latestOf(meas, [s + 'L', s]), R = latestOf(meas, [s + 'R', s]);
+    limbs[s + 'L'] = L ? L.v : null; limbs[s + 'R'] = R ? R.v : null;
+    if (L && R) {
+      measurementsOut[s] = r2((L.v + R.v) / 2); measuredOn[s] = L.d > R.d ? L.d : R.d;
+      const diff = r2(L.v - R.v);
+      if (Math.abs(diff) > 0.5) {
+        const big = diff > 0 ? 'left' : 'right';
+        const name = { arm: 'arm', thigh: 'thigh', calf: 'calf' }[s];
+        asymmetry.push({ site: s, left: L.v, right: R.v, diff,
+          note: `Your ${big} ${name} measures ${Math.abs(diff)} in bigger. Up to ~0.5 in is normal (dominant side, or tape placement). More than that is worth re-measuring; if it is real, start unilateral work with the smaller side and match its reps on the bigger side.` });
+      }
+    } else if (L || R) { const x = L || R; measurementsOut[s] = x.v; measuredOn[s] = x.d; }   // one side only
+    else measurementsOut[s] = null;
+  }
+  measurementsOut.limbs = limbs;
 
-  // Body fat: manual > navy > estimate (Deurenberg BMI formula).
+  // Body fat: manual > navy > estimate (RFM if a waist is known, else Deurenberg BMI formula).
   const manual = latest(meas, 'bodyFat');
   const navyBodyFatPct = navyBodyFat({ sex, heightIn, neckIn: measurementsOut.neck, waistIn: measurementsOut.waist, hipsIn: measurementsOut.hips });
-  let bodyFatPct = null, bodyFatSource = null, bodyFatDate = null;
-  if (manual && manual.v < 70) { bodyFatPct = manual.v; bodyFatSource = 'manual'; bodyFatDate = manual.d; }
+  const rfm = rfmBodyFat({ sex, heightIn, waistIn: measurementsOut.waist });
+  const bmiEst = bmiBodyFat({ sex, weightLb, heightIn, age });
+  let bodyFatPct = null, bodyFatSource = null, bodyFatDate = null, bodyFatMethod = null;
+  if (manual && manual.v < 70) { bodyFatPct = manual.v; bodyFatSource = 'manual'; bodyFatMethod = 'manual'; bodyFatDate = manual.d; }
   else if (navyBodyFatPct != null) {
-    bodyFatPct = navyBodyFatPct; bodyFatSource = 'navy';
+    bodyFatPct = navyBodyFatPct; bodyFatSource = 'navy'; bodyFatMethod = 'navy';
     bodyFatDate = [measuredOn.neck, measuredOn.waist, sex === 'female' ? measuredOn.hips : null].filter(Boolean).sort().pop() || null;
-  } else if (weightLb && heightIn) {
-    const bmi = (weightLb / LB_PER_KG) / ((heightIn * CM_PER_IN / 100) ** 2);
-    const est = 1.2 * bmi + 0.23 * (age ?? DEFAULT_AGE) - 10.8 * (sex === 'male' ? 1 : 0) - 5.4;
-    if (Number.isFinite(est)) { bodyFatPct = r1(Math.max(4, Math.min(55, est))); bodyFatSource = 'estimate'; bodyFatDate = weightDate; }
+  } else if (rfm != null) {
+    bodyFatPct = rfm; bodyFatSource = 'estimate'; bodyFatMethod = 'rfm'; bodyFatDate = measuredOn.waist || weightDate;
+  } else if (bmiEst != null) {
+    bodyFatPct = bmiEst; bodyFatSource = 'estimate'; bodyFatMethod = 'bmi'; bodyFatDate = weightDate;
+  }
+  const bodyFatSources = { manual: manual && manual.v < 70 ? manual.v : null, navy: navyBodyFatPct, rfm, bmi: bmiEst };
+  const avail = Object.values(bodyFatSources).filter(v => v != null);
+  const bodyFatSpread = avail.length >= 2 ? r1(Math.max(...avail) - Math.min(...avail)) : null;
+  let bodyFatUncertainty = null, bodyFatRange = null, bodyFatNote = null;
+  if (bodyFatPct != null) {
+    const own = BF_ERR[bodyFatMethod];
+    // If the methods disagree a lot, widen the uncertainty (at least half of the disagreement).
+    bodyFatUncertainty = r1(Math.max(own, bodyFatSpread != null ? bodyFatSpread / 2 : 0));
+    bodyFatRange = { low: r1(Math.max(3, bodyFatPct - bodyFatUncertainty)), high: r1(bodyFatPct + bodyFatUncertainty) };
+    const label = { manual: 'the value you entered', navy: 'the US Navy tape formula', rfm: 'your waist-to-height ratio (Relative Fat Mass formula)', bmi: 'your BMI and age (Deurenberg formula)' }[bodyFatMethod];
+    const others = Object.entries(bodyFatSources).filter(([k, v]) => v != null && k !== bodyFatMethod)
+      .map(([k, v]) => `${{ manual: 'entered', navy: 'Navy tape', rfm: 'waist/height', bmi: 'BMI' }[k]} ${v}%`);
+    bodyFatNote = `Body fat ${bodyFatPct}% from ${label}, about ±${bodyFatUncertainty} points.` +
+      (others.length ? ` Other estimates: ${others.join(', ')}${bodyFatSpread != null && bodyFatSpread > 4 ? '. They disagree by more than 4 points, so treat the starting point as uncertain' : ''}.` : '') +
+      (bodyFatMethod === 'manual' ? ' A DEXA scan is good to ~±2; home bioimpedance scales can be off by 4-5 and swing with hydration.' : '');
   }
 
   const comp = weightLb ? bodyComp({ weightLb, heightIn, bodyFatPct, age, sex, waistIn: measurementsOut.waist }) : null;
@@ -190,7 +258,8 @@ export function baseline({ profile = {}, bodyLog = [], measurements = [], now = 
   return {
     date: today, weightLb: weightLb != null ? r1(weightLb) : null, weightDate, heightIn: heightIn ?? null, age, sex,
     bodyFatPct, bodyFatSource, bodyFatDate, bodyFatEstimated: bodyFatSource === 'estimate', navyBodyFatPct,
-    measurements: measurementsOut, measuredOn, comp, ratios, missing, missingInfo,
+    bodyFatMethod, bodyFatSources, bodyFatUncertainty, bodyFatSpread, bodyFatRange, bodyFatNote,
+    measurements: measurementsOut, measuredOn, asymmetry, comp, ratios, missing, missingInfo,
     weighIns30: log.filter(e => e.d >= ds(addDays(parseDs(today), -30))).length, weighInCount: log.length, measurementCount: meas.length,
   };
 }

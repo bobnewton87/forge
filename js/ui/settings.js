@@ -23,6 +23,7 @@ function renderMore(ctx) {
       ${item('library', '📚', 'Exercise library', 'Cues, videos, alternatives, your PRs')}
       ${item('measure', '📏', 'Body profile', p.body?.heightIn ? 'Height, age, measurements, body fat' : 'Add height, age and measurements')}
       ${item('nutrition', '🥗', 'Nutrition', p.nutrition?.mode && p.nutrition.mode !== 'off' ? (p.nutrition.mode === 'cycling' ? 'Carb cycling on' : 'Simple targets on') : 'Optional · off')}
+      ${item('supplements', '🧪', 'Supplements & metabolism', (() => { const n = (p.supplements || []).filter(e => e && e.active !== false && !e.end).length; return n ? `${n} in your stack · labs, sleep, stress` : 'Creatine, TRT, peptides · labs, sleep'; })())}
       ${item('settings', '⚙️', 'Settings', 'Goals, sculpt focus, locations, timer')}
     </div>
     <div class="list">

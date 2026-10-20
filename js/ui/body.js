@@ -8,6 +8,8 @@ import { esc, readinessColor, muscleBar } from './components.js';
 import { ds, fmtShort, addDays, daysBetween } from '../util.js';
 import * as bodycomp from '../engine/bodycomp.js';
 import { silhouetteSVG } from './silhouette.js';
+import { mount3D, body3d, supports3D, estMuscle } from './projection.js';
+let card3d = null;   // 3D opts for the "Your body" card (UI-LAB)
 
 const safe = (fn, fb) => { try { const v = fn(); return v == null ? fb : v; } catch (e) { console.error(e); return fb; } };
 const f1 = n => { n = Number(n) || 0; return Math.round(n) === n ? String(n) : n.toFixed(1); };
@@ -113,12 +115,14 @@ function yourBodyCard(store, profile, log) {
   const m = b?.measurements || {};
   const has = b && b.weightLb;
   const stat = (v, u, l) => `<div><b>${v ?? '—'}${v != null ? `<small>${u}</small>` : ''}</b><span>${l}</span></div>`;
+  const H = b?.heightIn || 69;
+  card3d = has ? { shape: { ...(b.shape || m), heightIn: H }, muscle: b.muscle || estMuscle({ leanLb: b.comp?.leanLb }, H), bodyFatPct: b.bodyFatPct ?? null } : null;
   return `<div class="card bd-card">
-    <div class="bd-card-sil">${silhouetteSVG(m, { bodyFatPct: b?.bodyFatPct, heightIn: b?.heightIn || 69 })}</div>
+    <div class="bd-card-sil bd-card-3d" id="bdCard3d" aria-hidden="true">${silhouetteSVG(m, { bodyFatPct: b?.bodyFatPct, heightIn: H })}</div>
     <div class="grow"><div class="row between"><div class="card-title">Your body</div>${has && b.bodyFatSource ? `<span class="tiny muted">${b.bodyFatSource === 'navy' ? 'tape BF' : b.bodyFatSource === 'manual' ? 'measured BF' : 'est. BF'}</span>` : ''}</div>
       ${has ? `<div class="bd-stats">${stat(f1(b.weightLb), 'lb', 'weight')}${stat(b.bodyFatPct != null ? f1(b.bodyFatPct) : null, '%', 'body fat')}${stat(m.waist != null ? f1(m.waist) : null, '″', 'waist')}</div>`
         : `<p class="small muted" style="margin-top:4px">Add weight, height and a few tape measurements to see body fat and a projection of where your training is taking you.</p>`}
-      <div class="btn-row"><button class="btn" data-bdnav="measure">📏 ${has ? 'Log' : 'Measure'}</button><button class="btn ${has ? 'btn-primary' : ''}" data-bdnav="projection">🔮 Projection</button></div>
+      <div class="btn-row"><button class="btn" data-bdnav="measure">📏 ${has ? 'Log' : 'Measure'}</button><button class="btn ${has ? 'btn-primary' : ''}" data-bdnav="projection">🔮 Projection</button><button class="btn btn-ghost" data-bdnav="supplements">💊 Supplements &amp; metabolism</button></div>
     </div></div>`;
 }
 
@@ -261,6 +265,11 @@ function weightsSheet(ctx) {
 
 export function bind(root, ctx) {
   root.querySelectorAll('[data-bdnav]').forEach(b => b.onclick = () => ctx.nav(b.dataset.bdnav));
+  const host3d = root.querySelector('#bdCard3d');
+  if (host3d && card3d) {
+    const o3 = card3d;
+    body3d().then(() => { if (host3d.isConnected && supports3D()) mount3D('body', root, host3d, { ...o3, height: 170, autoRotate: false, showPoses: false }); });
+  }
   root.querySelectorAll('[data-group]').forEach(b => b.onclick = () => groupSheet(ctx, b.dataset.group));
   root.querySelectorAll('.bodymap [data-region]').forEach(g => g.addEventListener('click', () => {
     const r = g.dataset.region; groupSheet(ctx, REGIONS[r]?.group, r);

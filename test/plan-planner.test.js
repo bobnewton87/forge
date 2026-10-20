@@ -327,7 +327,9 @@ test('suggestForDay returns null on rest days and a session otherwise', () => {
 test('suggestForDay builds on planned sessions before the date and honors a slot override', () => {
   const p = profile();
   const plan = week({ profile: p });
-  const thu = suggestForDay('2026-10-22', { profile: p, sessions: plan, now: NOW });
+  // PLAN-FIX: suggestForDay also sees planned days AFTER the date (planRange's forward pass can't),
+  // so compare like with like: only the days up to Thursday as context.
+  const thu = suggestForDay('2026-10-22', { profile: p, sessions: plan.filter(s => s.date <= '2026-10-22'), now: NOW });
   const fresh = plan.find(s => s.date === '2026-10-22');
   assert.equal(thu.plan.kind, 'lift');
   assert.deepEqual(thu.plan.groups.slice().sort(), fresh.plan.groups.slice().sort(), 'same context → same decision');

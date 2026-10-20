@@ -8,6 +8,12 @@
 // CONTRACT-NOTE: superset/circuit rest is encoded per block: every member except the last in a
 //   group gets a short transition rest (10-15 s); the last member carries the shared round rest.
 //   So "per set = work + rest" summed over blocks is the real elapsed time.
+// CONTRACT-NOTE (PLAN-FIX): buildWorkout accepts optional `upcoming` (planned sessions after `now`,
+//   simulated as done) and forwards it to recovery so need/weekly volume include the plan.
+//   Selection rules: first exercise per group = best available staple (favourites first);
+//   equipment-quality bias (band/KB/TRX/makeshift/bodyweight are fallbacks when DBs or cables
+//   exist); no supersets that share a limiting muscle (triceps, biceps, grip); ≤2 of a pattern
+//   (3 at 60+ min); fill-in (complement) groups prefer isolations and go after the requested work.
 // CONTRACT-NOTE: alternatives()/exercisesFor() accept equipment as an array of ids or a Set;
 //   undefined means "no equipment filter".
 
@@ -48,6 +54,24 @@ const COMPLEMENT = {
   calves: ['core', 'quads'],
 };
 
+// Coach's openers: the first exercise for a group is its best staple for the equipment at hand
+// (PLAN-FIX). Ordered best-first; filtered at load to exercises whose prime mover is that group.
+const STAPLE_IDS = {
+  chest: ['db_incline', 'db_bench', 'machine_chest_press', 'machine_incline_press', 'db_incline_low', 'smith_incline', 'cable_press_standing', 'dip_chest', 'landmine_chest_press', 'pushup_deficit', 'pushup', 'pushup_decline', 'band_chest_press', 'trx_chest_press', 'db_floor_press', 'kb_floor_press'],
+  back: ['lat_pulldown', 'pullup', 'chinup', 'pullup_neutral', 'assisted_pullup', 'cable_row', 'machine_row', 'db_row', 'trap_row', 'db_chest_row', 'kneeling_cable_pulldown', 'band_lat_pulldown', 'db_bent_row', 'inverted_row', 'trx_row', 'door_row', 'towel_row'],
+  shoulders: ['db_shoulder', 'machine_shoulder_press', 'db_arnold', 'db_standing_press', 'smith_shoulder_press', 'db_single_press', 'kb_press', 'landmine_press', 'pike_pushup', 'band_overhead_press'],
+  biceps: ['db_incline_curl', 'db_curl', 'cable_curl', 'ez_curl', 'db_hammer', 'cable_bayesian_curl', 'db_alt_curl', 'db_preacher_curl', 'band_curl', 'trx_curl', 'towel_curl', 'table_curl'],
+  triceps: ['tri_pushdown', 'cable_rope_pushdown', 'cable_oh_ext', 'db_tri_oh', 'db_skull', 'ez_skull', 'dip_tri', 'assisted_dip_tri', 'db_tri_oh_seated', 'band_pushdown', 'band_oh_ext', 'close_grip_pushup', 'diamond_pushup', 'bench_dip_tri', 'bw_tri_ext'],
+  core: ['cable_crunch', 'hang_knee', 'captain_knee', 'machine_crunch', 'decline_crunch', 'db_weighted_crunch', 'reverse_crunch', 'plank', 'dead_bug', 'crunch'],
+  quads: ['leg_press', 'hack_squat', 'db_goblet', 'db_split', 'heel_elev_goblet', 'db_lunge', 'kb_goblet', 'bw_bulgarian', 'bw_split_squat', 'bw_lunge'],
+  hamstrings: ['db_rdl', 'trap_rdl', 'leg_curl', 'lying_leg_curl', 'db_sl_rdl', 'kb_sl_rdl', 'sliding_leg_curl', 'ham_bridge_bench', 'bw_sl_rdl'],
+  glutes: ['trap_dl', 'db_hip_thrust', 'machine_hip_thrust', 'smith_hip_thrust', 'cable_pull_through', 'sl_hip_thrust', 'glute_bridge'],
+  calves: ['standing_calf_machine', 'leg_press_calf', 'db_calf', 'db_sl_calf', 'smith_calf', 'seated_calf_machine', 'bw_calf_raise'],
+  forearms: ['db_wrist_curl', 'farmer', 'cable_wrist_curl', 'db_rev_wrist_curl', 'band_wrist_curl', 'towel_wring'],
+};
+// Improvised moves that only make sense when nothing better is around.
+const BENCH_ONLY = new Set(['flat_bench', 'adjustable_bench', 'plyo_box']);   // "bodyweight + a bench"
+const MAKESHIFT = new Set(['towel_curl', 'towel_row', 'towel_fly', 'towel_wring', 'wall_lateral_iso', 'table_curl', 'door_row', 'ab_rollout_towel']);
 const regionGroup = r => REGIONS[r]?.group || Object.values(GROUPS).find(g => g.regions.includes(r))?.id || null;
 
 // ---------------------------------------------------------------- small helpers
@@ -77,6 +101,52 @@ export function isBackSquat(ex) {
   if (ex.pattern !== 'squat' || !(ex.equipment || []).includes('barbell')) return false;
   return !/front|zercher|split|bulgarian|lunge|landmine|hack|belt/.test(s);
 }
+const STAPLES = Object.fromEntries(Object.entries(STAPLE_IDS).map(([g, ids]) => [g, ids.filter(id => { const e = getEx(id); return e && primaryGroup(e) === g; })]));
+
+// Equipment quality: at a location with dumbbells / cables, band, kettlebell, TRX, makeshift and
+// plain-bodyweight variants are fallbacks, not first choices (core work excepted).
+function eqQuality(ex, eq) {
+  if (!eq) return 1;
+  const e = ex.equipment || [];
+  const hasDb = eq.has('dumbbell'), hasCable = eq.has('cable');
+  let q = 1;
+  if (MAKESHIFT.has(ex.id) && (hasDb || hasCable)) q *= 0.45;
+  if (e.includes('band') && (hasDb || hasCable)) q *= hasCable ? 0.5 : 0.75;
+  if (e.includes('kettlebell') && hasDb) q *= 0.75;
+  if (e.includes('trx') && (hasDb || hasCable)) q *= 0.7;
+  if (e.every(x => BENCH_ONLY.has(x)) && hasDb && primaryGroup(ex) !== 'core') q *= 0.7;
+  return q;
+}
+
+// Per-group peak muscle credit of an exercise.
+function groupLoad(ex) {
+  const out = {};
+  for (const [r, w] of Object.entries(ex.muscles || {})) { const g = regionGroup(r); if (g) out[g] = Math.max(out[g] || 0, w); }
+  return out;
+}
+// Grip demand 0..1: hangs/carries max it out; curls, pulls, shrugs and hinges all need some.
+function gripLoad(ex) {
+  let g = ex.muscles?.forearms || 0;
+  if (ex.pattern === 'carry' || /hang/.test(ex.id)) g = Math.max(g, 1);
+  if (['elbow_flexion', 'vertical_pull', 'horizontal_pull', 'shrug'].includes(ex.pattern)) g = Math.max(g, 0.35);
+  if (ex.pattern === 'hinge' && (ex.fatigue || 1) >= 2) g = Math.max(g, 0.35);
+  return g;
+}
+// Two moves share a limiting muscle (triceps, biceps, grip): don't superset them, or the
+// second one is pre-fatigued (e.g. dead hang + curls, close-grip press + dips).
+function sharesLimiter(a, b) {
+  const la = groupLoad(a), lb = groupLoad(b);
+  for (const g of ['triceps', 'biceps']) {
+    const x = la[g] || 0, y = lb[g] || 0;
+    if (Math.min(x, y) >= 0.5) return true;
+    // a triceps isolation after any press still pre-fatigues the press (rows + curls are fine)
+    if (g === 'triceps' && Math.max(x, y) >= 0.75 && Math.min(x, y) >= 0.25) return true;
+  }
+  // two presses both loading the front delts (incline press + shoulder press)
+  if (Math.min(a.muscles?.delt_front || 0, b.muscles?.delt_front || 0) >= 0.5 && a.category === 'compound' && b.category === 'compound') return true;
+  const ga = gripLoad(a), gb = gripLoad(b);
+  return Math.max(ga, gb) >= 0.75 && Math.min(ga, gb) >= 0.25;
+}
 function cosine(a, b) {
   let dot = 0, na = 0, nb = 0;
   for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
@@ -89,7 +159,7 @@ function isAntagonist(a, b) {
 }
 function competes(a, b) {
   const ma = new Set(mainRegions(a));
-  return mainRegions(b).some(r => ma.has(r)) || primaryGroup(a) === primaryGroup(b);
+  return mainRegions(b).some(r => ma.has(r)) || primaryGroup(a) === primaryGroup(b) || sharesLimiter(a, b);
 }
 const midReps = t => Math.round(((t.repMin ?? 8) + (t.repMax ?? 12)) / 2);
 const cap1 = s => s ? s[0].toUpperCase() + s.slice(1) : s;
@@ -249,11 +319,11 @@ function groupMeanMin(r) {
 }
 
 function makeCtx(opts) {
-  const { minutes, style, profile, sessions, now, eq, exclude, rw, activeGoals, targetGoals, seed } = opts;
+  const { minutes, style, profile, sessions, now, eq, exclude, rw, activeGoals, targetGoals, seed, reqGroups, upcoming } = opts;
   const avoid = new Set([...(exclude || []), ...((profile && profile.avoidExercises) || [])]);
   const recent = recentExercises(sessions, now);
   const favs = new Set((profile && profile.favoriteExercises) || []);
-  const mstat = safe(() => muscleStatus(sessions || [], { now, profile }), {});
+  const mstat = safe(() => muscleStatus(sessions || [], { now, profile, upcoming }), {});
   const activeTags = new Set(activeGoals.map(g => SCULPT_GOALS[g]?.emphasisTag || g));
   const targetTags = new Set(targetGoals.map(g => SCULPT_GOALS[g]?.emphasisTag || g));
 
@@ -272,12 +342,35 @@ function makeCtx(opts) {
     const share = REGIONS[r]?.weeklySets?.min ? REGIONS[r].weeklySets.min / groupMeanMin(r) : 1;
     weights[r] = base * share * (0.35 + need * pr) * boost * ready;
   }
+  const rwGroups = new Set(Object.keys(rw).map(regionGroup));
+  const reqSet = new Set(reqGroups && reqGroups.length ? reqGroups : rwGroups);
+  // A move whose prime mover is outside every requested/fill-in group only belongs when at least
+  // half its credit lands on the REQUESTED muscles (chin-ups on a biceps day: yes; chest dips or
+  // floor presses on a shoulder day: no).
+  const crossOk = ex => {
+    if (rwGroups.has(primaryGroup(ex))) return true;
+    let on = 0, all = 0;
+    for (const [r, w] of Object.entries(ex.muscles)) { all += w; if (rw[r] && reqSet.has(regionGroup(r))) on += w; }
+    return all > 0 && on / all >= 0.5;
+  };
   const pool = EXERCISES.filter(ex =>
     ex && ex.muscles && !avoid.has(ex.id) && !isBackSquat(ex) && (!eq || canDo(ex, eq)) &&
     (ex.pattern !== 'conditioning' || style === 'circuit') &&
-    onTarget(ex, rw));
+    onTarget(ex, rw) && crossOk(ex));
+  const req = reqSet;
+  const reqRegions = new Set(Object.keys(rw).filter(r => req.has(regionGroup(r))));
+  // Staple openers available here, per group (favourites of that group lead the list).
+  const poolIds = new Set(pool.map(e => e.id));
+  const staples = {};
+  for (const g of new Set(pool.map(primaryGroup))) {
+    if (!g) continue;
+    const favFirst = pool.filter(e => favs.has(e.id) && primaryGroup(e) === g).map(e => e.id);
+    // the user's favourites for a group ARE its openers when there are any
+    staples[g] = favFirst.length ? favFirst : (STAPLES[g] || []).filter(id => poolIds.has(id));
+  }
+  const quality = new Map(pool.map(e => [e.id, eqQuality(e, eq)]));
   return { minutes, style, profile, sessions, now, eq, weights, pool, recent, favs, activeTags, targetTags,
-    rand: makeRng(seed), cache: new Map(), mstat };
+    rand: makeRng(seed), cache: new Map(), mstat, req, reqRegions, staples, quality };
 }
 
 function groupCap(g, minutes) {
@@ -329,10 +422,40 @@ function scoreEx(ex, items, ctx, desired, { novelty = false, relaxed = false } =
   if (ctx.favs.has(ex.id)) m *= 1.3;
   const eqs = ex.equipment || [];
   if (eqs.includes('barbell')) m *= 0.55; else if (eqs.includes('smith')) m *= 0.85;
+  m *= ctx.quality.get(ex.id) ?? 1;
+  const pg = primaryGroup(ex);
+  // Prefer moves that load the requested muscles hard; fill-in (complement) groups get isolations.
+  let maxReq = 0;
+  for (const [r, w] of Object.entries(ex.muscles)) if (ctx.reqRegions.has(r)) maxReq = Math.max(maxReq, w);
+  m *= 0.6 + 0.4 * maxReq;
+  if (!ctx.req.has(pg)) {
+    if (ex.category === 'compound') m *= 0.55;
+    // a move whose prime mover isn't a requested or fill-in group (chest dips on a shoulder day)
+    if (!Object.keys(ctx.weights).some(r => regionGroup(r) === pg)) m *= 0.35;
+  }
+  // First exercise for a group = its best staple for this equipment.
+  const opener = pg && !items.some(it => primaryGroup(it.ex) === pg);
+  if (opener) {
+    const used = new Set(items.map(it => it.ex.id));
+    const st = (ctx.staples[pg] || []).filter(id => !used.has(id));
+    if (st.length) {
+      const rank = st.indexOf(ex.id);
+      if (rank < 0) return -Infinity;
+      m *= 1.4 / (1 + 0.35 * rank);
+    }
+  }
   const pr = primaryRegion(ex);
   if (!relaxed) {
     if (items.some(it => it.ex.pattern === ex.pattern && primaryRegion(it.ex) === pr)) m *= 0.3;
-    else if (items.some(it => it.ex.pattern === ex.pattern)) m *= 0.75;
+    else if (items.some(it => it.ex.pattern === ex.pattern)) m *= ctx.minutes <= 25 ? 0.35 : 0.75;
+    // Short sessions: after a compound for a group, its next move should be an isolation
+    // (press + fly superset beats two presses).
+    if (ctx.minutes <= 25 && ex.category === 'compound' && items.some(it => it.ex.category === 'compound' && primaryGroup(it.ex) === pg)) m *= 0.7;
+    // Cap redundant patterns: at most 2 of one pattern (3 in long sessions).
+    if (items.filter(it => it.ex.pattern === ex.pattern).length >= (ctx.minutes >= 60 ? 3 : 2)) m *= 0.15;
+    // One triceps-heavy compound (JM / close-grip / dips / neutral press) per session is plenty.
+    const triPress = e => e.category === 'compound' && (groupLoad(e).triceps || 0) >= 0.5;
+    if (triPress(ex) && items.some(it => triPress(it.ex))) m *= 0.3;
   }
   if ((ex.fatigue || 1) >= 3) {
     const n3 = items.filter(it => (it.ex.fatigue || 1) >= 3).length;
@@ -344,16 +467,19 @@ function scoreEx(ex, items, ctx, desired, { novelty = false, relaxed = false } =
   if (ctx.minutes <= 25 && ex.unilateral) m *= 0.8;
   // compounds early: modest preference while the plan is still small
   if (ex.category === 'compound' && items.length < 3) m *= 1.15;
-  const g = primaryGroup(ex);
+  const g = pg;
   if (!relaxed && g && (grp[g] || 0) + 2 > groupCap(g, ctx.minutes)) return -Infinity; // group full: let a complement fill time
   m *= 0.9 + 0.2 * ctx.rand();
   return serve * m;
 }
 
-function orderItems(items) {
+// Requested groups first (compounds, then isolations), then fill-in groups (compounds, isolations).
+function orderItems(items, ctx) {
   const idx = new Map(items.map((it, i) => [it, i]));
+  const reqOf = it => (ctx && ctx.req && !ctx.req.has(primaryGroup(it.ex)) ? 1 : 0);
   return [...items].sort((a, b) => {
     const ca = a.ex.category === 'compound' ? 0 : 1, cb = b.ex.category === 'compound' ? 0 : 1;
+    if (reqOf(a) !== reqOf(b)) return reqOf(a) - reqOf(b);
     if (ca !== cb) return ca - cb;
     if (ca === 0 && (b.ex.fatigue || 1) !== (a.ex.fatigue || 1)) return (b.ex.fatigue || 1) - (a.ex.fatigue || 1);
     return idx.get(a) - idx.get(b);
@@ -375,6 +501,7 @@ function pairUp(list, allowTri) {
       // single-muscle short session: pair with the least-overlapping move (compound + isolation set)
       rest.forEach((b, i) => {
         if ((a.ex.fatigue || 1) >= 3 && (b.ex.fatigue || 1) >= 3) return;
+        if (sharesLimiter(a.ex, b.ex) || a.ex.pattern === b.ex.pattern) return;
         const s = 1 - cosine(a.ex.muscles, b.ex.muscles) + (a.ex.category !== b.ex.category ? 0.3 : 0) - i * 0.01;
         if (s > bs) { bs = s; bi = i; }
       });
@@ -387,7 +514,7 @@ function pairUp(list, allowTri) {
       if (units[i].length !== 1 || units.length < 2) continue;
       const solo = units[i][0];
       const host = units.find(u => u.length === 2 && u.every(x => !competes(x.ex, solo.ex))) ||
-        [...units].reverse().find(u => u.length === 2 && u.every(x => (x.ex.fatigue || 1) + (solo.ex.fatigue || 1) < 6));
+        [...units].reverse().find(u => u.length === 2 && u.every(x => (x.ex.fatigue || 1) + (solo.ex.fatigue || 1) < 6 && !sharesLimiter(x.ex, solo.ex) && primaryGroup(x.ex) !== primaryGroup(solo.ex)));
       if (host) { host.push(solo); units.splice(i, 1); }
     }
   }
@@ -395,7 +522,7 @@ function pairUp(list, allowTri) {
 }
 
 function arrange(items, ctx) {
-  const ordered = orderItems(items);
+  const ordered = orderItems(items, ctx);
   if (ordered.length <= 1) return ordered.map(x => [x]);
   if (ctx.style === 'circuit') {
     if (ordered.length <= 6) return [ordered];
@@ -404,8 +531,12 @@ function arrange(items, ctx) {
   }
   if (ctx.minutes <= 25 || ctx.style === 'pump') return pairUp(ordered, true);
   if (ctx.style === 'strength') return ordered.map(x => [x]);
-  const comps = ordered.filter(x => x.ex.category === 'compound');
-  const isos = ordered.filter(x => x.ex.category !== 'compound');
+  // Straight-set compounds for the requested groups lead; fill-in compounds join the
+  // isolation supersets after the requested work (no triceps presses before a biceps day).
+  const isReq = x => !ctx.req || ctx.req.has(primaryGroup(x.ex));
+  const comps = ordered.filter(x => x.ex.category === 'compound' && isReq(x));
+  const isos = ordered.filter(x => !(x.ex.category === 'compound' && isReq(x)));
+  isos.sort((a, b) => (isReq(b) - isReq(a)) || ((a.ex.category === 'compound' ? 0 : 1) - (b.ex.category === 'compound' ? 0 : 1)));
   return [...comps.map(x => [x]), ...pairUp(isos, false)];
 }
 
@@ -498,7 +629,12 @@ function planSession(ctx, budgetMin, otherMin) {
         }
         if (plan.items.length > Math.max(1, lo)) {
           let wi = 0, ws = Infinity;
-          plan.items.forEach((x, i) => { const n = unitNeed([x]) * (x.ex.category === 'compound' ? 1.3 : 1); if (n < ws) { ws = n; wi = i; } });
+          // drop the least-needed item; a pattern duplicate (2nd press) goes before a lone fly
+          plan.items.forEach((x, i) => {
+            const dup = plan.items.some((y, j) => j < i && y.ex.pattern === x.ex.pattern);
+            const n = unitNeed([x]) * (x.ex.category === 'compound' ? 1.3 : 1) * (dup ? 0.5 : 1);
+            if (n < ws) { ws = n; wi = i; }
+          });
           const removed = plan.items[wi];
           moves.push({ pen: 0.02, apply: () => plan.items.splice(wi, 1), undo: () => plan.items.splice(wi, 0, removed) });
         } else if (plan.items.length > 1 && cur > total * 1.1) {
@@ -529,7 +665,7 @@ function planSession(ctx, budgetMin, otherMin) {
 // ---------------------------------------------------------------- buildWorkout
 export function buildWorkout({
   targets = [], minutes = 45, location, profile, sessions = [], now = new Date(),
-  style = 'hypertrophy', cardio = null, seed, exclude = [],
+  style = 'hypertrophy', cardio = null, seed, exclude = [], upcoming = null,
 } = {}) {
   sessions = sessions || [];
   profile = profile || {};
@@ -545,7 +681,7 @@ export function buildWorkout({
   let res = resolveTargets(tgts);
   let autoLabel = null;
   if (!Object.keys(res.regionW).length) {
-    const recs = safe(() => recommend(sessions, { now, profile, minutes, location }), []);
+    const recs = safe(() => recommend(sessions, { now, profile, minutes, location, upcoming }), []);
     // Combo recs have targetId like 'chest+triceps'; rec.targets is always a list of valid ids.
     const recTargets = r => (Array.isArray(r?.targets) && r.targets.length ? r.targets : [r?.targetId]).filter(Boolean);
     const top = recs.find(r => r && resolveTargets(recTargets(r)).groups.length) || null;
@@ -572,13 +708,14 @@ export function buildWorkout({
   const addedGroups = [];
   if (liftRoom >= 8) {
     const targetGoals = res.sculpt;
-    const mk = (rw) => makeCtx({ minutes, style, profile, sessions, now, eq, exclude, rw, activeGoals: [...new Set([...activeGoals, ...targetGoals])], targetGoals, seed });
+    const reqGroups = [...res.groups];
+    const mk = (rw) => makeCtx({ minutes, style, profile, sessions, now, eq, exclude, rw, activeGoals: [...new Set([...activeGoals, ...targetGoals])], targetGoals, seed, reqGroups, upcoming });
     let rw = { ...res.regionW };
     ctx = mk(rw);
     planInfo = planSession(ctx, minutes, otherMin);
     // Under budget even after tuning? Add a complementary group rather than junk volume.
     for (let k = 0; k < 3 && planInfo.est() < minutes * 60 * 0.9; k++) {
-      const gs = safe(() => groupStatus(sessions, { now, profile }), {});
+      const gs = safe(() => groupStatus(sessions, { now, profile, upcoming }), {});
       const cands = [...new Set(res.groups.flatMap(g => COMPLEMENT[g] || []))]
         .filter(g => GROUPS[g] && !res.groups.includes(g) && !addedGroups.includes(g))
         .map(g => [g, (gs[g]?.need ?? 0.5) * (1 - 0.25 * Math.min(...res.groups.map(x => { const i = (COMPLEMENT[x] || []).indexOf(g); return i < 0 ? 3 : i; })))])
@@ -605,12 +742,12 @@ export function buildWorkout({
   const lifts = blocks.filter(b => b.kind === 'lift');
   const exs = lifts.map(b => getEx(b.exId)).filter(Boolean);
   if (!autoLabel && res.groups.length) {
-    const gs = safe(() => groupStatus(sessions, { now, profile }), {});
+    const gs = safe(() => groupStatus(sessions, { now, profile, upcoming }), {});
     const bits = res.groups.filter(g => gs[g]).sort((a, b) => (gs[b].need ?? 0) - (gs[a].need ?? 0)).slice(0, 2).map(g => {
       const s = gs[g]; const tgt = s.target?.min ?? s.target;
       const sets = Number.isFinite(s.sets7d) ? Math.round(s.sets7d * 10) / 10 : null;
       const parts = [];
-      if (sets != null && tgt) parts.push(`${sets}/${tgt} sets this week`);
+      if (sets != null && tgt) parts.push(`${sets}/${Math.round(tgt)} sets this week${Array.isArray(upcoming) ? ' incl. planned' : ''}`);
       if (Number.isFinite(s.daysSince)) parts.push(`${s.daysSince}d since last`);
       return GROUPS[g].name + (parts.length ? ` (${parts.join(', ')})` : '');
     });

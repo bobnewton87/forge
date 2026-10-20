@@ -47,6 +47,10 @@ export function defaultProfile() {
     restTimer: { enabled: true, sound: true },
     // Body profile for body-comp math + projections (see CONTRACT §11).
     body: { sex: 'male', heightIn: null, birthYear: null, trainingMonths: 7, activity: 'desk' },
+    // Supplement / therapy stack (CONTRACT §17): [{ id, start:'YYYY-MM-DD', end:null|'YYYY-MM-DD', dose:null|string, active:true }]
+    supplements: [],
+    // Optional metabolic values (CONTRACT §17). Units: totalT/onTrtT ng/dL, freeT pg/mL, vitD ng/mL, hba1c %, sleepHours h, stress 1-5.
+    metabolic: { totalT: null, freeT: null, labDate: null, onTrtT: null, vitD: null, hba1c: null, tsh: null, sleepHours: 7, stress: 3 },
     // Weekly availability template for the planner. kind: 'lift'|'cardio'|'class'|'flex'|'rest'.
     schedule: {
       mon: { kind: 'lift', minutes: 45, location: 'crunch' },
@@ -65,7 +69,8 @@ function migrate(p) {
   if (!p) return d;
   // Shallow-merge so new fields get defaults without clobbering user choices.
   const out = { ...d, ...p, nutrition: { ...d.nutrition, ...(p.nutrition || {}) }, restTimer: { ...d.restTimer, ...(p.restTimer || {}) },
-    body: { ...d.body, ...(p.body || {}) }, schedule: { ...d.schedule, ...(p.schedule || {}) } };
+    body: { ...d.body, ...(p.body || {}) }, schedule: { ...d.schedule, ...(p.schedule || {}) },
+    metabolic: { ...d.metabolic, ...(p.metabolic || {}) }, supplements: Array.isArray(p.supplements) ? p.supplements : [] };
   out.schema = SCHEMA;
   return out;
 }

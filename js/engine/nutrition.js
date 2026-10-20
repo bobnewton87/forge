@@ -1,12 +1,28 @@
-// Optional nutrition targets (off by default). Pure, DOM-free.
+// Nutrition targets, macro math and data-driven TDEE. Pure, DOM-free (CONTRACT §8, §15).
 //
-// CONTRACT-NOTE: dailyTargets() also returns { tdee, mode, goal, dayType }.
-//   profile.nutrition.calories (optional) = desired AVERAGE daily calories. In 'simple' mode
-//   it is used as-is; in 'cycling' mode days are cycled around it. profile.nutrition.protein
-//   (optional) overrides the protein estimate in grams.
-// CONTRACT-NOTE: extra exports SUPPLEMENTS and MEAL_IDEAS (ported from Iron Runner).
+// CONTRACT-NOTE: dailyTargets(profile, { dayType, bodyweight, tdee }) also returns
+//   { tdee, mode, goal, dayType, proteinPct, carbPct, fatPct, proteinGPerLb, warnings }.
+//   Optional opts.tdee = maintenance kcal/day from the projection model; when absent the old
+//   bodyweight × 15.5 estimate is used. Average daily calories: profile.nutrition.calories if set,
+//   else TDEE + profile.nutrition.surplus if set, else TDEE − the goal's usual deficit. In 'cycling'
+//   mode the day types are cycled around that average (ports Iron Runner calcNutri offsets).
+//   Legacy profile.nutrition.protein (grams) still overrides proteinGPerLb when set.
+//   Carbs are no longer floored at 100 g (calories are never silently raised); a warning is given.
+// CONTRACT-NOTE: macrosFor() also returns proteinGPerLb and carbsGPerLb. Warnings are plain
+//   English strings. Protein g/lb is clamped to 0.3–2.0, fat % to 10–60.
+// CONTRACT-NOTE: adaptiveTdee() returns extra { avgIntake, weightChangeLb, lbPerWeek, trendStart,
+//   trendEnd, from, to, weighIns, foodDays, method:'trend'|'raw' }. The EWMA trend (α = 0.1/day,
+//   time-aware for gaps) gives the trend weights. The rate of change is the least-squares slope of
+//   that trend once it has ≥30 days of history (a fresh EWMA under-reads a moving weight), else the
+//   least-squares slope of the raw weigh-ins in the window.
+// CONTRACT-NOTE: extra exports SUPPLEMENTS, MEAL_IDEAS, KCAL_PER_LB_TREND, ewmaTrend.
+
+import { ds, parseDs, addDays, daysBetween } from '../util.js';
 
 const round10 = x => Math.round(x / 10) * 10;
+const fin = x => typeof x === 'number' && Number.isFinite(x);
+const num = x => (x == null || x === '' ? NaN : Number(x));
+const clampN = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
 // Calories below estimated maintenance (negative = surplus). Ported from Iron Runner calcNutri
 // (recomp/bulk/cut), with 'both' (lift + cardio) days fuelled a bit more than a lift day.
@@ -17,6 +33,8 @@ const CYCLE = {
 };
 // Flat daily offset for 'simple' mode (roughly the weekly average of the cycle).
 const SIMPLE = { recomp: 250, lean_bulk: -250, cut: 500 };
+const DEFAULT_PROTEIN = { recomp: 1.0, lean_bulk: 1.0, cut: 1.15 };
+export const DEFAULT_FAT_PCT = 25;
 
 const NOTES = {
   lift: 'Lift day: put most of your carbs in the meals before and after training.',
@@ -30,27 +48,172 @@ const GOAL_NOTES = {
   cut: 'Cut: moderate deficit with higher protein to keep muscle.',
 };
 
-export function dailyTargets(profile, { dayType = 'lift', bodyweight } = {}) {
+// ---------------------------------------------------------------- macros
+// Protein from g per lb of bodyweight, fat as a % of calories, carbs = whatever is left.
+export function macrosFor(profile, { calories, bodyweight } = {}) {
+  const n = profile?.nutrition || {};
+  const goal = CYCLE[profile?.goal] ? profile.goal : 'recomp';
+  const bw = num(bodyweight) > 0 ? num(bodyweight) : num(profile?.bodyweight) > 0 ? num(profile.bodyweight) : 0;
+  const kcal = num(calories) > 0 ? num(calories) : num(n.calories) > 0 ? num(n.calories) : 0;
+  const warnings = [];
+  let gPerLb = num(n.proteinGPerLb) > 0 ? clampN(num(n.proteinGPerLb), 0.3, 2) : DEFAULT_PROTEIN[goal];
+  let protein = bw > 0 ? Math.round(bw * gPerLb) : 0;
+  if (num(n.protein) > 0 && !(num(n.proteinGPerLb) > 0)) { protein = Math.round(num(n.protein)); gPerLb = bw > 0 ? protein / bw : gPerLb; }
+  const fatPctIn = num(n.fatPct) > 0 ? clampN(num(n.fatPct), 10, 60) : DEFAULT_FAT_PCT;
+  let fat = Math.round(kcal * fatPctIn / 100 / 9);
+  let carbs = Math.round((kcal - protein * 4 - fat * 9) / 4);
+  if (carbs < 0) {
+    warnings.push(`Protein (${protein} g) plus fat (${fatPctIn}%) already add up to more than ${Math.round(kcal)} kcal. Lower the fat % or raise calories.`);
+    carbs = 0;
+    fat = Math.max(0, Math.round((kcal - protein * 4) / 9));
+  }
+  const total = protein * 4 + carbs * 4 + fat * 9;
+  const pct = x => (total > 0 ? Math.round(100 * x / total) : 0);
+  const out = {
+    calories: Math.round(kcal), protein, carbs, fat,
+    proteinPct: pct(protein * 4), carbPct: pct(carbs * 4), fatPct: pct(fat * 9),
+    proteinGPerLb: bw > 0 ? Math.round(100 * protein / bw) / 100 : Math.round(gPerLb * 100) / 100,
+    carbsGPerLb: bw > 0 ? Math.round(100 * carbs / bw) / 100 : 0,
+    warnings,
+  };
+  if (kcal > 0) {
+    if (out.fatPct < 20) warnings.push(`Fat is only ${out.fatPct}% of calories. Going below ~20% for long stretches can lower testosterone and makes meals less filling; 20-35% is the usual range.`);
+    if (carbs < 100) warnings.push(`Only ${carbs} g of carbs a day. Under ~100 g, hard lifting and cardio usually feel flat because muscle glycogen runs low.`);
+  }
+  if (bw > 0 && out.proteinGPerLb < 0.7) warnings.push(`Protein is ${out.proteinGPerLb} g/lb. Research (Morton 2018) shows muscle gain is reduced below ~0.7 g/lb; ~1 g/lb covers almost everyone.`);
+  if (bw > 0 && out.proteinGPerLb > 1.3) warnings.push(`Protein is ${out.proteinGPerLb} g/lb. Above ~1 g/lb there is no extra muscle benefit; the extra just displaces carbs that fuel training (it is safe, just not needed).`);
+  return out;
+}
+
+// Note from the ACTUAL average balance (the goal alone can be contradicted by calories/surplus).
+function balanceNote(goal, bal) {
+  const b = Math.round(bal / 10) * 10;
+  if (b < -100) {
+    if (goal === 'cut') return GOAL_NOTES.cut;
+    if (b >= -350) return GOAL_NOTES.recomp;
+    return `Deficit of about ${-b} kcal/day: expect steady fat loss. Keep protein high and keep lifting to hold on to muscle.`;
+  }
+  if (b > 100) {
+    if (b <= 500) return `Surplus of about ${b} kcal/day: a lean bulk. Aim to gain about 0.25-0.5% of bodyweight a week.`;
+    return `Surplus of about ${b} kcal/day. Past ~+500, almost all of the extra becomes fat rather than muscle; check the nutrition lab.`;
+  }
+  return 'About maintenance: weight should hold steady. With lifting and enough protein you can still slowly recomp.';
+}
+
+// ---------------------------------------------------------------- daily targets
+export function dailyTargets(profile, { dayType = 'lift', bodyweight, tdee: tdeeIn } = {}) {
   const n = profile?.nutrition || {};
   const mode = n.mode || 'off';
   if (mode === 'off') return null;
   const bw = Number(bodyweight) || Number(profile?.bodyweight) || 0;
   if (!(bw > 0)) return null;
   const goal = CYCLE[profile?.goal] ? profile.goal : 'recomp';
-  if (!CYCLE[goal][dayType]) dayType = 'lift';
+  if (CYCLE[goal][dayType] == null) dayType = 'lift';
 
-  let tdee = Math.round(bw * 15.5);
-  if (Number(n.calories) > 0) tdee = Number(n.calories) + SIMPLE[goal];   // user-set average target
+  const tdee = Number(tdeeIn) > 0 ? Math.round(Number(tdeeIn)) : Math.round(bw * 15.5);
+  let avg;
+  if (Number(n.calories) > 0) avg = Number(n.calories);
+  else if (n.surplus != null && n.surplus !== '' && fin(Number(n.surplus))) avg = tdee + Number(n.surplus);
+  else avg = tdee - SIMPLE[goal];
+  let calories = mode === 'simple' ? avg : avg + SIMPLE[goal] - CYCLE[goal][dayType];
+  calories = round10(Math.max(1000, calories));
 
-  const protein = Number(n.protein) > 0 ? Math.round(Number(n.protein)) : Math.round(bw * (goal === 'cut' ? 1.15 : 1.0));
-  const fat = Math.round(bw * (goal === 'cut' ? 0.35 : 0.4));
-  let calories = mode === 'simple' ? tdee - SIMPLE[goal] : tdee - CYCLE[goal][dayType];
-  let carbs = Math.round((calories - protein * 4 - fat * 9) / 4);
-  if (carbs < 100) { carbs = 100; calories = protein * 4 + fat * 9 + carbs * 4; }
-  calories = round10(calories);
+  const m = macrosFor(profile, { calories, bodyweight: bw });
+  const balNote = balanceNote(goal, avg - tdee);
+  const note = mode === 'simple' ? balNote : `${NOTES[dayType]} ${balNote}`;
+  return { calories, protein: m.protein, carbs: m.carbs, fat: m.fat, note, tdee, mode, goal,
+    dayType: mode === 'simple' ? null : dayType,
+    proteinPct: m.proteinPct, carbPct: m.carbPct, fatPct: m.fatPct, proteinGPerLb: m.proteinGPerLb, warnings: m.warnings };
+}
 
-  const note = mode === 'simple' ? GOAL_NOTES[goal] : `${NOTES[dayType]} ${GOAL_NOTES[goal]}`;
-  return { calories, protein, carbs, fat, note, tdee, mode, goal, dayType: mode === 'simple' ? null : dayType };
+// ---------------------------------------------------------------- adaptive TDEE
+// ~3,500 kcal per lb of trend-weight change: a mix of fat (~3,500/lb) and lean/water (much less),
+// the same first approximation MacroFactor-style apps use.
+export const KCAL_PER_LB_TREND = 3500;
+const ALPHA = 0.1;
+
+// Time-aware EWMA over weigh-ins sorted by date. Returns [{ d, w, trend, t }] (t = day index).
+export function ewmaTrend(bodyLog, { alpha = ALPHA } = {}) {
+  const pts = (Array.isArray(bodyLog) ? bodyLog : [])
+    .filter(e => e && typeof e.d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(e.d) && num(e.w) > 0)
+    .map(e => ({ d: e.d, w: num(e.w) }))
+    .sort((a, b) => a.d.localeCompare(b.d));
+  // one value per day (average duplicates)
+  const byDay = [];
+  for (const p of pts) {
+    const last = byDay[byDay.length - 1];
+    if (last && last.d === p.d) { last.sum += p.w; last.n++; last.w = last.sum / last.n; }
+    else byDay.push({ d: p.d, w: p.w, sum: p.w, n: 1 });
+  }
+  if (!byDay.length) return [];
+  const d0 = byDay[0].d;
+  // seed with the mean of the first few weigh-ins so one odd morning does not anchor the trend
+  const seedN = Math.min(3, byDay.length);
+  let trend = byDay.slice(0, seedN).reduce((a, p) => a + p.w, 0) / seedN;
+  let prevT = 0;
+  return byDay.map((p, i) => {
+    const t = daysBetween(d0, p.d);
+    if (i > 0) { const a = 1 - Math.pow(1 - alpha, Math.max(1, t - prevT)); trend += a * (p.w - trend); }
+    prevT = t;
+    return { d: p.d, w: p.w, trend, t };
+  });
+}
+
+function slope(points, key) {
+  const n = points.length;
+  if (n < 2) return 0;
+  const mt = points.reduce((a, p) => a + p.t, 0) / n, my = points.reduce((a, p) => a + p[key], 0) / n;
+  let sxy = 0, sxx = 0;
+  for (const p of points) { sxy += (p.t - mt) * (p[key] - my); sxx += (p.t - mt) ** 2; }
+  return sxx > 0 ? sxy / sxx : 0;
+}
+
+// MacroFactor-style: average intake − (trend weight change × ~3,500 kcal/lb) / days.
+// Needs ≥10 days of both weigh-ins and food logs inside the window (default: the last 28 days
+// that have data).
+export function adaptiveTdee({ bodyLog = [], foodLog = [], from, to } = {}) {
+  const food = (Array.isArray(foodLog) ? foodLog : []).filter(e => e && typeof e.d === 'string' && num(e.kcal) > 0);
+  const trendAll = ewmaTrend(bodyLog);
+  if (!food.length || !trendAll.length) return null;
+  const lastData = [food.reduce((a, e) => (e.d > a ? e.d : a), ''), trendAll[trendAll.length - 1].d].sort()[0];
+  const toS = typeof to === 'string' ? to : to instanceof Date ? ds(to) : lastData;
+  const fromS = typeof from === 'string' ? from : from instanceof Date ? ds(from) : ds(addDays(parseDs(toS), -27));
+  if (fromS > toS) return null;
+  const inWin = e => e.d >= fromS && e.d <= toS;
+  const foodW = food.filter(inWin);
+  const foodDays = new Set(foodW.map(e => e.d)).size;
+  const trendW = trendAll.filter(inWin);
+  if (foodDays < 10 || trendW.length < 10) return null;
+  const span = daysBetween(trendW[0].d, trendW[trendW.length - 1].d);
+  if (span < 9) return null;
+
+  // Daily intake average (one value per day).
+  const perDay = new Map();
+  for (const e of foodW) perDay.set(e.d, (perDay.get(e.d) || 0) + num(e.kcal));
+  const avgIntake = [...perDay.values()].reduce((a, b) => a + b, 0) / perDay.size;
+
+  // Rate of change: least-squares slope of the EWMA trend when it has had ≥30 days of history to
+  // settle before the window (a fresh EWMA under-reads a moving weight for its first few weeks);
+  // otherwise the least-squares slope of the raw weigh-ins in the window (unbiased, just noisier).
+  const settled = trendW.filter(p => p.t >= 30);
+  const useTrend = settled.length >= 10 && daysBetween(settled[0].d, settled[settled.length - 1].d) >= 9;
+  const lbPerDay = useTrend ? slope(settled, 'trend') : slope(trendW, 'w');
+  const days = daysBetween(fromS, toS) + 1;
+  const tdee = avgIntake - lbPerDay * KCAL_PER_LB_TREND;
+  if (!fin(tdee) || tdee < 1000 || tdee > 7000) {
+    return { tdee: null, days, confidence: 'low', note: 'Logged intake and weight change do not add up to a believable burn (check for missing food days or a scale change).',
+      avgIntake: Math.round(avgIntake), lbPerWeek: Math.round(lbPerDay * 70) / 10, weighIns: trendW.length, foodDays, from: fromS, to: toS };
+  }
+  const coverage = Math.min(foodDays, trendW.length) / days;
+  const confidence = foodDays >= 21 && trendW.length >= 14 && coverage >= 0.6 ? 'high' : foodDays >= 14 && trendW.length >= 10 ? 'medium' : 'low';
+  const lbPerWeek = Math.round(lbPerDay * 70) / 10;
+  return {
+    tdee: Math.round(tdee), days, confidence,
+    note: `From ${foodDays} days of food logs and ${trendW.length} weigh-ins (${fromS} to ${toS}): you ate ~${Math.round(avgIntake)} kcal/day and your trend weight moved ${lbPerWeek >= 0 ? '+' : ''}${lbPerWeek} lb/week, so you burn about ${Math.round(tdee)} kcal/day.`,
+    avgIntake: Math.round(avgIntake), weightChangeLb: Math.round(lbPerDay * (days - 1) * 10) / 10, lbPerWeek,
+    trendStart: Math.round(trendW[0].trend * 10) / 10, trendEnd: Math.round(trendW[trendW.length - 1].trend * 10) / 10,
+    from: fromS, to: toS, weighIns: trendW.length, foodDays, method: useTrend ? 'trend' : 'raw',
+  };
 }
 
 export const ADDERALL_TIPS = [
