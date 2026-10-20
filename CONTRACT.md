@@ -1304,3 +1304,51 @@ being met; the obese and untaped male bodies were broken in the same way as the 
 male golden lock), `test/mesh-guards.test.js` (twelve fitted bodies: tapes read back off the skinned mesh, the
 spread band, untaped-by-weight sizing, head size, no NaN), e2e `S5` (obese female and obese male, with and without
 a tape, mount the 3D with no page errors and are sized to their weight).
+
+## 21c. Clothing rendering (2026-10-20)
+Bob (via the 3D review): on a broad-shouldered woman the sports-top straps read as jagged dark wedges fanning out
+from the neck rather than as straps, and on a heavy woman the under-bust band sat over the belly.
+
+Ownership: FEMALE-3D (`js/ui/body3d-mesh.js`, `js/engine/anthro.js`, `test/mesh-clothing.test.js`).
+
+**Straps.** The strap was the slab `|canonical x − k| < w`. A slab is as wide as the surface is flat in x, so over
+a broad, flattened shoulder it covered far more surface than intended; compensating the width with a screen-space
+derivative (`|∇c.x|`, §21b) fixed the average width but made the edge sawtooth, because the derivative is a
+per-quad quantity. It is now a **tube of constant radius around a centre-line**:
+- `strapPath(A)` (female asset only, built once in `prepareAsset`) places seven landmark-relative anchors — top of
+  the cup, mid chest, over the clavicle, across the trapezius midway between the neck and the shoulder joint, then
+  down the back converging to the spine — snaps each to a real surface vertex with per-axis weights, resamples a
+  Catmull-Rom through them to ≈ 0.13 dm spacing, re-snaps, Laplacian-smooths out the vertex-grid quantisation, and
+  floats the result 0.07 dm off the surface along the canonical normal.
+- The shader takes the distance to that polyline: the band is `2·sqrt(r² − d²)` wide with `d` the surface-to-line
+  distance, so where a chord sags toward the surface the band widens slightly instead of pinching shut. On-surface
+  half-width ≈ 0.115 dm ≈ 0.45 in, i.e. a ≈ 0.9 in strap that scales with the body like fabric (0.8 in at 56 in
+  stature, 1.1 in at 76 in) and does not care how the shoulder is shaped.
+- The cup line levels off just inside the strap (`smoothstep(0.05, 0.78 nx)`), so the strap rises out of a flat cup
+  line, and panel and strap are joined with a **polynomial smooth max of the signed fields** (k = 0.13 dm) so the
+  seam is a rounded join rather than a notch.
+
+**Every fabric edge is antialiased by its own gradient.** `edge(f) = smoothstep(-1, 1, f / fwidth(f))` on a signed
+field (positive inside) gives a one-pixel soft edge whatever direction the boundary runs; the old `smoothstep(a −
+fwidth(c.y), a + fwidth(c.y), …)` under-softened every diagonal edge (the armpit, the shorts hem). All of it is
+evaluated under the uniform `uFem` branch so the derivatives sit in uniform control flow.
+
+**The armpit edge follows the skin weights, not the part index.** `aPart` is a per-vertex integer, so thresholding
+it traced the polygonal boundary of a vertex set — a sawtooth. A new vertex attribute `aArmW` (the arm share of
+each vertex's skin weights, already computed for the fit) varies smoothly across the shoulder, so the iso-contour
+`armW = 0.26` is a smooth armhole. The shorts use the same edge, which also keeps the hands bare cleanly.
+
+**Under-bust band.** The hem sits 0.22 dm below the canonical inframammary landmark (was 0.30), and the fold
+itself can no longer slide onto the belly: `anthro` floors the female inframammary station at 0.035 H (≈ 2.2 in at
+64 in) above the natural waist, because the fold is where the breast meets the chest wall and the ribcage bounds
+it. Before the floor a 52 in bust put the fold 1.4 in above the waist and a 58 in bust 1.1 in.
+
+**Unchanged:** §16 girths (the under-bust station still carries the modelled girth exactly), the §21b guards, and
+the male body apart from the shorts-edge antialiasing — the male asset has no strap path and `bodyGeometry` is not
+touched for men.
+
+**Tests.** `test/mesh-clothing.test.js`: the path exists for the female asset only, floats inside the tube, hugs
+the surface at every chord midpoint, runs front → over the trapezius → back between the neck and the deltoid,
+converges to the spine, never touches the deltoid, and keeps a 0.75–1.6 in strap from 56 to 76 in stature; the
+inframammary station stays clear of the waist and monotone in bust size from 30 to 58 in while still reproducing
+the modelled under-bust girth.
