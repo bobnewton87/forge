@@ -29,7 +29,9 @@
 //     intakeStart, tdeeStart, tdeeFormula, surplusStart, goal, proteinGPerLb, proteinAssumed, fatPct,
 //     cardioDeltaMin, cardioModality, cardioIntensity }
 //   macros: macrosFor() at week-1 intake and weight. partition: averages of every factor in the lean
-//     model (see buildPartition). tdeeCalibration: { applied, adaptive, formula, offset, weight, note }.
+//     model (see buildPartition), including (§23, every goal) leanLossLb, leanLossFrac (avg lean share of
+//     each lb lost) and lossRatePctPerWeek — the last two null when no week is in a deficit.
+//     tdeeCalibration: { applied, adaptive, formula, offset, weight, note }.
 //   startBodyFat: { value, source, method, uncertainty, spread, range, note }.
 //   stack: { contributions, warnings, used:boolean } from metabolic.modifiersAt (neutral when useStack=false).
 //   driverSource: 'plan' | 'plan+history' | 'history' | 'schedule' | 'plan+schedule' | 'none'
@@ -151,6 +153,8 @@ const HIGH_IMPACT_CLASSES = new Set(['hiit', 'boxing', 'cardio_dance']);
 // normally sized from the user's chosen rate (targets.lossPlan), and this offset is only the fallback when no
 // rate, goal weight or nutrition target exists.
 const GOAL_OFFSET = { recomp: -300, cut: -500, lean_bulk: 250, weight_loss: -600 };
+// Plain-English goal names, for the assumption text only (targets.GOAL_INFO owns the UI names).
+const GOAL_NAMES_TXT = { recomp: 'a recomp', cut: 'a cut', lean_bulk: 'a lean bulk', weight_loss: 'losing weight' };
 // ---- §23 lean loss in a deficit -----------------------------------------------------------------------------
 // Rate of loss → multiplier on the fraction of lost mass that is lean. Garthe et al. 2011 (Int J Sport Nutr Exerc
 // Metab 21:97, doi:10.1123/ijsnem.21.2.97) randomised 24 elite athletes, all lifting 4x/week on a high-protein diet,
@@ -486,8 +490,10 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   const months0 = Number.isFinite(Number(body.trainingMonths)) && Number(body.trainingMonths) >= 0 ? Number(body.trainingMonths) : 6;
   const neatFactor = NEAT_FACTORS[body.activity] ?? NEAT_FACTORS.desk;
   const goal = GOAL_OFFSET[profile.goal] != null ? profile.goal : 'recomp';
-  // §23: the weight-loss goal turns on the honest lean-loss model (rate + deficit-specific protein curve) and
-  // aims at a goal WEIGHT as well as a goal body fat. Every other goal keeps the previous behaviour exactly.
+  // §23 (as amended): the deficit PARTITION is universal — every goal uses the rate + deficit-specific
+  // protein model (see `simulate`). `lossModel` now only gates the goal-level machinery that genuinely
+  // belongs to this goal: lossPlan-sized intake, the goal WEIGHT and its stop condition, the
+  // `result.weightLoss` block + goal_weight milestone + rate scan, and male energy-availability reporting.
   const lossModel = goal === 'weight_loss';
   const nut = profile.nutrition && typeof profile.nutrition === 'object' ? profile.nutrition : {};
   const nutritionOn = !!(nut.mode && nut.mode !== 'off');
@@ -1001,20 +1007,17 @@ function simulate(ctx, opts = {}) {
       // 904:359, doi:10.1111/j.1749-6632.2000.tb06482.x; restated for macroscopic changes by Hall 2007, Br J Nutr
       // 97:1059, doi:10.1017/S0007114507691946). At 45 lb of fat p = 0.34; at 15 lb it is 0.60.
       const pForbes = 10.4 / (10.4 + F / LB_PER_KG);
-      if (!lossModel) {
-        // Keeping muscle needs far less volume than building it: protection saturates at ~70% of the stimulus.
-        const protect = 0.9 * Math.min(1, respW / 0.7) * Math.min(1, bfNow / ctx.lmBf.protectFull) * pf;
-        loss = massLoss * pForbes * (1 - protect) * mods.leanRetentionMult;
-      } else {
-        // §23 weight-loss model. Same Forbes partition and the same lifting-protection shape, but (a) protein
-        // uses the deficit-specific retention curve (Mettler 2010 / Longland 2016), and (b) the lean share is
-        // scaled by how FAST the weight is coming off (Garthe 2011). The lean fraction of the loss is then
-        // clamped to 0.95: even starvation leaves some fat coming off.
-        const protect = 0.9 * Math.min(1, respW / 0.7) * Math.min(1, bfNow / ctx.lmBf.protectFull) * proteinRetentionFactor(protein);
-        lossRatePct = Wt > 0 ? 100 * massLoss / Wt : 0;
-        lossFrac = clamp(pForbes * (1 - protect) * mods.leanRetentionMult * lossRateFactor(lossRatePct), 0, 0.95);
-        loss = massLoss * lossFrac;
-      }
+      // §23 deficit partition, UNIVERSAL: physiology does not read the goal label, so the same person with the
+      // same deficit, protein and training gets the same answer under recomp, cut, lean_bulk or weight_loss.
+      // Forbes partition and the lifting-protection shape as before, plus (a) protein through the
+      // deficit-specific retention curve (Mettler 2010 / Longland 2016) rather than the growth curve
+      // proteinFactor(), and (b) the lean share scaled by how FAST the weight is coming off (Garthe 2011).
+      // Keeping muscle needs far less volume than building it: protection saturates at ~70% of the stimulus.
+      // The lean fraction of the loss is clamped to 0.95: even starvation leaves some fat coming off.
+      const protect = 0.9 * Math.min(1, respW / 0.7) * Math.min(1, bfNow / ctx.lmBf.protectFull) * proteinRetentionFactor(protein);
+      lossRatePct = Wt > 0 ? 100 * massLoss / Wt : 0;
+      lossFrac = clamp(pForbes * (1 - protect) * mods.leanRetentionMult * lossRateFactor(lossRatePct), 0, 0.95);
+      loss = massLoss * lossFrac;
     }
     // Energy: lean built costs ~1,250 kcal/lb, lean lost releases ~800; the rest of the balance is fat.
     let dF = (bal * 7 - gain * KCAL_PER_LB_LEAN + loss * KCAL_LEAN_RELEASED) / KCAL_PER_LB_FAT;
@@ -1091,8 +1094,12 @@ function buildPartition(run) {
   const loss = run.wkOut.reduce((a, w) => a + w.loss, 0);
   const fat = run.wkOut.reduce((a, w) => a + w.fatChange, 0);
   const tissue = gain - loss + fat;
+  // §23 (universal): the deficit weeks' average lean share of each pound lost, and how fast it came off.
+  const diet = run.wkOut.filter(w => w.loss > 0 || w.lossFrac > 0);
+  const dAvg = f => diet.reduce((a, w) => a + f(w), 0) / diet.length;
   return {
     leanCeilingLb: r2(ceiling), leanGainLb: r2(gain), leanLossLb: r2(loss), ceilingUsedPct: ceiling > 0 ? Math.round(100 * gain / ceiling) : 0,
+    leanLossFrac: diet.length ? r2(dAvg(w => w.lossFrac)) : null, lossRatePctPerWeek: diet.length ? r2(dAvg(w => w.lossRatePct)) : null,
     leanShare: tissue > 0.2 ? r2(clamp((gain - loss) / tissue, -1, 1)) : null,
     volumeFactor: r2(avg(w => w.f.vf)), volumeResponse: r2(avg(w => w.f.vf)), proteinFactor: r2(avg(w => w.f.pf)), carbFactor: r2(avg(w => w.f.cf)),
     interferenceFactor: r2(avg(w => w.f.itf)), ffmiFactor: r2(avg(w => w.f.ff)), bodyFatFactor: r2(avg(w => w.f.bff)),
@@ -1337,16 +1344,26 @@ export function project(args = {}) {
   assumptions.push(`How much of that ceiling you reach depends on food: about 70% at maintenance, ~93% at +250 kcal/day, ~98% at +500, and no more beyond that; a 300 kcal deficit gives ~45% and a 1,000 kcal deficit ~13% (newer lifters and people above 20% body fat recomp a bit better; very lean or veteran lifters worse). Leaner people put a bit more of a surplus into muscle (Forbes). This plan reaches ${partition.ceilingUsedPct}% of the ceiling. Calories beyond what muscle can use are stored as fat: that is why a huge surplus adds fat much faster than muscle (Iraki 2019; Garthe 2013 found the same in elite athletes).`);
   assumptions.push(`Energy bookkeeping: building 1 lb of lean tissue costs ~${KCAL_PER_LB_LEAN} kcal (what it stores plus the cost of making it); fat is ~${KCAL_PER_LB_FAT} kcal/lb. Whatever is left after muscle is fat gained (or, in a deficit, fat burned). Water and glycogen swings (often 2-4 lb day to day, and a few lb when carbs change a lot) are not modelled, so the line is your trend weight.`);
   assumptions.push(`Macros: protein matters up to ~1 g/lb (Morton 2018 meta-analysis: benefits plateau around 0.7 g/lb, upper estimate 1 g/lb), below ~0.7 g/lb muscle gain drops. At equal calories and protein the carb/fat split barely changes body composition; it is only modelled as a small training-quality penalty when carbs fall under ~100-150 g/day. Week 1 here: ${macros ? `${macros.protein} g protein, ${macros.carbs} g carbs, ${macros.fat} g fat (${macros.fatPct}% fat)` : 'n/a'}.`);
-  if (ctx.lossModel) {
+  // §23 deficit partition — explained for EVERY goal, because the model is the same for every goal.
+  {
     const p0F = F0 / LB_PER_KG;
-    const avgFrac = likely.wkOut.filter(w => w.loss > 0 || w.lossFrac > 0);
-    const fracTxt = avgFrac.length ? Math.round(100 * avgFrac.reduce((a, w) => a + w.lossFrac, 0) / avgFrac.length) : 0;
-    assumptions.push(`Your goal is LOSING WEIGHT, not holding muscle, so Forge models lean loss honestly instead of assuming it away. Three things decide how much of each pound you lose is muscle. (1) Forbes' rule: the leaner you already are, the more of it is lean tissue. The fraction is 10.4 ÷ (10.4 + your fat mass in kg), so at your ${r1(F0)} lb (${r1(p0F)} kg) of fat it starts at ${Math.round(100 * 10.4 / (10.4 + p0F))}% and rises as you get leaner (Forbes 1987/2000; restated for real-sized weight changes by Hall 2007). (2) How FAST: in 24 elite athletes all lifting 4x/week, losing 0.7% of bodyweight a week took 31% of their fat off and ADDED 2.1% lean mass, while the faster group (which actually achieved 1.0%/week) took the same weight off but only 21% of their fat and no lean at all (Garthe 2011). (3) Protein and lifting: at ~0.45 g/lb, trained men lost 1.6 kg of lean in two weeks of hard dieting against 0.3 kg at ~1.05 g/lb (Mettler 2010), and 81% of diet-only groups lost 15%+ of their weight as fat-free mass against 39% of diet-plus-exercise groups (Weinheimer 2010). Here that works out at about ${fracTxt}% of each pound lost coming off as lean mass.`);
+    const dietWks = likely.wkOut.filter(w => w.loss > 0 || w.lossFrac > 0);
+    const fracTxt = dietWks.length ? Math.round(100 * dietWks.reduce((a, w) => a + w.lossFrac, 0) / dietWks.length) : 0;
+    const rateTxt2 = dietWks.length ? r2(dietWks.reduce((a, w) => a + w.lossRatePct, 0) / dietWks.length) : 0;
+    const lead = ctx.lossModel
+      ? `Your goal is LOSING WEIGHT, not holding muscle, so Forge models lean loss honestly instead of assuming it away.`
+      : `Any week you eat below maintenance, some of what comes off is lean tissue. Forge models that the same way whatever your goal is called: ${GOAL_NAMES_TXT[goal] || goal} does not change the physiology, only the calories.`;
+    const tail = ` Here that works out at about ${fracTxt}% of each pound lost coming off as lean mass, at an average ${rateTxt2}% of bodyweight a week.`;
+    // Nothing is lost in a projection that never dips below maintenance, so say that in one line instead.
+    if (!dietWks.length && !ctx.lossModel) assumptions.push(`Lean loss in a deficit: this projection never puts you below maintenance, so none of it applies. If it did, the split between fat and lean would come from how lean you already are (Forbes), how fast the weight came off (Garthe 2011) and your protein and lifting (Mettler 2010) — the same model under every goal.`);
+    else assumptions.push(`${lead} Three things decide how much of each pound you lose is muscle. (1) Forbes' rule: the leaner you already are, the more of it is lean tissue. The fraction is 10.4 ÷ (10.4 + your fat mass in kg), so at your ${r1(F0)} lb (${r1(p0F)} kg) of fat it starts at ${Math.round(100 * 10.4 / (10.4 + p0F))}% and rises as you get leaner (Forbes 1987/2000; restated for real-sized weight changes by Hall 2007). (2) How FAST: in 24 elite athletes all lifting 4x/week, losing 0.7% of bodyweight a week took 31% of their fat off and ADDED 2.1% lean mass, while the faster group (which actually achieved 1.0%/week) took the same weight off but only 21% of their fat and no lean at all (Garthe 2011). (3) Protein and lifting: at ~0.45 g/lb, trained men lost 1.6 kg of lean in two weeks of hard dieting against 0.3 kg at ~1.05 g/lb (Mettler 2010), and 81% of diet-only groups lost 15%+ of their weight as fat-free mass against 39% of diet-plus-exercise groups (Weinheimer 2010). Lifting hard with enough protein prevents most of it — but "most" is not "all", and a fast diet at low protein undoes a lot of that protection.${tail}`);
+  }
+  if (ctx.lossModel) {
     const pl = ctx.lplan;
     if (pl) assumptions.push(`Rate and deficit: you asked for ${pl.pctPerWeek}% of bodyweight a week${pl.source === 'date' ? ` (set by your ${pl.goalWeightDate} target date)` : pl.source === 'default' ? ' (the default, and the best-evidenced rate)' : ''} = about ${pl.lbPerWeek} lb/week, which needs roughly ${pl.deficitKcal} kcal/day below maintenance. That conversion uses 3,500 kcal per lb, which Hall 2008 showed only holds above about 30 kg of fat mass and OVERSTATES the deficit a leaner person needs (lean tissue releases ~800 kcal/lb, not 3,500), while adaptive thermogenesis pulls real loss the other way; the week-by-week simulation below does the proper bookkeeping, so the projected rate may differ a little from the one you asked for.${ctx.goalWeightLb ? ` Once you hit ${r1(ctx.goalWeightLb)} lb the projection assumes you stop dieting and eat at maintenance.` : ''}`);
     assumptions.push(`What lean loss actually costs you: strength falls more slowly than size (training cessation moves maximal force about −0.46 SD, submaximal strength −0.62 SD, and the longer the layoff the worse it gets; Bosquet 2013), bone density is the quiet cost (a year of diet-only weight loss took ~2% off hip and spine BMD while the same weight lost through exercise took none; Villareal 2006), and if you are losing mass to run faster, note that the benefit comes from carrying less, not from a better engine: adding 5% of bodyweight cost 89 m over a 12-minute run while VO2max per kg of FAT-FREE mass was unchanged (Cureton 1978, PMID 723510). Losing fat makes you faster; losing muscle mostly does not.`);
   }
-  assumptions.push(`In a deficit some lean mass can be lost (Forbes: more when leaner); lifting with enough protein prevents most (~90%) of that, and keeping muscle takes much less volume than building it. Cardio burns calories by machine, intensity and bodyweight; it only trims muscle gain modestly above ~150 effective min/week, about twice as much for running as for cycling (Wilson 2012 concurrent-training meta-analysis).${ctx.cdMin ? ` You added ${sgn(ctx.cdMin)}${Math.round(ctx.cdMin)} min/week of ${ctx.cdInt} ${CARDIO[ctx.cdMod]?.name || ctx.cdMod}.` : ''}`);
+  assumptions.push(`Keeping muscle takes much less volume than building it: the lifting half of that protection saturates at about 70% of the stimulus a full growth plan gives, so a maintenance amount of hard work buys nearly all of it. Cardio burns calories by machine, intensity and bodyweight; it only trims muscle gain modestly above ~150 effective min/week, about twice as much for running as for cycling (Wilson 2012 concurrent-training meta-analysis).${ctx.cdMin ? ` You added ${sgn(ctx.cdMin)}${Math.round(ctx.cdMin)} min/week of ${ctx.cdInt} ${CARDIO[ctx.cdMod]?.name || ctx.cdMod}.` : ''}`);
   const drvText = {
     plan: `Training comes from your planned sessions (${plannedCount} in range, through ${lastPlanned}).`,
     'plan+history': `Training comes from your planned sessions (${plannedCount} in range, through ${lastPlanned}) and your last ${histDays} days of logged workouts.`,
@@ -1756,6 +1773,18 @@ export function nutritionLab({ baseline, profile, sessions, weeks = 12, now = ne
   if (hi >= 750 && s500.surplus < big.surplus) explanation.push(`Going from ${sgn(s500.surplus)}${s500.surplus} to ${sgn(big.surplus)}${big.surplus} kcal/day adds only ${r1(Math.max(0, big.leanLb - s500.leanLb))} lb more lean but ${r1(big.fatLb - s500.fatLb)} lb more fat. "Eat a lot" builds muscle only up to the speed limit; after that it is mostly fat you will later have to diet off.`);
   explanation.push(`The body burns off part of any surplus (digestion, fidgeting, more movement): roughly half of a big one on average in Levine's 1999 overfeeding study, with huge differences between people. So the scale moves less than the calories suggest, but most of what is stored past the sweet spot is fat. A practical target is gaining about 0.25-0.5% of bodyweight a week (${r1(ctx.W0 * 0.0025)}-${r1(ctx.W0 * 0.005)} lb), in line with Iraki 2019's off-season bodybuilding review.`);
   if (p05 && p10) explanation.push(`Protein is the one macro that clearly matters: at 0.5 g/lb you would gain ~${p05.leanLb} lb of lean vs ~${p10.leanLb} lb at 1.0 g/lb (same calories). Benefits level off around 0.7-1.0 g/lb (Morton 2018), so ~1 g/lb (${Math.round(ctx.W0)} g/day for you) is plenty; more is safe but adds nothing.`);
+  // §23 (universal): the deficit end of the sweep costs lean mass, whatever the goal is called. No extra
+  // simulation — these are the weeks the most aggressive row already ran.
+  {
+    const deep = rows[0];
+    const dw = deep.surplus < 0 ? deep.run.wkOut.filter(w => w.loss > 0 || w.lossFrac > 0) : [];
+    const lost = dw.reduce((a, w) => a + w.loss, 0);
+    if (lost > 0.05) {
+      const frac = Math.round(100 * dw.reduce((a, w) => a + w.lossFrac, 0) / dw.length);
+      const rate = r2(dw.reduce((a, w) => a + w.lossRatePct, 0) / dw.length);
+      explanation.push(`The deficit end of this sweep is not free. At ${deep.calories} kcal/day (maintenance ${sgn(deep.surplus)}${deep.surplus}) you come down about ${rate}% of bodyweight a week, and about ${frac}% of each pound lost is lean tissue: roughly ${r1(lost)} lb of lean over ${horizonLabel(ctx.W)} at your ${r2(ctx.proteinGPerLb)} g/lb of protein. Losing slower and eating more protein buys most of that back (Garthe 2011; Mettler 2010). Forge applies the same partition whatever your goal is called — a recomp, a cut and a weight-loss goal at the same deficit cost the same lean mass.`);
+    }
+  }
   const adderallLine = ' With Adderall blunting appetite, calorie-dense foods and shakes make a surplus far easier than eating more volume.';
   const femaleOnAdderall = (Array.isArray(ctx.profile.supplements) ? ctx.profile.supplements : []).some(e => e && e.id === 'adderall' && e.active !== false && !e.end);
   explanation.push(`Carbs vs fat barely matters for body composition when calories and protein are equal. Carbs fuel hard training, so keep them at 150 g+ on lifting days; keep fat at 20%+ of calories for hormones.${ctx.sex !== 'female' || femaleOnAdderall ? adderallLine : ''}`);

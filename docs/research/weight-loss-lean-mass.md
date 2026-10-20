@@ -22,6 +22,32 @@ Forge does not block an adult from choosing a legal goal. It shows the costs.
 
 ---
 
+## 0b. Scope: the partition is universal (amendment, 2026-10-20)
+
+When §23 shipped, the improved partition in §§1-4 below was gated to the `weight_loss` goal, and
+`recomp`, `cut` and `lean_bulk` kept the older, more optimistic version (the growth protein curve,
+no rate penalty, no clamp). That gate was wrong on its own terms: none of the evidence below is
+about a goal, it is about a deficit. The same person, eating the same amount, with the same protein
+and the same training, loses the same lean mass whether they call it a cut or a weight-loss plan.
+
+Bob's direction: **"Better model everywhere go."** The partition in §§1-4 now runs in every week
+with a negative energy balance, under every goal. What remains specific to `weight_loss` is the
+goal *weight* and the intake it implies (`targets.lossPlan`), the "what it costs" reporting block,
+the rate scan, the below-growth set floors and the 0× priority sliders — all of which are about
+what the user is *choosing*, not about what their body does with a deficit.
+
+Consequences, for the same person and the same calories:
+
+- At the evidence-backed rate with adequate protein the two models agree closely; below 0.7 %/week
+  the new one is slightly *kinder*, because `lossRateFactor` floors at 0.5.
+- A fast, low-protein diet now costs materially more lean under `cut` and `recomp` too. Worked
+  example (180 lb, 25 % DXA, lifting 4×/week, 26 weeks): at −1,000 kcal/day and 0.5 g/lb the model
+  now projects **7.2 lb** of lean lost against **5.9 lb** before; at −350 kcal/day and 1.1 g/lb,
+  **0.3 lb** against **0.4 lb** before.
+- `lean_bulk` in a surplus never enters the branch, so it is unchanged.
+
+---
+
 ## 1. Forbes' rule: leanness decides the split
 
 **Forbes GB. Body fat content influences the body composition response to nutrition and
@@ -63,8 +89,9 @@ the original equation handles well.
 **What Forge encodes.** At each simulated week, `pForbes = 10.4 / (10.4 + F/2.20462)`. For the
 worked example below (180 lb at 25 % DXA body fat → 45 lb = 20.4 kg of fat) that is **0.34** at
 the start and rises toward **0.50** by the time fat is down to 10 kg. The curve was already in
-`projection.js` for the existing goals; §23 does not change it, it makes it visible and adds the
-two things it was missing (rate and a deficit-specific protein curve).
+`projection.js` for every goal; §23 does not change it, it makes it visible and adds the two
+things it was missing — rate and a deficit-specific protein curve — which, per §0b, now apply
+under every goal as well.
 
 ### 1b. 3,500 kcal/lb is a leanness-dependent approximation
 
@@ -151,6 +178,13 @@ clamped to [0.5, 3]
 The upward slope is calibrated on Garthe's achieved 0.7 → 1.0 %/week contrast. The downward
 slope is deliberately gentler: no study shows that going slower than 0.7 %/week helps as much as
 going faster hurts. Above 1.0 %/week the curve extrapolates linearly and the UI says so.
+
+The rate is read from the week the simulation actually produces (`100 × weekly mass loss ÷
+bodyweight`), not from whatever rate the user asked for, so it is defined for every goal and for
+an unplanned deficit. The product of Forbes, protection and rate is then clamped to a lean share
+of `[0, 0.95]`: even starvation leaves some fat coming off. At a trivial deficit the rate is near
+zero, the factor bottoms out at 0.5, and the lean loss shrinks with the mass loss itself — a
+50 kcal/day deficit costs about 0.1 lb of lean over 26 weeks, not a step change.
 
 ---
 
