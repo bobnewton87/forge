@@ -9,7 +9,7 @@
 //   ("Why these numbers?"), openVolumeRoomSheet(ctx, short), openExtendSheet(ctx, { extended, onApply }),
 //   extendedToast(list), REPLAN_DAYS, ensureTargetStyles(). Styles are injected
 //   at runtime (a <style id="tg-css">) because INTEGRATOR owns no CSS file.
-import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, volumeRoomOptions, unitTargets, maxNote, starredUnits, STAR_LEGEND, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
+import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, volumeRoomOptions, unitTargets, maxNote, starredUnits, STAR_LEGEND, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY, GOAL_INFO, GOAL_ORDER, LOSS_RATES, LEAN_PROTECTION, LEAN_PROTECTION_INFO, VOLUME_FLOORS, FLOOR_INFO, FLOOR_EVIDENCE } from '../engine/targets.js';
 import { planRange } from '../engine/planner.js';
 import { resolveStyle } from '../engine/generator.js';
 import { explainWeek } from '../engine/planner.js';
@@ -20,7 +20,8 @@ import { MAX_WHY } from '../data/muscles.js';
 
 export const REPLAN_DAYS = 28;
 const styleShort = (id, p) => { const d = resolveStyle(id, p); return d.short || d.name; };
-const GOAL_NAMES = { recomp: 'Recomp', lean_bulk: 'Lean bulk', cut: 'Cut' };
+// §23: goal names come from the engine so Settings, the targets sheet and the projection agree.
+const GOAL_NAMES = Object.fromEntries(Object.entries(GOAL_INFO).map(([k, v]) => [k, v.name]));
 const MODE_NAMES = { off: 'Off', simple: 'Simple', cycling: 'Carb cycling' };
 const MOD_CHOICES = ['run', 'treadmill', 'bike', 'spin', 'walk_incline', 'row', 'elliptical', 'stairmaster', 'swim', 'walk'];
 const safe = (fn, fb) => { try { const v = fn(); return v == null ? fb : v; } catch (e) { console.error(e); return fb; } };
@@ -259,13 +260,23 @@ export function openMinimumsInfo(ctx) {
     ${Object.entries(ex).filter(([, x]) => x.target > 0).map(([, x]) => `<tr class="${x.status}"><td>${esc(x.name)}</td><td>${f(x.base)} × ${f(x.slider)}${x.extra ? ` + ${f(x.extra)}` : ''}</td><td><b>${f(x.target)}</b><div class="tiny muted">min ${f(x.min)} · max ${f(x.max)}</div></td><td><b>${f(x.planned)}</b></td><td class="tiny">${esc(x.reason)}</td></tr>`).join('')}
     </tbody></table></div>` : '';
   const tracked = Object.entries(U).filter(([, x]) => !(x.min > 0 || x.target > 0)).map(([, x]) => x.name).join(', ');
+  // §23: when the floors are deliberately below the growth dose, say so first and say what it costs.
+  const fl = t.minimums.floor;
+  const zeroed = Object.entries(U).filter(([, x]) => x.slider === 0 && x.growthBase > 0).map(([, x]) => x.name);
+  const belowFloor = fl.belowFloor ? `<div class="card" style="border-color:var(--warn);padding:10px 12px;margin:10px 0">
+    <div class="label" style="color:var(--warn)">These numbers are below the growth floor on purpose</div>
+    <p class="small" style="margin-top:4px">Your goal is <b>${esc(GOAL_NAMES.weight_loss)}</b> and your set floors are on <b>${esc(FLOOR_INFO[fl.mode].name)}</b>, so every target and minimum below is about ${Math.round(fl.factor * 100)}% of the dose that builds muscle (the growth floor is shown next to each one). ${esc(FLOOR_INFO[fl.mode].why)}</p>
+    ${zeroed.length ? `<p class="small" style="margin-top:6px;color:var(--warn)">At 0×, these get no planned sets at all: <b>${esc(zeroed.join(', '))}</b>. Expect to lose size there.</p>` : ''}
+    <ul class="tip-list mt">${FLOOR_EVIDENCE.map(e => `<li class="small">${esc(e.claim)} <span class="tiny muted">(${esc(e.source)})</span></li>`).join('')}</ul>
+    <p class="tiny muted">Switch the floors back to "Grow" in Targets → Adherence &amp; goal, or pick any goal other than Lose weight, and the evidence floors come straight back.</p></div>` : '';
   const deriv = x => `${x.base}${x.slider !== 1 ? ` × ${x.slider} (slider)` : ''}${x.extra ? ` + ${x.extra} (sculpt goals)` : ''}${x.base * x.slider + x.extra > x.max + 0.05 ? `, capped at ${x.max}` : ''}`;
   ctx.openSheet(`<div class="tg-sheet"><h2>Why these numbers?</h2>
     <p class="muted small">Weekly sets are compared with your <b>target</b>. Each muscle also has a <b>minimum</b> (the evidence floor, always planned) and a <b>max</b> Forge never plans past. The max is a ceiling on what the body can use and is the same whatever your priorities: 20 sets a week for most muscles (the top of the 12-20 range; more than 20 added nothing for biceps or quads, Baz-Valle et al. 2022), 24 for triceps (more than 20 helped them) and side delts, 22 for back (two muscles), 10 for lower back (fatigue guard). Priorities, sliders and sculpt goals move only the target, so a muscle you prioritize can sit at its max while its slider keeps rising: past the max, studies found extra sets add fatigue, not growth. ${esc(STAR_LEGEND)}.</p>
+    ${belowFloor}
     ${table}
     <div class="label mt">Each muscle</div>
     <div class="tg-units">${rows.map(([id, x]) => `<div class="tg-unit"><div class="row between"><b>${stars.has(id) ? '<span class="star">★</span> ' : ''}${esc(x.name)}</b><span class="num small">target <b>${x.target}</b> · min ${x.min} · max ${x.max}</span></div>
-      <div class="tiny muted">Floor ${x.min}: ${esc(FLOOR_WHY[x.tier] || FLOOR_WHY.normal)}. Target = ${esc(deriv(x))}. Max ${esc(MAX_WHY[id] || String(x.max))}.${stars.has(id) ? ` ★ ${esc(starWhy(x))}.` : ''}${(() => { const n = maxNote(id, x); return n && n.atMax ? ` <b>${n.capped ? `Your settings ask ${f(n.asked)}, but the target stops at the max.` : 'At the max: raising the slider adds no sets.'}</b>` : ''; })()}</div></div>`).join('')}</div>
+      <div class="tiny muted">Floor ${x.min}${x.growthMin != null && x.growthMin !== x.min ? ` <span style="color:var(--warn)">(growth floor ${x.growthMin}, lowered on purpose)</span>` : ''}: ${esc(FLOOR_WHY[x.tier] || FLOOR_WHY.normal)}. Target = ${esc(deriv(x))}. Max ${esc(MAX_WHY[id] || String(x.max))}.${stars.has(id) ? ` ★ ${esc(starWhy(x))}.` : ''}${(() => { const n = maxNote(id, x); return n && n.atMax ? ` <b>${n.capped ? `Your settings ask ${f(n.asked)}, but the target stops at the max.` : 'At the max: raising the slider adds no sets.'}</b>` : ''; })()}</div></div>`).join('')}</div>
     ${tracked ? `<p class="tiny muted">${esc(tracked)}: tracked, not counted (pressing covers front delts; traps and lower back don't count toward back).</p>` : ''}
     <div class="label mt">The evidence</div>
     <ul class="tip-list mt">${MINIMUMS_EVIDENCE.map(e => `<li>${esc(e.claim)} <span class="tiny muted">(${esc(e.source)})</span></li>`).join('')}</ul>
@@ -334,7 +345,9 @@ export function targetsSummaryHTML(ctx, { title = 'Your targets' } = {}) {
       ${item('cardio', '🏃', `${t.cardio.minPerWeek}′ cardio/wk`, w ? `${w.done} done · ${w.planned} planned` : 'weekly target', short)}
       ${item('training', '🏋️', `${t.training.daysPerWeek} days · ${Math.round(t.training.totalMinPerWeek / 60 * 10) / 10}h`, `${t.training.defaultMinutes}′ default · ${styleShort(t.training.style, p)}`)}
       ${item('nutrition', '🍽️', kcal, n.mode === 'off' ? 'tap to set targets' : `${n.proteinGPerLb} g/lb protein · ${n.fatPct}% fat`)}
-      ${item('adherence', '🎯', `${Math.round(t.adherence * 100)}% adherence`, `${GOAL_NAMES[t.goals.goal]} → ${t.goals.goalBodyFatPct}% BF`)}
+      ${item('adherence', '🎯', `${Math.round(t.adherence * 100)}% adherence`, t.goals.losing
+        ? `${GOAL_NAMES[t.goals.goal]}${t.goals.goalWeightLb ? ` → ${t.goals.goalWeightLb} lb` : ''} · ${t.goals.lossRatePctPerWeek}%/wk`
+        : `${GOAL_NAMES[t.goals.goal]} → ${t.goals.goalBodyFatPct}% BF`)}
     </div>
     ${room}
   </div>`;
@@ -380,6 +393,53 @@ export function bindCardioTarget(root, ctx) {
 }
 
 // ---------------------------------------------------------------- the shared editor sheet
+// §23. The weight-loss block inside the shared targets sheet: goal weight, rate (with what each rate costs),
+// and the lean-protection preset that writes protein + weekly-set floors. Everything saves through setTargets,
+// so Projection, Nutrition, Plan and Body move together.
+function weightLossControls(t, seg) {
+  const g = t.goals, pl = g.plan || {};
+  const rate = g.lossRatePctPerWeek ?? pl.pctPerWeek;
+  const gw = g.goalWeightLb;
+  const floor = t.minimums.floor;
+  const rates = LOSS_RATES.map(r => `<button type="button" class="chip sm ${Math.abs(r.pctPerWeek - rate) < 0.01 ? 'active' : ''}" data-s-rate="${r.pctPerWeek}" title="${esc(r.note)}">${esc(r.label)} <span class="muted">${r.pctPerWeek}%</span></button>`).join('');
+  return `<div class="label mt">Goal weight</div>
+    <div class="row between tg-line"><span>Target on the scale</span><span class="tg-step sm"><button type="button" data-s-gw="-1" aria-label="Lower goal weight">−</button><b class="num" id="tg-gw">${gw ? `${gw} lb` : 'not set'}</b><button type="button" data-s-gw="1" aria-label="Raise goal weight">+</button></span></div>
+    ${gw ? `<p class="tiny muted">${pl.toLoseLb ? `${pl.toLoseLb} lb to go` : 'already there'}${pl.weeks ? ` · about ${pl.weeks} weeks at ${pl.lbPerWeek} lb/week (${pl.endDate})` : ''}.</p>
+      <button type="button" class="link tiny" data-s-gwclear>Clear goal weight</button>` : '<p class="tiny muted">Optional. Set one and the projection aims at it, tells you when you would get there, and shows how much of the drop is fat and how much is lean mass.</p>'}
+    <div class="label mt">How fast <span class="tiny muted">% of bodyweight per week</span></div>
+    <div class="chips tg-chips" id="tg-rates">${rates}</div>
+    <p class="tiny muted">${esc(LOSS_RATES.find(r => Math.abs(r.pctPerWeek - rate) < 0.01)?.note || `${rate}% a week ≈ ${pl.lbPerWeek ?? '?'} lb/week.`)} ${pl.deficitKcal ? `Needs about <b>${pl.deficitKcal} kcal/day</b> below maintenance.` : ''}</p>
+    ${pl.cardioMinPerWeek ? `<p class="tiny muted">Cardio is the other half of a deficit: covering all ${pl.deficitKcal} kcal/day with easy Zone-2 work alone would take about ${pl.cardioMinPerWeek} min a week (your target is ${t.cardio.minPerWeek}). Moving more instead of eating less protects lean mass, because the deficit that drives lean loss is what's left after your food.</p>` : ''}
+    ${(pl.warnings || []).map(w => `<p class="tiny" style="color:var(--warn)">${esc(w)}</p>`).join('')}
+    <div class="label mt">Muscle while you lose</div>${seg('s-prot', LEAN_PROTECTION.map(k => [k, LEAN_PROTECTION_INFO[k].name]), g.leanProtection)}
+    <p class="tiny muted">${esc(LEAN_PROTECTION_INFO[g.leanProtection].why)}</p>
+    <div class="label mt">Weekly set floors</div>${seg('s-floor', VOLUME_FLOORS.map(k => [k, FLOOR_INFO[k].short]), floor.mode)}
+    <p class="tiny ${floor.belowFloor ? '' : 'muted'}" style="${floor.belowFloor ? 'color:var(--warn)' : ''}">${esc(FLOOR_INFO[floor.mode].why)} <button type="button" class="link tiny" data-s-floorinfo>Why these numbers?</button></p>`;
+}
+
+// §23. Cut vs lose weight, side by side, because the two are easy to confuse.
+export function openGoalInfo(ctx) {
+  ensureStyles();
+  ctx.openSheet(`<div class="tg-sheet"><h2>Cut, or lose weight?</h2>
+    <p class="muted small">They both make you smaller. They are not the same goal, and Forge plans and projects them differently.</p>
+    <div class="tg-units">
+      <div class="tg-unit"><div class="row between"><b>${esc(GOAL_INFO.cut.name)}</b><span class="num small">keep the muscle</span></div>
+        <div class="tiny muted">${esc(GOAL_INFO.cut.long)}</div></div>
+      <div class="tg-unit"><div class="row between"><b>${esc(GOAL_INFO.weight_loss.name)}</b><span class="num small">the scale is the goal</span></div>
+        <div class="tiny muted">${esc(GOAL_INFO.weight_loss.long)}</div></div>
+    </div>
+    <div class="label mt">What changes when you pick "Lose weight"</div>
+    <ul class="tip-list mt">
+      <li class="small">You can set a <b>goal weight</b> and a <b>rate</b>, and the deficit is sized from them instead of a fixed number.</li>
+      <li class="small">The projection models <b>lean loss</b> properly: Forbes' rule (leaner people lose more of their weight as lean tissue), the cost of going faster, and the effect of your actual protein and lifting volume.</li>
+      <li class="small">Weekly set floors can drop to <b>maintenance</b> or to <b>nothing at all</b>, and muscle-priority sliders go down to 0× instead of stopping at 0.5×.</li>
+      <li class="small">Warnings get louder and more specific: energy availability, the defended body-fat floor, bone density, and what a given rate costs in lean mass.</li>
+      <li class="small">Nothing is blocked. Forge shows the costs and lets you choose.</li>
+    </ul>
+    <div class="sheet-actions"><button type="button" class="btn btn-block" data-close>Got it</button></div></div>`,
+  (el, close) => { el.querySelector('[data-close]').onclick = () => close(); });
+}
+
 function sheetHTML(ctx, focus) {
   const p = ctx.store.getProfile();
   const t = resolveTargets(p, { sessions: safe(() => ctx.store.getSessions(), []) });
@@ -414,8 +474,10 @@ function sheetHTML(ctx, focus) {
   const adherence = sec('adherence', '🎯 Adherence & goal', `
     <div class="row between tg-line"><span>Adherence <span class="tiny muted">share of planned sessions you do</span></span><b class="num" data-s-adhv>${Math.round(t.adherence * 100)}%</b></div>
     <input type="range" class="bd-range" min="0.5" max="1" step="0.05" value="${t.adherence}" data-s-adh style="--pct:${((t.adherence - 0.5) / 0.5) * 100}%" aria-label="Adherence">
-    <div class="label mt">Goal</div>${seg('s-goal', GOALS.map(g => [g, GOAL_NAMES[g]]), t.goals.goal)}
-    ${step('s-bf', 'Goal body fat', t.goals.goalBodyFatPct, '%')}`);
+    <div class="label mt">Goal</div>${seg('s-goal', GOAL_ORDER.map(g => [g, GOAL_NAMES[g]]), t.goals.goal)}
+    <p class="tiny muted" id="tg-goalblurb">${esc(GOAL_INFO[t.goals.goal]?.blurb || '')}${t.goals.goal === 'cut' || t.goals.goal === 'weight_loss' ? ' <button type="button" class="link tiny" data-s-goalinfo>What\'s the difference?</button>' : ''}</p>
+    ${step('s-bf', 'Goal body fat', t.goals.goalBodyFatPct, '%')}
+    ${t.goals.losing ? weightLossControls(t, seg) : ''}`);
   const order = { cardio: [cardio, training, nutrition, adherence], training: [training, cardio, nutrition, adherence], nutrition: [nutrition, cardio, training, adherence], adherence: [adherence, cardio, training, nutrition] }[focus] || [cardio, training, nutrition, adherence];
   return `<div class="tg-sheet"><h2>Your targets</h2><p class="muted small">One set of targets for Plan, Today, Body, Nutrition and the projection. Changes save right away; auto-planned days re-plan, custom days stay.</p>${order.join('')}</div>`;
 }
@@ -447,8 +509,19 @@ export function openTargetsSheet(ctx, { focus = 'cardio' } = {}) {
       }
       else if (d.sPg) set({ nutrition: { proteinGPerLb: Math.round((t.nutrition.proteinGPerLb + Number(d.sPg) * 0.05) * 100) / 100 } }, { replan: false });
       else if (d.sFat) set({ nutrition: { fatPct: t.nutrition.fatPct + Number(d.sFat) } }, { replan: false });
-      else if (d.sGoal) set({ goals: { goal: d.sGoal } }, { replan: false });
+      else if (d.sGoal) set({ goals: { goal: d.sGoal } }, { replan: d.sGoal === 'weight_loss' || t.goals.goal === 'weight_loss' });
       else if (d.sBf) set({ goals: { goalBodyFatPct: t.goals.goalBodyFatPct + Number(d.sBf) * 0.5 } }, { replan: false });
+      // ---- §23 weight-loss controls ----
+      else if (d.sGw) {
+        const cur = t.goals.goalWeightLb ?? Math.round((Number(ctx.store.getProfile().bodyweight) || 180) - 10);
+        set({ goals: { goalWeightLb: cur + Number(d.sGw) } }, { replan: false });
+      }
+      else if ('sGwclear' in d) set({ goals: { goalWeightLb: null, goalWeightDate: null } }, { replan: false });
+      else if (d.sRate) set({ goals: { lossRatePctPerWeek: Number(d.sRate) } }, { replan: false });
+      else if (d.sProt) set({ goals: { leanProtection: d.sProt } }, { replan: true });
+      else if (d.sFloor) set({ training: { volumePolicy: { floors: d.sFloor } } }, { replan: true });
+      else if ('sGoalinfo' in d) openGoalInfo(ctx);
+      else if ('sFloorinfo' in d) openMinimumsInfo(ctx);
       else if ('sAvail' in d) { close(); ctx.nav('plan', { avail: true }); }
       else if ('sNut' in d) { close(); ctx.nav('nutrition'); }
     });

@@ -63,12 +63,35 @@ function whyCard(nc) {
   </div>`;
 }
 
+// §23. The weight-loss counterpart of whyCard: the deficit this goal implies, where it came from, and
+// what the protein number is buying. All values come from resolveTargets().goals.plan, so Nutrition shows
+// exactly the deficit the projection simulates.
+function lossCard(T, nc, p) {
+  const g = T.goals, pl = g.plan || {};
+  const maint = nc?.maint ?? null;
+  const prot = { protect: 'Protecting muscle', balanced: 'Maintenance lifting', minimal: 'Minimum body mass' }[g.leanProtection] || g.leanProtection;
+  return `<div class="card bd-why" id="nLoss">
+    <div class="row between"><div class="card-title">Your deficit, and what it costs</div><span class="badge">${esc(prot)}</span></div>
+    <p class="small" style="color:#cfcfd8;margin-top:6px;line-height:1.5">Your goal is the number on the scale, so Forge sizes the deficit from the rate you picked rather than a fixed figure${g.goalWeightLb ? `, and stops when you reach ${g.goalWeightLb} lb` : ''}. Fat comes off first, but some lean mass comes with it: the leaner you get the more of it is lean (Forbes), and the faster you go the worse the split (Garthe 2011).</p>
+    <table class="num" style="margin-top:10px"><tbody>
+      <tr><td>Rate</td><td><b>${pl.pctPerWeek ?? '—'}%</b> of bodyweight/week${pl.lbPerWeek ? ` <span class="muted">(${f1(pl.lbPerWeek)} lb)</span>` : ''}</td></tr>
+      <tr><td>Deficit</td><td><b>${pl.deficitKcal ? `−${pl.deficitKcal}` : '—'}</b> kcal/day${maint ? ` <span class="muted">from ~${maint.toLocaleString()} maintenance</span>` : ''}</td></tr>
+      ${g.goalWeightLb ? `<tr><td>Goal weight</td><td><b>${g.goalWeightLb} lb</b>${pl.toLoseLb ? ` <span class="muted">(${f1(pl.toLoseLb)} lb to go${pl.weeks ? `, ~${pl.weeks} weeks` : ''})</span>` : ''}</td></tr>` : ''}
+      <tr><td>Protein</td><td><b>${T.nutrition.proteinGPerLb.toFixed(2)}</b> g/lb <span class="muted">${T.nutrition.proteinGPerLb < 0.7 ? 'deliberately low: more of the loss will be lean mass' : 'enough to hold most of your muscle in a deficit'}</span></td></tr>
+    </tbody></table>
+    ${(pl.warnings || []).length ? warnList(pl.warnings) : ''}
+    <p class="small muted" style="margin-top:8px">Mettler 2010: trained men dieting hard lost 1.6 kg of lean at ~0.45 g/lb of protein against 0.3 kg at ~1.05 g/lb. Longland 2016: at a 40 % deficit with hard training, 2.4 g/kg GAINED 1.2 kg of lean where 1.2 g/kg gained 0.1 kg. Protein is the cheapest lever you have.</p>
+    <button class="btn btn-block mt" data-wlproj>See the lean-vs-fat split in the projection</button>
+  </div>`;
+}
+
 export function render(ctx) {
   const p = ctx.store.getProfile();
   const n = p.nutrition || {};
   const mode = n.mode || 'off';
   const nc = safe(() => nutritionContext(ctx.store), null);
-  const d = resolveTargets(p).nutrition;
+  const T = resolveTargets(p);
+  const d = T.nutrition;
   const pg = d.proteinGPerLb, fatPct = d.fatPct;
   const basis = basisPick || (Number(n.calories) > 0 ? 'cal' : 'surplus');
   const cal = targetCalories(n, nc);
@@ -119,8 +142,7 @@ export function render(ctx) {
     ${mode !== 'off' ? `<div class="section-title">Today</div>${today}` : ''}
     <div class="section-title">Targets</div>
     ${editor}
-    <div class="section-title">Bulking, honestly</div>
-    ${whyCard(nc)}
+    ${T.goals.losing ? `<div class="section-title">Losing weight, honestly</div>${lossCard(T, nc, p)}` : `<div class="section-title">Bulking, honestly</div>${whyCard(nc)}`}
     ${(() => { const T = typeof nut.tipsFor === 'function' ? nut.tipsFor(p) : { nutrition: nut.NUTRITION_TIPS, adderall: nut.ADDERALL_TIPS }; return tips('Eating on Adderall', T.adderall, '💊') + tips('Nutrition basics', T.nutrition, '📌'); })()}
     ${(() => { const SL = typeof nut.supplementsFor === 'function' ? nut.supplementsFor(p) : nut.SUPPLEMENTS; return Array.isArray(SL) && SL.length ? `<div class="section-title">💊 Supplements worth it</div><div class="list">${SL.map(s => `<div class="list-item" style="align-items:flex-start"><div class="grow"><div class="t">${esc(s.name)} <span class="muted small" style="font-weight:600">· ${esc(s.dose || '')}</span></div><div class="s">${esc(s.note || '')}</div></div></div>`).join('')}</div>` : ''; })()}`;
 }
@@ -138,6 +160,7 @@ export function bind(root, ctx) {
     if (v > 50 && v < 600) st.logBodyweight(ds(), v); else ctx.toast('Enter a weight in lb');
   });
   root.querySelector('[data-lab]')?.addEventListener('click', () => ctx.nav('projection', { focus: 'lab' }));
+  root.querySelector('[data-wlproj]')?.addEventListener('click', () => ctx.nav('projection'));
 
   const ed = root.querySelector('#nEdit'); if (!ed) return;
   const nc = safe(() => nutritionContext(st), null);

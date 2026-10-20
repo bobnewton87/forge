@@ -41,10 +41,15 @@ const CYCLE = {
   recomp: { lift: 100, cardio: 300, rest: 500, both: -100 },
   lean_bulk: { lift: -250, cardio: 0, rest: 200, both: -400 },
   cut: { lift: 300, cardio: 500, rest: 700, both: 150 },
+  // §23 weight-loss goal: a deeper, rate-driven deficit (the average is replaced by lossRateDeficit when a
+  // rate or goal weight is set); the day-type spread keeps carbs around training.
+  weight_loss: { lift: 400, cardio: 650, rest: 900, both: 250 },
 };
 // Flat daily offset for 'simple' mode (roughly the weekly average of the cycle).
-const SIMPLE = { recomp: 250, lean_bulk: -250, cut: 500 };
-const DEFAULT_PROTEIN = { recomp: 1.0, lean_bulk: 1.0, cut: 1.15 };
+const SIMPLE = { recomp: 250, lean_bulk: -250, cut: 500, weight_loss: 600 };
+// §23: weight_loss defaults to a protective 1.0 g/lb. The user lowers it deliberately (Targets →
+// lean protection), and the engine then predicts the extra lean loss instead of hiding it.
+const DEFAULT_PROTEIN = { recomp: 1.0, lean_bulk: 1.0, cut: 1.15, weight_loss: 1.0 };
 export const DEFAULT_FAT_PCT = 25;
 
 const NOTES = {
@@ -57,6 +62,7 @@ const GOAL_NOTES = {
   recomp: 'Recomp: small average deficit, protein every day.',
   lean_bulk: 'Lean bulk: small surplus. Aim to gain about 0.25-0.5 lb a week.',
   cut: 'Cut: moderate deficit with higher protein to keep muscle.',
+  weight_loss: 'Losing weight: fat goes first, but some lean mass comes with it. Protein and lifting decide how much.',
 };
 
 // ---------------------------------------------------------------- macros
@@ -93,7 +99,12 @@ export function macrosFor(profile, { calories, bodyweight } = {}) {
       : `Fat is only ${out.fatPct}% of calories. Going below ~20% for long stretches can lower testosterone and makes meals less filling; 20-35% is the usual range.`);
     if (carbs < 100) warnings.push(`Only ${carbs} g of carbs a day. Under ~100 g, hard lifting and cardio usually feel flat because muscle glycogen runs low.`);
   }
-  if (bw > 0 && out.proteinGPerLb < 0.7) warnings.push(`Protein is ${out.proteinGPerLb} g/lb. Research (Morton 2018) shows muscle gain is reduced below ~0.7 g/lb; ~1 g/lb covers almost everyone.`);
+  if (bw > 0 && out.proteinGPerLb < 0.7) warnings.push(goal === 'weight_loss'
+    // §23: in a deficit the cost of low protein is lean mass, not slower growth. Mettler 2010 (Med Sci Sports
+    // Exerc 42:326, doi:10.1249/MSS.0b013e3181b2ef8e): resistance-trained men at 60 % of habitual intake for
+    // 2 weeks lost 1.6 kg of lean at 1.0 g/kg (~0.45 g/lb) vs 0.3 kg at 2.3 g/kg (~1.05 g/lb).
+    ? `Protein is ${out.proteinGPerLb} g/lb. In a deficit that is the single biggest lever on how much of the weight you lose is muscle: 0.45 g/lb cost 1.6 kg of lean mass in two weeks where 1.05 g/lb cost 0.3 kg (Mettler 2010). Fine if a smaller body is the point; not if you want to keep the muscle.`
+    : `Protein is ${out.proteinGPerLb} g/lb. Research (Morton 2018) shows muscle gain is reduced below ~0.7 g/lb; ~1 g/lb covers almost everyone.`);
   if (bw > 0 && out.proteinGPerLb > 1.3) warnings.push(`Protein is ${out.proteinGPerLb} g/lb. Above ~1 g/lb there is no extra muscle benefit; the extra just displaces carbs that fuel training (it is safe, just not needed).`);
   return out;
 }
@@ -102,6 +113,8 @@ export function macrosFor(profile, { calories, bodyweight } = {}) {
 function balanceNote(goal, bal) {
   const b = Math.round(bal / 10) * 10;
   if (b < -100) {
+    // §23: the weight-loss goal is about the scale, so name what the deficit costs instead of promising muscle.
+    if (goal === 'weight_loss') return `Deficit of about ${-b} kcal/day. Most of that comes off as fat, but some of it is lean mass${b <= -500 ? '; past ~500 kcal/day lifters stopped gaining lean mass altogether (Murphy & Koehler 2022)' : ''}. Protein and lifting decide the split.`;
     if (goal === 'cut') return GOAL_NOTES.cut;
     if (b >= -350) return GOAL_NOTES.recomp;
     return `Deficit of about ${-b} kcal/day: expect steady fat loss. Keep protein high and keep lifting to hold on to muscle.`;
@@ -112,6 +125,24 @@ function balanceNote(goal, bal) {
   }
   return 'About maintenance: weight should hold steady. With lifting and enough protein you can still slowly recomp.';
 }
+
+// §23: the daily deficit implied by the user's loss rate (or goal weight + date). Mirrors
+// engine/targets.lossPlan() exactly, with the same lossRateDeficit() formula, but without importing
+// targets.js (which would pull the whole exercise library into the nutrition module).
+function lossDeficitOf(profile, bw) {
+  const b = profile?.body && typeof profile.body === 'object' ? profile.body : {};
+  let pct = num(b.lossRatePctPerWeek) > 0 ? clampN(num(b.lossRatePctPerWeek), 0.1, 2) : null;
+  const goalW = num(b.goalWeightLb) > 0 ? num(b.goalWeightLb) : null;
+  const date = typeof b.goalWeightDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.goalWeightDate) ? b.goalWeightDate : null;
+  const today = ds();
+  if (date && date > today && goalW != null && bw > goalW) {
+    const wks = Math.max(1, Math.round((parseDs(date) - parseDs(today)) / 6048e5));
+    pct = clampN((bw - goalW) / wks / bw * 100, 0.1, 2);
+  }
+  if (pct == null) pct = DEFAULT_LOSS_RATE_PCT;
+  return lossRateDeficit(bw, pct);
+}
+export const DEFAULT_LOSS_RATE_PCT = 0.7;   // Garthe 2011's slow arm (doi:10.1123/ijsnem.21.2.97)
 
 // ---------------------------------------------------------------- daily targets
 export function dailyTargets(profile, { dayType = 'lift', bodyweight, tdee: tdeeIn, leanLb = null, exerciseKcal = null } = {}) {
@@ -130,6 +161,9 @@ export function dailyTargets(profile, { dayType = 'lift', bodyweight, tdee: tdee
   let avg;
   if (userCal) avg = Number(n.calories);
   else if (userSur) avg = tdee + Number(n.surplus);
+  // §23: the weight-loss goal sizes its deficit from the chosen rate (% of bodyweight per week) or the goal
+  // weight + date, so Nutrition and the projection always quote the same number.
+  else if (goal === 'weight_loss' && !fs?.pregnant) avg = tdee - (lossDeficitOf(profile, bw) ?? SIMPLE.weight_loss);
   else avg = fs?.pregnant ? tdee : tdee - SIMPLE[goal];      // pregnancy: no planned deficit (§20)
   let calories = mode === 'simple' ? avg : avg + SIMPLE[goal] - CYCLE[goal][dayType];
   if (fs?.pregnant && !userCal && !userSur) calories = mode === 'simple' ? tdee : Math.max(tdee - 150, calories);
@@ -141,6 +175,17 @@ export function dailyTargets(profile, { dayType = 'lift', bodyweight, tdee: tdee
   const out = { calories, protein: m.protein, carbs: m.carbs, fat: m.fat, note, tdee, mode, goal,
     dayType: mode === 'simple' ? null : dayType,
     proteinPct: m.proteinPct, carbPct: m.carbPct, fatPct: m.fatPct, proteinGPerLb: m.proteinGPerLb, warnings: m.warnings };
+  // §23: energy availability is checked for BOTH sexes under the weight-loss goal. 30 kcal/kg FFM/day is the
+  // threshold at which LH pulsatility was disrupted in women within 5 days (Loucks & Thuma 2003, J Clin
+  // Endocrinol Metab 88:297, doi:10.1210/jc.2002-020369); no equivalent number has been established in men, but
+  // the IOC's 2023 REDs consensus (doi:10.1136/bjsports-2023-106994) documents the same syndrome in male athletes.
+  if (goal === 'weight_loss' && !female) {
+    const ea = energyAvailability({ intakeKcal: avg, exerciseKcal: Number(exerciseKcal) > 0 ? Number(exerciseKcal) : 0, leanLb });
+    if (ea != null) {
+      out.energyAvailability = ea;
+      if (ea < EA_LOW) out.warnings = [...out.warnings, `Energy availability ≈${ea} kcal per kg of lean mass a day (food ${Math.round(avg)} minus exercise ≈${Math.round(Number(exerciseKcal) || 0)} kcal). ~45 is adequate and ~30 is where measurable harm starts; the 30 figure was established in women (Loucks & Thuma 2003) and no male threshold has been validated, but low energy availability costs bone, hormones, recovery and training quality in men too (IOC REDs consensus 2023). Eat more around training or ease the deficit.`];
+    }
+  }
   if (!female) return out;
   // ---- female mode (§20)
   const warnings = [...m.warnings];
@@ -161,6 +206,19 @@ export function dailyTargets(profile, { dayType = 'lift', bodyweight, tdee: tdee
 // the same first approximation MacroFactor-style apps use.
 export const KCAL_PER_LB_TREND = 3500;
 const ALPHA = 0.1;
+
+// §23 (weight-loss goal). THE one formula that turns "lose r % of bodyweight per week" into a daily calorie
+// deficit, used by engine/targets.lossPlan() (which every screen reads) and therefore by the projection too.
+// 3,500 kcal/lb is a first approximation: Hall 2008 (Int J Obes 32:573, doi:10.1038/sj.ijo.0803720) showed it
+// only holds above ~30 kg of fat mass and OVER-states the deficit a leaner person needs, because the lean
+// tissue they also lose releases far less energy per pound. The projection's week-by-week bookkeeping handles
+// that properly (lean costs ~1,250 kcal/lb to build and releases ~800 when lost); this helper is for sizing
+// the target, and adaptive thermogenesis pulls real-world loss back the other way.
+export function lossRateDeficit(weightLb, pctPerWeek) {
+  const w = num(weightLb), r = num(pctPerWeek);
+  if (!(w > 0) || !(r > 0)) return null;
+  return Math.round(w * r / 100 * KCAL_PER_LB_TREND / 7);
+}
 
 // Time-aware EWMA over weigh-ins sorted by date. Returns [{ d, w, trend, t }] (t = day index).
 export function ewmaTrend(bodyLog, { alpha = ALPHA } = {}) {

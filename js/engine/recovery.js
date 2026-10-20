@@ -139,7 +139,11 @@ function needScore(sets7d, target, daysSince, prioMult) {
 
 function groupPriority(profile, g) {
   const p = profile?.groupPriority?.[g];
-  return typeof p === 'number' && p > 0 ? p : 1;
+  // CONTRACT §23: the weight-loss goal lets a slider sit at 0 ("detrain this muscle"), and 0 must mean 0 here
+  // too, or Today would keep recommending a group the plan has deliberately dropped. Anything negative or
+  // non-numeric still means "not set" → 1x, exactly as before (targets.applyTargetChange only ever stores 0
+  // under the weight-loss goal).
+  return typeof p === 'number' && Number.isFinite(p) && p >= 0 ? (p > 0 ? p : 0) : 1;
 }
 
 // Extra weekly sets per region from enabled sculpt goals.

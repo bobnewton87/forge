@@ -780,9 +780,10 @@ function outputs(D, o) {
   const goalBf = D.goalBf || profile.body?.goalBodyFat || BODY.male.goalBodyFat;
   const phs = (res.phases || []).filter(ph => ph.endWeek > ph.startWeek);
   const ceil = res.ceiling;
+  const wl = res.weightLoss || null;   // §23
   const charts = `
     <div class="card"><div class="row between"><div class="card-title">Weight</div><div class="small muted num">${f1(s0.weightLb)} → <b style="color:var(--text)">${f1(sN.weightLb)}</b> lb</div></div>
-      <div class="mt">${lineChart({ id: 'pw', data: mk('weightLb'), past, unit: 'lb', today: s0.date, phases: phs })}</div>
+      <div class="mt">${lineChart({ id: 'pw', data: mk('weightLb'), past, unit: 'lb', today: s0.date, phases: phs, ...(wl?.goalWeightLb ? { target: wl.goalWeightLb, targetLabel: `goal ${f1(wl.goalWeightLb)} lb` } : {}) })}</div>
       ${waterNote(S) ? `<div class="small bd-water">💧 ${waterNote(S)}</div>` : ''}
       <div class="tiny muted">Shaded = realistic low–high range. Grey dots = recent weigh-ins.</div></div>
     <div class="card"><div class="row between"><div class="card-title">Body fat <span class="tiny muted" title="Every method is converted to the DXA scan scale so all numbers compare directly">DXA-equivalent</span></div><div class="small muted num">${f1(s0.bodyFatPct)} → <b style="color:var(--text)">${f1(sN.bodyFatPct)}</b>%</div></div>
@@ -843,6 +844,7 @@ function outputs(D, o) {
       ${res.bodyFatAssumed ? '<p class="tiny" style="color:var(--warn);margin-top:10px">Body fat was assumed (no height/neck/waist yet), so these numbers are very rough.</p>' : ''}
       ${res.energyAvailability?.low ? `<p class="tiny" style="color:var(--warn);margin-top:10px" data-ea-warn>Energy availability drops to ≈${f1(res.energyAvailability.min)} kcal per kg of lean mass a day (food minus exercise). Under ~30 the hormones that run your cycle are disrupted (Loucks &amp; Thuma 2003; IOC REDs 2023): eat more around training or ease the deficit.</p>` : ''}
       ${res.caution === 'postpartum' ? '<p class="tiny" style="color:var(--warn);margin-top:10px">Postpartum: this projection is very rough. Check with your provider before a deficit or hard training.</p>' : ''}</div>
+    ${wl ? weightLossCard(wl, D) : ''}
     ${labCard(D, o)}
     <div class="section-title">Trends</div>${charts}
     <div class="section-title">Projected measurements</div>${table}
@@ -853,6 +855,38 @@ function outputs(D, o) {
     ${assumptions}
     <p class="small muted bd-disclaim">These are estimates from simple, conservative models, not promises. Real bodies vary a lot. Re-measure every 2-4 weeks and the projection re-anchors to what actually happened.</p>
     <button class="card tap bd-planlink" data-nav="plan"><span style="font-size:22px">🗓️</span><div class="grow"><div class="t">Change the plan</div><div class="s">More sessions, cardio or sets → see the projection update</div></div><span class="chev">›</span></button>`;
+}
+
+// §23. The honest trade-off card for the weight-loss goal: what this rate costs in lean mass, what the
+// other rates would cost, and every warning the engine raised. Numbers come straight from res.weightLoss
+// (one lite simulation per rate), so the card and the projection can never disagree.
+function weightLossCard(wl, D) {
+  const rows = (wl.rates || []).map(r => {
+    const me = Math.abs(r.pctPerWeek - (wl.ratePctPerWeek ?? -1)) < 0.01;
+    const when = r.reached ? `wk ${r.week}` : '—';
+    return `<tr class="${me ? 'est' : ''}"><td>${me ? '<b>' : ''}${r.pctPerWeek}%<div class="tiny muted">${f1(r.lbPerWeek)} lb/wk</div>${me ? '</b>' : ''}</td>
+      <td>${r.calories.toLocaleString()}<div class="tiny muted">−${r.deficitKcal}</div></td>
+      <td style="color:var(--accent2);font-weight:750">${sgn(r.fatLb)}</td>
+      <td style="color:${r.leanLb < -0.05 ? 'var(--warn)' : 'var(--good)'};font-weight:750">${sgn(r.leanLb)}</td>
+      <td>${when}</td></tr>`;
+  }).join('');
+  const share = wl.leanShareOfLoss != null ? Math.round(wl.leanShareOfLoss * 100) : null;
+  const prot = { protect: 'Protecting muscle', balanced: 'Maintenance', minimal: 'Minimum body mass' }[wl.leanProtection] || wl.leanProtection;
+  return `<div class="card bd-why" id="pjWeightLoss">
+    <div class="row between"><div class="card-title">Losing weight: what it costs</div><span class="badge">${esc(prot)}</span></div>
+    <p class="small" style="color:#cfcfd8;margin-top:6px;line-height:1.5">Fat goes first, but never all of it. How much of each pound comes off as lean mass depends on how lean you already are (Forbes' rule), how fast you go (Garthe 2011), and your protein and lifting (Mettler 2010).</p>
+    <div class="bd-deltas" style="margin-top:10px">
+      <div><b class="num" style="color:var(--accent2)">−${f1(wl.fatLostLb)}<small>lb</small></b><span>Fat off</span></div>
+      <div><b class="num" style="color:${wl.leanLostLb > 0.05 ? 'var(--warn)' : 'var(--good)'}">${wl.leanLostLb > 0.05 ? '−' + f1(wl.leanLostLb) : '±0'}<small>lb</small></b><span>Lean off</span></div>
+      <div><b class="num">${share != null ? share + '%' : '—'}</b><span>of the loss is lean</span></div>
+    </div>
+    ${wl.goalWeightLb ? `<p class="small" style="margin-top:8px">Goal weight <b class="num">${f1(wl.goalWeightLb)} lb</b>: ${wl.reached ? `projected around <b>${esc(fmtShort(wl.date))}</b> (week ${wl.week}), at about <b>${f1(wl.atGoal.bodyFatPct)}%</b> body fat` : `<b style="color:var(--warn)">not reached</b> in this horizon (projected ${f1(wl.atGoal.weightLb)} lb)`}.</p>` : ''}
+    ${wl.lbPerWeek && wl.projectedLbPerWeek ? `<p class="tiny muted">You asked for ${f1(wl.lbPerWeek)} lb/week; once the body adapts the model projects about <b>${f1(wl.projectedLbPerWeek)} lb/week</b>.</p>` : ''}
+    ${rows ? `<table class="num" style="margin-top:10px"><thead><tr><th>Rate</th><th>kcal/day</th><th>Fat</th><th>Lean</th><th>At goal</th></tr></thead><tbody>${rows}</tbody></table>
+      <p class="tiny muted">Each row is a full simulation at that rate, read at the week your goal weight is reached (or at the end of the horizon). Your current choice is in bold.</p>` : ''}
+    ${(wl.warnings || []).length ? `<ul class="bd-warn" style="margin-top:10px">${wl.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
+    <button class="btn btn-sm btn-ghost btn-block mt" data-wl-targets>Change goal weight, rate or muscle protection</button>
+  </div>`;
 }
 
 function waterNote(S) {
@@ -1113,6 +1147,9 @@ export function bind(root, ctx, params = {}) {
     }
   };
   $('[data-apply]').onclick = () => applyTargets();
+  // §23: the weight-loss card's shortcut into the one shared targets editor (CONTRACT §18).
+  const wlBtn = root.querySelector('[data-wl-targets]');
+  if (wlBtn) wlBtn.onclick = () => { if (TGU && typeof TGU.openTargetsSheet === 'function') TGU.openTargetsSheet(ctx, { focus: 'adherence' }); else ctx.nav('settings', { section: 'goal' }); };
 
   // ---- phases card ----
   const readBlocks = () => [...root.querySelectorAll('#pjBlocks .bd-block')].map(el => {

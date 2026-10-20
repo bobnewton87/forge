@@ -1634,6 +1634,162 @@ SUPP_NAMES = {'clomiphene': 'Clomiphene', 'enclomiphene': 'Enclomiphene', 'hcg':
               'aromatase_inhibitor': 'Aromatase inhibitor', 'ashwagandha': 'Ashwagandha', 'sleep_hygiene': 'Sleep',
               'energy_availability': 'Eating enough', 'fat_loss': 'Fat loss', 'cabergoline': 'Cabergoline',
               'zma': 'ZMA', 'vitamin_d': 'Vitamin D3'}
+RESET_RATE_JS = ("(async () => { const m = await import('/js/engine/targets.js'); "
+                 "store.saveProfile(m.applyTargetChange(store.getProfile(), { goals: { lossRatePctPerWeek: 1 } })); return 1; })()")
+
+
+@test('L1', 'Weight-loss goal (CONTRACT §23): goal weight + rate flow to Projection, Nutrition, Plan and Body')
+def t_weight_loss(t, ctx):
+    """Pick "Lose weight" with a goal weight and a rate, then check every screen quotes the same numbers,
+    the projection shows the lean-vs-fat cost, below-floor set targets are allowed and explained, and no
+    page errors appear anywhere."""
+    app = t.app
+    app.load(bobir(app), 'settings')
+    e0 = len(app.errors)
+
+    # a) the goal exists in Settings and is distinct from Cut
+    stxt = app.text()
+    has_goal = app.has('[data-seg="goal"] [data-v="weight_loss"]') or bool(re.search(r'Lose weight', stxt, re.I))
+    t.sub('L1a', 'Settings offers "Lose weight", separate from "Cut"', has_goal and bool(re.search(r'\bCut\b', stxt)),
+          'Settings → Goal', 'both "Cut" and "Lose weight"', short(stxt[:200], 160))
+    if app.has('[data-seg="goal"] [data-v="weight_loss"]'):
+        app.click('[data-seg="goal"] [data-v="weight_loss"]')
+        app.page.wait_for_timeout(600)
+    else:
+        app.store("(store.updateProfile({ goal: 'weight_loss' }), 1)")
+        app.notes.append('W1a fallback: goal set via store')
+
+    # b) a goal weight + rate written through the shared targets module
+    cur = app.store('Number(store.getProfile().bodyweight) || 164')
+    goal_w = round(cur - 18)
+    app.store(f"""(async () => {{ const m = await import('/js/engine/targets.js');
+        store.saveProfile(m.applyTargetChange(store.getProfile(), {{ goals: {{ goalWeightLb: {goal_w}, lossRatePctPerWeek: 1 }} }})); return 1; }})()""")
+    app.page.wait_for_timeout(200)
+    p = app.profile()
+    body = p.get('body') or {}
+    t.sub('L1b', 'Goal weight + rate saved on the profile', body.get('goalWeightLb') == goal_w and body.get('lossRatePctPerWeek') == 1,
+          'applyTargetChange goals patch', f'goalWeightLb {goal_w}, lossRatePctPerWeek 1', f'{body.get("goalWeightLb")} / {body.get("lossRatePctPerWeek")}')
+
+    resolved = app.page.evaluate("""async () => { try { const m = await import('/js/engine/targets.js'); const { store } = await import('/js/store.js');
+        const t = m.resolveTargets(store.getProfile(), { now: new Date() });
+        return { losing: t.goals.losing, gw: t.goals.goalWeightLb, rate: t.goals.lossRatePctPerWeek,
+                 deficit: t.goals.plan && t.goals.plan.deficitKcal, floor: t.minimums.floor.mode, warns: t.warnings.length };
+      } catch (e) { return { err: e.message.slice(0, 80) }; } }""")
+    t.sub('L1c', 'resolveTargets exposes the loss plan (one source of truth)',
+          resolved.get('losing') is True and resolved.get('gw') == goal_w and (resolved.get('deficit') or 0) > 0,
+          'engine/targets.resolveTargets().goals', 'losing, goal weight, rate and a kcal deficit', json.dumps(resolved)[:160])
+    deficit = resolved.get('deficit') or 0
+
+    # c) Projection: the cost card, the goal-weight milestone, agreeing numbers
+    app.go('projection', settle=900)
+    app.wait_text(r'Milestones|Losing weight', timeout=8000)
+    if app.has('details.bd-assume'):
+        app.page.evaluate("() => document.querySelectorAll('details').forEach(d => d.open = true)")
+    ptxt = app.text()
+    card = app.text('#pjWeightLoss') if app.has('#pjWeightLoss') else ''
+    t.sub('L1d', 'Projection shows the lean-vs-fat cost card', bool(card) and bool(re.search(r'Fat off', card, re.I)) and bool(re.search(r'Lean off', card, re.I)),
+          'Projection → "Losing weight: what it costs"', 'fat off / lean off / % of the loss that is lean', short(card, 180))
+    t.sub('L1e', 'Projection card shows the rate trade-off (faster costs more lean)',
+          bool(re.search(r'0\.7%', card)) and bool(re.search(r'1\.4%', card)),
+          'rate table in the cost card', 'a row per rate including 0.7% and 1.4%', short(card, 180))
+    t.sub('L1f', 'Goal-weight milestone names the split', bool(re.search(rf'Goal weight \({goal_w}', ptxt)) and bool(re.search(r'lean mass', ptxt, re.I)),
+          'Projection milestones', f'"Goal weight ({goal_w} lb)" + a lean/fat split', short((re.search(r'Goal weight[^\n]*', ptxt) or [''])[0], 160))
+    t.sub('L1g', 'Projection cites the evidence it is using', bool(re.search(r'Forbes', ptxt)) and bool(re.search(r'Garthe 2011', ptxt)),
+          'Projection assumptions', 'Forbes and Garthe 2011 named', short((re.search(r'[^\n]*Garthe[^\n]*', ptxt) or ['no Garthe mention'])[0], 160))
+    pj = app.page.evaluate("""async () => { try {
+        const P = await import('/js/engine/projection.js'); const B = await import('/js/engine/bodycomp.js'); const { store } = await import('/js/store.js');
+        const profile = store.getProfile();
+        const b = B.baseline({ profile, bodyLog: store.getBodyLog(), measurements: store.getMeasurements(), now: new Date() });
+        const r = P.project({ baseline: b, profile, sessions: store.getSessions(), weeks: 26, now: new Date() });
+        return r.weightLoss ? { gw: r.weightLoss.goalWeightLb, def: r.weightLoss.deficitKcal, rates: (r.weightLoss.rates || []).length,
+          lean: r.weightLoss.leanLostLb, fat: r.weightLoss.fatLostLb } : { none: true };
+      } catch (e) { return { err: e.message.slice(0, 80) }; } }""")
+    t.sub('L1h', 'Projection engine and targets agree on the deficit',
+          pj.get('gw') == goal_w and abs((pj.get('def') or 0) - deficit) <= 25 and (pj.get('rates') or 0) >= 4,
+          'project().weightLoss vs resolveTargets().goals.plan', f'goal {goal_w} lb, ~{deficit} kcal/day, 4+ simulated rates', json.dumps(pj)[:160])
+
+    # d) Nutrition: the same deficit, framed for weight loss
+    app.store("(store.updateProfile({ nutrition: { ...store.getProfile().nutrition, mode: 'simple', calories: null, surplus: null } }), 1)")
+    app.go('nutrition', settle=600)
+    ntxt = app.text()
+    hero = app.text('.card.hero') if app.has('.card.hero') else ''
+    m = re.search(r'([\d,]{4,})\s*kcal', hero)
+    kcal = int(m.group(1).replace(',', '')) if m else None
+    maint = None
+    mm = re.search(r'maintenance\s*≈?\s*([\d,]{4,})', ntxt, re.I)
+    if mm: maint = int(mm.group(1).replace(',', ''))
+    ok_kcal = kcal is not None and maint is not None and abs((maint - kcal) - deficit) <= 60
+    t.sub('L1i', 'Nutrition sizes the deficit from the goal rate', ok_kcal,
+          "Nutrition → Today's target", f'maintenance − ~{deficit} kcal', f'target {kcal}, maintenance {maint}')
+    t.sub('L1j', 'Nutrition replaces the bulking lesson with the weight-loss one',
+          bool(re.search(r'Losing weight, honestly', ntxt, re.I)) and not re.search(r'Why "?eat a lot', ntxt, re.I),
+          'Nutrition page', '"Losing weight, honestly" card, no bulking card', short(ntxt[:200], 160))
+
+    # e) below-floor set targets: allowed, applied and explained
+    app.store("""(async () => { const m = await import('/js/engine/targets.js');
+        let p = m.applyTargetChange(store.getProfile(), { goals: { leanProtection: 'minimal' } });
+        p = m.applyTargetChange(p, { training: { groupPriority: { ...(p.groupPriority || {}), quads: 0 } } });
+        store.saveProfile(p); return 1; })()""")
+    app.page.wait_for_timeout(200)
+    floors = app.page.evaluate("""async () => { try { const m = await import('/js/engine/targets.js'); const { store } = await import('/js/store.js');
+        const p = store.getProfile(); const U = m.unitTargets(p);
+        const other = m.unitTargets({ ...p, goal: 'cut' });
+        return { mode: m.volumeFloorOf(p), triMin: U.triceps.min, triGrowth: U.triceps.growthMin, quads: U.quads.target,
+                 protein: p.nutrition.proteinGPerLb, otherTriMin: other.triceps.min, otherQuads: other.quads.target };
+      } catch (e) { return { err: e.message.slice(0, 80) }; } }""")
+    t.sub('L1k', 'Below-floor set targets apply under this goal only',
+          floors.get('mode') == 'minimum' and floors.get('triMin') == 0 and floors.get('quads') == 0
+          and floors.get('otherTriMin', 0) > 0 and floors.get('otherQuads', 0) > 0,
+          'unitTargets under weight_loss vs cut', 'floors 0 and quads 0 here, normal floors under cut', json.dumps(floors)[:200])
+    t.sub('L1l', 'Choosing "minimum body mass" also drops protein (it is a preset, not a label)',
+          (floors.get('protein') or 1) <= 0.7, 'profile.nutrition.proteinGPerLb', '≤ 0.7 g/lb', str(floors.get('protein')))
+
+    # the shared targets sheet owns goal weight, rate and lean protection (CONTRACT §18)
+    app.go('body', settle=500)
+    opened = False
+    if app.has('.tg-strip .tg-edit'):
+        app.click('.tg-strip .tg-edit')
+        opened = app.wait_sheet('#tg-adherence', timeout=3000)
+    tg = app.text(app.sheet()) if opened else ''
+    t.sub('L1o', 'The shared targets sheet edits goal weight, rate and muscle protection',
+          opened and bool(re.search(r'Goal weight', tg, re.I)) and bool(re.search(r'How fast', tg, re.I))
+          and bool(re.search(r'Muscle while you lose', tg, re.I)) and bool(re.search(r'Weekly set floors', tg, re.I)),
+          'Body -> Your targets -> edit', 'goal weight, rate chips, muscle protection, set floors', short(tg, 200))
+    if opened:
+        before = (app.profile().get('body') or {}).get('lossRatePctPerWeek')
+        if app.has('#sheet-root > .sheet:last-child [data-s-rate="0.5"]'):
+            app.click('#sheet-root > .sheet:last-child [data-s-rate="0.5"]')
+            app.page.wait_for_timeout(600)
+        after = (app.profile().get('body') or {}).get('lossRatePctPerWeek')
+        t.sub('L1p', 'Changing the rate in the sheet writes through setTargets', after == 0.5 and before != after,
+              'rate chip 0.5%', 'profile.body.lossRatePctPerWeek = 0.5', f'{before} -> {after}')
+        app.close_sheet()
+        app.store(RESET_RATE_JS)
+
+    app.go('plan', settle=700)
+    if app.has('[data-a="why-min"]'):
+        app.click('[data-a="why-min"]')
+        app.page.wait_for_timeout(400)
+    sheet = app.text(app.sheet()) if app.has('#sheet-root > .sheet:last-child') else ''
+    if not sheet:
+        sheet = app.page.evaluate("""async () => { const m = await import('/js/ui/targets.js'); const { store } = await import('/js/store.js');
+            let html = ''; const ctx = { store, openSheet: h => { html = h; }, closeSheet: () => {}, nav: () => {}, toast: () => {} };
+            try { m.openMinimumsInfo(ctx); } catch (e) { return 'ERR ' + e.message.slice(0, 80); }
+            const d = document.createElement('div'); d.innerHTML = html; return d.innerText; }""")
+    t.sub('L1m', '"Why these numbers?" says the floors are deliberately below the growth dose',
+          bool(re.search(r'below the growth floor on purpose', sheet, re.I)) and bool(re.search(r'Bickel', sheet)),
+          'Plan → Why these numbers?', 'a below-floor warning block citing Bickel 2011', short(sheet, 200))
+    if app.has('#sheet-root > .sheet:last-child'): app.close_sheet()
+
+    # f) Body and Plan agree, and nothing errored anywhere
+    for route in ('body', 'plan', 'today'):
+        app.go(route, settle=500)
+    btxt = app.page.evaluate("() => document.querySelector('#content')?.innerText || ''")
+    t.sub('L1n', 'Body/Plan show the goal through the shared targets strip',
+          bool(re.search(r'Lose weight', btxt, re.I)) or bool(re.search(rf'{goal_w} lb', btxt)),
+          'targets summary strip', f'"Lose weight" or "{goal_w} lb"', short(btxt[:200], 160))
+    errs = [f'{k}: {short(x, 120)}' for k, x, _ in app.errors[e0:]]
+    t.check(not errs, 'no page errors across the weight-loss flow', 'no console/page errors', '; '.join(errs[:3]))
 
 
 @test('E1', 'No console/page errors during flows')
