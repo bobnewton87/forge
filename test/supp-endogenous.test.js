@@ -54,29 +54,52 @@ test('clomiphene raises effective T in a low-T secondary profile, and the lean e
   assert.ok(on.fatDirectLbPerWeek < 0, 'fat falls slightly');
   const tl = stackTimeline(P([entry('clomiphene', 0)], LOW), { from: DATE, weeks: 12 });
   assert.ok(tl.cumLeanDirect > 0.5 && tl.cumLeanDirect < 6, `12-week direct lean ${tl.cumLeanDirect} lb`);
-  // and it is routed through testosteroneEffect, not an ad-hoc number
-  const te = testosteroneEffect(500, { baselineT: 300, weeksOn: 12, age: 39 });
+  // and it is routed through testosteroneEffect, not an ad-hoc number.
+  // CHANGED 2026-10-20: the reference level was hard-coded 500 (the old flat body-composition cap). The credit
+  // is no longer clipped there for a man inside Soares 2018's population, so the reference now follows the
+  // credited level the engine actually reports.
+  const te = testosteroneEffect(on.testosterone.leanLevel, { baselineT: 300, weeksOn: 12, age: 39 });
   assert.ok(Math.abs(on.leanDirectLbPerWeek - te.leanDirectLbPerWeek) < 0.02, 'matches the shared curve at the credited level');
 });
 
-test('the same therapy does nothing for a man already in the normal range (Bob)', () => {
+// REWRITTEN 2026-10-20. This test used to assert that clomiphene, enclomiphene and hCG do NOTHING for a man
+// already in the normal range, and that each says "studied only in men with low testosterone". Both halves were
+// wrong. The curves had been fitted to hypogonadal trials and then extrapolated to zero at 450 ng/dL, which was
+// an inference, not a finding, and it is contradicted by:
+//   Tenover & Bremner 1991 (PMID 1917692)  — healthy men 26–33, 519 → 1,390 ng/dL on clomiphene 100 mg/day, 8 wk.
+//   Bremner 1987 (doi:10.1210/jcem-65-6-1118) — healthy men 22–35, 490 → 980 ng/dL in 7 days, same dose.
+//   Krause 1992 — placebo-controlled, eugonadal men, tamoxifen 490 → 790 vs 530 → 560.
+//   Cailleux-Bounacer 2008 / Panidis 2002 — hCG raises testosterone in normal men; that is what the Leydig
+//   stimulation test IS.
+// The hormone moves. What is still unknown is whether it buys a eugonadal man any muscle, so that is what this
+// test now pins: a real rise, a lean number that exists, and an `extrapolated` flag on it.
+test('the same therapies DO move a man already in the normal range — but the muscle is unproven there', () => {
   const base = modifiersAt(P(), DATE);
-  // The aromatase inhibitor is deliberately NOT in this list any more: Mauras 2000 raised testosterone 58 % in
-  // eugonadal males, so the number does move. It still credits zero muscle (see the AI test) and now costs fat.
   for (const id of ['clomiphene', 'enclomiphene', 'hcg']) {
     const m = modifiersAt(P([entry(id)]), DATE);
     assertFinite(m, id);
-    assert.equal(m.leanDirectLbPerWeek, base.leanDirectLbPerWeek, `${id} no direct lean`);
-    assert.equal(m.leanCeilingMult, base.leanCeilingMult, `${id} no ceiling change`);
-    assert.equal(m.testosterone.level, m.testosterone.natural, `${id} no level change`);
-    assert.ok(m.contributions.some(c => c.id === id && /studied only in men with low testosterone/i.test(c.text)), `${id} explains why`);
+    assert.ok(m.testosterone.level > m.testosterone.natural + 100, `${id} raises a normal man's level`);
+    assert.ok(m.testosterone.freeT > m.testosterone.freeTBase, `${id} raises free T too`);
+    assert.equal(m.testosterone.extrapolated, true, `${id} body composition is unmeasured in this population`);
+    assert.ok(m.leanDirectLbPerWeek > base.leanDirectLbPerWeek, `${id} credits some lean, through the Bhasin curve`);
+    assert.ok(m.contributions.some(c => c.id === id && /EXTRAPOLATION/.test(c.text)), `${id} labels it`);
   }
+  // The aromatase inhibitor still moves the number and still credits exactly zero muscle (trials measured it).
+  const ai = modifiersAt(P([entry('aromatase_inhibitor')]), DATE);
+  assert.ok(ai.testosterone.level > ai.testosterone.natural + 100);
+  assert.equal(ai.leanDirectLbPerWeek, base.leanDirectLbPerWeek, 'AI: no direct lean, ever');
+  assert.equal(ai.leanCeilingMult, base.leanCeilingMult);
 });
 
 test('gates: high LH (primary) blocks the SERM/hCG class; cabergoline needs a high prolactin; zinc needs a deficiency', () => {
-  const primary = modifiersAt(P([entry('clomiphene')], { ...LOW, lh: 14 }), DATE);
+  // CHANGED 2026-10-20: LH 14 is only "slightly elevated" and Keihani 2020 (n=332) found such men still respond,
+  // so Forge now attenuates there. A hard zero needs a clearly raised LH (2x the EMAS 9.4 cut-off).
+  const mild = modifiersAt(P([entry('clomiphene')], { ...LOW, lh: 14 }), DATE);
+  assert.ok(mild.testosterone.level > mild.testosterone.natural, 'LH 14 attenuates, it does not block');
+  assert.ok(mild.testosterone.level < modifiersAt(P([entry('clomiphene')], LOW), DATE).testosterone.level);
+  const primary = modifiersAt(P([entry('clomiphene')], { ...LOW, lh: 22 }), DATE);
   assert.equal(primary.testosterone.level, primary.testosterone.natural);
-  assert.ok(primary.contributions.some(c => /points to the testes/i.test(c.text)));
+  assert.ok(primary.contributions.some(c => /testicular\) failure/i.test(c.text)));
 
   const noPrl = modifiersAt(P([entry('cabergoline')], { totalT: 280, labDate: '2026-07-01' }), DATE);
   assert.equal(noPrl.testosterone.level, noPrl.testosterone.natural, 'no prolactin entered → nothing');
@@ -126,10 +149,17 @@ test('aromatase inhibitors raise the number but are credited with no muscle (tri
 });
 
 test('muscle credit stops at the level the trials actually measured', () => {
+  // CHANGED 2026-10-20: the credit used to be hard-capped at Soares 2018's inferred 500 ng/dL for everyone.
+  // It is now capped at 500 only in the sense of being labelled MEASURED up to there; above it Forge still runs
+  // the Bhasin curve but flags the result `extrapolated` (bcExtrapMaxLevel), and the planner then ranks the row
+  // on a floor of zero. A hypogonadal man landing at ~573 is still inside Soares' population (entry T ≤300), so
+  // he stays 'measured'; a eugonadal man is not, so he does not.
   const m = modifiersAt(P([entry('clomiphene')], LOW), DATE);
-  assert.ok(m.testosterone.leanLevel <= 505 && m.testosterone.leanLevel < m.testosterone.level, 'credited level is capped');
-  assert.ok(m.notes.some(n => /credits muscle only up to/i.test(n)));
-  assert.equal(m.testosterone.extrapolated, false, 'clomiphene measured body composition (Soares 2018)');
+  assert.ok(m.testosterone.leanLevel <= m.testosterone.level + 1 && m.testosterone.leanLevel > m.testosterone.natural);
+  assert.equal(m.testosterone.extrapolated, false, 'a man inside Soares 2018 (entry T <=300) keeps MEASURED');
+  const eug = modifiersAt(P([entry('clomiphene')], { totalT: 540, labDate: '2026-07-01', lh: 4 }), DATE);
+  assert.equal(eug.testosterone.extrapolated, true, 'a eugonadal man is past that trial population');
+  assert.ok(eug.testosterone.leanLevel <= SUPPLEMENTS.clomiphene.model.bcExtrapMaxLevel + 1);
   // tamoxifen in a eugonadal man: §22 case (b). The number moves, muscle IS credited through the Bhasin curve,
   // bounded at Krause 1992's achieved 790 ng/dL, and the row is flagged an extrapolation.
   const tam = modifiersAt(P([entry('tamoxifen')]), DATE);
@@ -196,7 +226,12 @@ test('helpers: free-T math, BMI, gates and the sleep curve behave', () => {
   assert.ok(Math.abs(bmiOf({ body: { heightIn: 70 } }, 164) - 23.5) < 0.2);
   assert.equal(bmiOf({ body: {} }, 164), null);
   assert.equal(SLEEP_T[SLEEP_T.length - 1][1], 1);
-  assert.equal(tShiftPct(SUPPLEMENTS.clomiphene.model, { baselineT: 900 }).pct, 0);
+  // CHANGED 2026-10-20: was `=== 0`. The old curve zeroed above 450 ng/dL on an inference that the eugonadal
+  // measurements contradict (Tenover 1991, Bremner 1987). The percentage still falls as the baseline rises —
+  // because the measured effect is a roughly constant +274 ng/dL — but it never hits zero inside the human range.
+  const at900 = tShiftPct(SUPPLEMENTS.clomiphene.model, { baselineT: 900 }).pct;
+  assert.ok(at900 > 15 && at900 < 30, `clomiphene at a 900 ng/dL baseline: ${at900}%`);
+  assert.ok(at900 < tShiftPct(SUPPLEMENTS.clomiphene.model, { baselineT: 450 }).pct, 'and keeps falling');
   assert.ok(tShiftPct(SUPPLEMENTS.clomiphene.model, { baselineT: 250, lh: 3 }).pct > 50);
   // the panel labs show up as information
   const b = metabolicBaseline(P([], { totalT: 280, labDate: '2026-09-01', lh: 2.1, shbg: 45, prolactin: 38, ferritin: 18 }), { date: DATE });

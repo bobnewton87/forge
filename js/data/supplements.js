@@ -834,22 +834,29 @@ const LIST = [
   {
     id: 'clomiphene', name: 'Clomiphene citrate (off-label)', category: 'prescription', rx: true, evidence: 'moderate',
     status: 'Prescription only; used off-label in men (FDA-approved only for ovulation induction in women). WADA prohibited (S4 hormone and metabolic modulators).',
-    summary: 'The best-evidenced way to raise your OWN testosterone. In men with low testosterone and a pituitary that still works, a meta-analysis of 10 randomized trials found +274 ng/dL versus placebo, with LH and FSH going up rather than down — so sperm production is preserved, unlike with testosterone therapy. It does nothing for a man whose level is already normal.',
+    summary: 'The best-evidenced way to raise your OWN testosterone. In men with low testosterone and a pituitary that still works, a meta-analysis of 10 randomized trials found +274 ng/dL versus placebo, with LH and FSH going up rather than down — so sperm production is preserved, unlike with testosterone therapy. It also works in men whose testosterone is already normal: in healthy men aged 26–33 it took the group mean from 519 to 1,390 ng/dL. What is NOT known is whether that extra testosterone, made by your own testes, builds muscle the way injected testosterone does. Nobody has measured it.',
     mechanism: 'Blocks estrogen receptors in the hypothalamus and pituitary, so the brain stops seeing the negative feedback, releases more LH and FSH, and your own testes make more testosterone. Estradiol rises along with it.',
     effects: [
       'Hohl 2025 meta-analysis (10 RCTs, 819 men with functional or secondary hypogonadism, baseline 67–303 ng/dL): total T +273.8 ng/dL (95% CI 191.9–355.7, I²=89%), LH +4.66 IU/L (3.37–5.94), FSH +4.59 IU/L (2.88–6.30), free T SMD 1.57 (0.44–2.70), DHT +7.58 ng/dL (3.42–11.73), estradiol +33.99 pg/mL (19.19–48.79). GRADE moderate. The benefit shrank with higher age (p=0.043) and higher BMI (p=0.0008).',
       'SHBG did NOT move significantly in the pooled analysis (+3.63 nmol/L, 95% CI −0.54 to 7.81, p=0.09), although the single body-composition trial (Soares 2018) did report a rise.',
       'Equal to testosterone gel on serum levels (difference 5.41 ng/dL, 95% CI −43 to +54). Hohl 2025 did not compare SERMs with injections, so Forge makes no claim there.',
       'Fertility is the real differentiator: SERMs kept sperm concentration 70.4 million/mL higher than gel (95% CI 41.6–99.2), and the risk of falling below 15 million/mL was 90% lower (RR 0.10).',
-      'Body composition: only one trial measured it. Soares 2018 (RCT, 78 men with obesity, BMI >30, baseline 226 ± 70 ng/dL, 50 mg/day, 12 weeks) found improved lean mass (p<0.001), fat-free mass (p=0.004) and muscle mass (p<0.001) — but by bioimpedance, not DXA, and only in obese men with low T. HDL fell (p<0.001).',
+      'IT WORKS IN MEN WITH A NORMAL TESTOSTERONE TOO — the single biggest correction in this entry. Tenover & Bremner 1991 (J Androl 12:258–63, PMID 1917692) gave 50 mg twice daily for 8 weeks to five HEALTHY men aged 26–33 (baseline 18.0 ± 1.0 nmol/L = 519 ng/dL, screened for normal testes, normal weight, non-smokers, no medication): the group mean reached 48.2 ± 1.4 nmol/L = 1,390 ng/dL, 2.7× baseline. Five healthy men aged 65–85 (baseline 499 ng/dL) reached 34.3 nmol/L = 989 ng/dL, 2.0× baseline — the young men responded significantly more.',
+      'Bremner/Tenover 1987 (JCEM 65:1118–26, doi:10.1210/jcem-65-6-1118) is the larger version: 14 healthy men aged 22–35 and 14 aged 65–84, same 100 mg/day dose, only 7 days. 24-hour mean total T 4.9 → 9.8 ng/mL (490 → 980 ng/dL, +100%) in the young men and 4.1 → 5.4 ng/mL (410 → 540, +34%) in the elderly. Estradiol 37 → 54 pg/mL (young) and 37 → 47 (elderly). SHBG 24.5 → 31.3 nmol/L (young, +28%) and 31.0 → 40.0 (elderly, +29%).',
+      'And free testosterone goes up with it. In those same young men, non-SHBG-bound T by the Södergard formula went 3.2 → 6.5 ng/mL, which is 65% → 66% of total: the bioavailable FRACTION did not change, so free T rose in proportion to total. Soares 2018 measured free T rising (p<0.001) in obese hypogonadal men even though SHBG rose; Guay 1995 (double-blind, placebo-controlled crossover) and Guay 2003 (n=178) both found free T up significantly on clomiphene.',
+      'A raised LH does NOT rule you out. Keihani 2020 (Urology 142:119–24, doi:10.1016/j.urology.2020.04.074; 332 men, mean age 36.2) found total T rose +329 ng/dL (95% CI 307–351), 73% of men gained at least 200 ng/dL, and NEITHER baseline LH NOR FSH predicted the response: "adequate biochemical response ... can be expected in most patients with normal or slightly elevated baseline gonadotropin levels." Patel 2015 and Roque 2026 agree. Kim 2026 (n=292) did find higher LH predicted worse response, but as a gradient (OR 0.82 per mIU/mL), not a cliff.',
+      'Age is the thing that actually shrinks the response — not your starting level. Tenover: young > elderly in both papers. Hohl 2025: benefit fell with age (p=0.043) and BMI (p=0.0008). Guay 2003: response fell significantly with age (p<0.05). Keihani 2020: age was the only significant univariable predictor. Both Keihani and Kim found baseline total T was NOT predictive.',
+      'Dose: there is no within-trial dose ladder for clomiphene in men. 25 mg/day took 36 men from 247.6 ± 39.8 to 610.0 ± 178.6 ng/dL in 4–6 weeks (Shabsigh 2005), which is indistinguishable from the 50 mg/day trials, so the curve looks close to flat across 25–50 mg. The 1,390 ng/dL figure comes from 100 mg/day, two to four times the usual clinical dose.',
+      'Body composition: only one trial has ever measured it. Soares 2018 (RCT, 78 men with obesity, BMI >30, baseline 226 ± 70 ng/dL, 50 mg/day, 12 weeks) found improved lean mass (p<0.001), fat-free mass (p=0.004) and muscle mass (p<0.001) — but by bioimpedance, not DXA, and only in obese men with low T. HDL fell (p<0.001). Nothing has been measured in a man with a normal testosterone.',
       'No glucose or weight benefit: FBG, HbA1c, insulin and BMI were all unchanged vs placebo (Hohl 2025).',
-      'Forge models the rise only when your testosterone is low, credits muscle only up to about 500 ng/dL (where that one body-composition trial landed), and models nothing at all if your level is normal.',
+      'Forge models the testosterone rise at ANY baseline, because that is what was measured. It credits muscle as MEASURED only up to about 500 ng/dL (where Soares landed) and as an EXTRAPOLATION above that, with a range that starts at zero.',
     ],
     risks: [
       'Mood changes, blurred or flickering vision (stop and call your doctor), breast tenderness; about 8% of men report a side effect in long-term series.',
       'Estradiol rises, which is part of how it works but can cause breast tenderness or gynecomastia.',
       'Libido was lower on clomiphene than on testosterone therapy in a meta-analysis (−0.54, 95% CI −0.87 to −0.21).',
-      'It needs a pituitary and testes that respond: if your LH is already high, it is the wrong tool.',
+      'It needs testes that can respond. A clearly raised LH together with a low testosterone is primary (testicular) failure, and then it is the wrong tool — but a normal or slightly raised LH is not a reason to rule it out (Keihani 2020).',
+      'Using it in a man whose testosterone is already normal has no outcome data at all. The hormone moves; whether anything else does is unmeasured, and the only long-term safety data in men are retrospective series in hypogonadal patients.',
       'Long-term safety data come from retrospective series, not trials; one 400-man series followed men for an average of about two years with 88% reaching normal levels.',
     ],
     typicalUse: 'Off-label, prescribed and monitored by a urologist or endocrinologist for secondary hypogonadism, especially when fertility matters. Your prescriber sets the dose and schedule and follows total T, estradiol, hematocrit and PSA.',
@@ -860,30 +867,58 @@ const LIST = [
       'Ramasamy R, et al. Testosterone supplementation versus clomiphene citrate for hypogonadism: an age matched comparison of satisfaction and efficacy. J Urol. 2014;192(3):875-879.',
       'Krzastek SC, et al. Long-term safety and efficacy of clomiphene citrate for the treatment of hypogonadism. J Urol. 2019;202(5):1029-1035.',
       'Mulhall JP, et al. Evaluation and management of testosterone deficiency: AUA guideline. J Urol. 2018;200(2):423-432.',
+      'Tenover JS, Bremner WJ. The effects of normal aging on the response of the pituitary-gonadal axis to chronic clomiphene administration in men. J Androl. 1991;12(4):258-263. PMID 1917692.',
+      'Bremner WJ, Plymate SR, Tenover JS, Matsumoto AM. The effects of aging in normal men on bioavailable testosterone and luteinizing hormone secretion: response to clomiphene citrate. J Clin Endocrinol Metab. 1987;65(6):1118-1126. doi:10.1210/jcem-65-6-1118',
+      'Keihani S, et al. Baseline gonadotropin levels and testosterone response in hypogonadal men treated with clomiphene citrate. Urology. 2020;142:119-124. doi:10.1016/j.urology.2020.04.074',
+      'Shabsigh A, et al. Clomiphene citrate effects on testosterone/estrogen ratio in male hypogonadism. J Sex Med. 2005;2(5):716-721. doi:10.1111/j.1743-6109.2005.00075.x',
+      'Guay AT, et al. Clomiphene increases free testosterone levels in men with both secondary hypogonadism and erectile dysfunction: who does and does not benefit? Int J Impot Res. 2003;15(3):156-165. doi:10.1038/sj.ijir.3900981',
+      'Kim DJ, et al. Predictors of clomiphene citrate response in the treatment of men with testosterone deficiency. J Sex Med. 2026;23(7). doi:10.1093/jsxmed/qdag159',
+      'Mazzola CR, et al. Predicting biochemical response to clomiphene citrate in men with hypogonadism. J Sex Med. 2014;11(9):2302-2307. doi:10.1111/jsm.12592',
+      'Tajar A, et al. Characteristics of secondary, primary, and compensated hypogonadism in aging men: evidence from the European Male Ageing Study. J Clin Endocrinol Metab. 2010;95(4):1810-1818. doi:10.1210/jc.2009-1796',
       WADA,
     ],
     model: {
       kind: 'tEndogenous',
       dose: { unit: '% of the studied regimen', default: 100, label: 'as studied (prescriber-set dose)', studied: [0, 100], note: 'Forge models the trial-average response, not a dose you choose.' },
       response: [[0, 0], [100, 1]],
-      tPctByBaseline: [[150, 183], [250, 110], [300, 91], [350, 60], [400, 30], [450, 0]],
-      rampWeeks: 6, maxLevel: 800,
-      // Pituitary-driven plateau: the highest group mean any SERM or AI trial reached is 790 ng/dL (Krause 1992).
-      axis: 'serm', ceilingNg: 800,
+      // CORRECTED 2026-10-20. The old curve was [[150,183],[250,110],[300,91],[350,60],[400,30],[450,0]]: it fitted
+      // the hypogonadal trials below 300 and then BENT DOWN TO ZERO at 450. The bend was an inference, not a finding,
+      // and it is wrong. Two measurements in men who were NOT hypogonadal contradict it:
+      //   Tenover & Bremner 1991 (PMID 1917692): healthy men 26-33, baseline 519 ng/dL → 1,390 (2.68x, +168%).
+      //   Bremner 1987 (doi:10.1210/jcem-65-6-1118): healthy men 22-35, baseline 490 → 980 (+100%) in 7 days.
+      // Both used 100 mg/day. Krause 1992's tamoxifen arm is the placebo-controlled eugonadal anchor: 490 → 790.
+      //
+      // Shape. Below 300 the old curve was arithmetically identical to "a constant +274 ng/dL" — Hohl 2025's pooled
+      // effect (150x1.83 = 274, 250x1.10 = 275, 300x0.91 = 273). Forge keeps that, because the constant-absolute
+      // reading is what the predictor studies support: Keihani 2020 and Kim 2026 both found baseline total T did
+      // NOT predict the size of the response. A constant absolute rise automatically becomes a shrinking
+      // percentage as the baseline climbs, which is the shape the task description asks for and the only one the
+      // data justify. Above 550 Forge tapers the absolute rise mildly (274 → ~220 by 1,000 ng/dL) because no trial
+      // has started a man that high; that taper is an ASSUMPTION.
+      // Conservatism check at a eugonadal baseline: this curve gives +275 ng/dL at 490, against Krause's measured
+      // +300 (tamoxifen, placebo-controlled), Bremner's +490 and Tenover's +871 on clomiphene itself.
+      tPctByBaseline: [[150, 183], [200, 137], [250, 110], [300, 91], [350, 78], [400, 69], [450, 61], [500, 55], [550, 50], [650, 41], [800, 31], [1000, 22]],
+      rampWeeks: 6, maxLevel: 1390,
+      // Ceiling = the highest group mean ever reported on this drug: 48.2 nmol/L = 1,390 ng/dL (Tenover 1991,
+      // 100 mg/day, 8 weeks, n = 5 healthy young men). At conventional doses the maxima are 610 (Shabsigh 2005,
+      // 25 mg) and 612 at one year (Moskovic 2012).
+      axis: 'serm', ceilingNg: 1390,
       tCI: [0.70, 1.30],              // Hohl 2025: 191.9–355.7 around 273.8
       e2Pct: 90, e2ActionPct: 90, shbgDelta: 4,
       e2Note: 'Estradiol rises a lot (+34 pg/mL pooled, 95% CI 19–49). That is part of the mechanism, not a side-show. Forge does NOT turn a SERM\'s serum-E2 rise into fat loss: Finkelstein\'s fat finding is about estrogen ACTION, and a SERM raises the hormone while blocking the receptor in some tissues. Direction unknown, so zero.',
-      shbgNote: 'Pooled SHBG change was not significant (+3.63 nmol/L, p=0.09); Forge models a small rise so free T is not overstated.',
-      bodyComp: 'measured', bcMaxLevel: 500,
-      bcNote: 'MEASURED (one trial): Soares 2018 measured body composition by bioimpedance in obese men starting at 226 ± 70 ng/dL. The achieved level is not in the abstract; 500 ng/dL is inferred from that baseline plus the pooled clomiphene rise in obese men (+333 ng/dL, Tienforti 2023) and is an ASSUMPTION. Above it, no trial of clomiphene has measured muscle.',
+      shbgNote: 'SHBG rises a little and early and then settles: +28% after 7 days in healthy young men (Bremner 1987, 24.5 → 31.3 nmol/L), no significant change at all after 8 weeks (Tenover 1991), +3.63 nmol/L and not significant in the pooled analysis (Hohl 2025, p=0.09). Forge models +4 nmol/L. Crucially the bioavailable FRACTION did not fall: 65% → 66% of total in Bremner 1987, so free testosterone rose in proportion to total.',
+      bodyComp: 'measured', bcMaxLevel: 500, bcExtrapMaxLevel: 1390, bcMaxBaseline: 300,
+      bcNote: 'MEASURED up to ≈500 ng/dL, EXTRAPOLATED above it. Soares 2018 measured body composition by bioimpedance in obese men starting at 226 ± 70 ng/dL and found lean, fat-free and muscle mass all improved; the achieved level is not in the abstract, and 500 ng/dL is inferred from that baseline plus the pooled rise in obese men (+333 ng/dL, Tienforti 2023), so the bound itself is an ASSUMPTION. Above 500 the hormone rise IS measured (Tenover 1991 reached 1,390 ng/dL in healthy young men), but no trial has measured body composition there, so Forge runs it through the testosterone→lean curve, labels it an extrapolation, and starts its range at zero. The deeper gap: that curve (Bhasin 2001) was built on testosterone given from outside with the gonadotropins switched off. Whether an endogenous rise of the same size builds the same muscle has never been tested.',
       monitor: ['Total testosterone (morning, 4–6 weeks in)', 'Estradiol (sensitive assay)', 'Hematocrit', 'PSA', 'LH/FSH', 'Vision changes: stop and call the prescriber'],
       fertility: 'Preserved or improved — the main reason to pick it over testosterone.',
       timeCourse: 'Levels move within 2 weeks; trials ran 8–30 weeks. Long-term data are retrospective.',
       wada: 'WADA prohibited at all times, S4.2 (anti-estrogenic substances / SERMs).',
-      suits: 'Low testosterone (two morning draws under ~300) with a normal or low LH, especially when fertility matters.',
-      notSuits: 'A normal testosterone (no trial, and the model shows zero), a raised LH (primary: the pituitary signal is not the problem), or anyone already on testosterone.',
+      suits: 'Low testosterone (two morning draws under ~300) with a normal or slightly raised LH, especially when fertility matters. It also raises the number in men who are already normal — that part is measured — but what that buys you is not.',
+      notSuits: 'A clearly raised LH together with a low testosterone (primary testicular failure: the signal is not what is missing). Anyone already on testosterone. And anyone who wants a muscle result rather than a lab result at a normal baseline, because that has never been measured on this drug.',
       levelRisks: [{ min: 1, text: 'Estradiol rises on clomiphene, so breast tenderness or gynecomastia can appear; your prescriber tracks it along with hematocrit and PSA.' }],
-      gate: { lowTOnly: true, noEffectAbove: 450, secondaryOnly: true },
+      // No `lowTOnly` / `noEffectAbove` any more: the eugonadal response is measured, not absent (Tenover 1991,
+      // Bremner 1987). `secondaryOnly` now fades rather than cliffs — see LH_PRIMARY / LH_PRIMARY_HARD.
+      gate: { secondaryOnly: true },
     },
   },
   {
@@ -894,8 +929,9 @@ const LIST = [
     effects: [
       'Tienforti 2023 meta-analysis (obesity-related androgen deficiency): +7.50 nmol/L ≈ +216 ng/dL (95% CI 188–245).',
       'Kim 2016 (two parallel phase-3 RCTs, overweight men with total T ≤300 and LH <9.4 IU/L, 16 weeks): testosterone rose on both doses; LH and FSH rose on enclomiphene and fell on gel, and sperm concentration was maintained on enclomiphene and markedly reduced on gel.',
-      'Wiehle 2013 (phase 2): day-42 total T 604 ± 160 ng/dL vs 500 ± 278 on transdermal testosterone (p=0.23). DHT stayed much lower than on gel.',
-      'Body composition and strength: not measured in any enclomiphene trial. Forge therefore credits muscle only up to mid-normal (about 550 ng/dL) and treats anything above that as an unproven extrapolation.',
+      'Wiehle 2013 (phase 2, doi:10.1111/bju.12363): a real dose ladder. Day-42 morning total T was 420 ± 212 on 6.25 mg, 404 ± 165 on 12.5 mg and 604 ± 160 ng/dL on 25 mg, against 500 ± 278 on transdermal testosterone (p=0.07 across groups; baselines 265/295/253/268). The 25 mg daily peak (Cmax) reached 764 ± 164 ng/dL. DHT stayed much lower than on gel.',
+      'NO enclomiphene trial has ever enrolled a man with a normal testosterone. Wiehle 2013 enrolled 48 and had to exclude 4 whose baseline came back above 350. Every published entry criterion is total T ≤300–350 with LH <9.4–12. So Forge\'s eugonadal numbers here are an INFERENCE from clomiphene (whose eugonadal response is measured), scaled by the ratio of the two drugs\' pooled hypogonadal effects (216/274 ≈ 0.79) — not a measurement.',
+      'Body composition and strength: not measured in any enclomiphene trial, at any baseline. Forge credits muscle only up to 604 ng/dL (the highest morning group mean reported) and treats all of it as an unproven extrapolation, with a range starting at zero.',
     ],
     risks: [
       'Not FDA-approved, so there is no approved label, and compounded product quality varies by pharmacy.',
@@ -917,21 +953,29 @@ const LIST = [
       kind: 'tEndogenous',
       dose: { unit: '% of the studied regimen', default: 100, label: 'as studied (prescriber-set dose)', studied: [0, 100] },
       response: [[0, 0], [100, 1]],
-      tPctByBaseline: [[150, 144], [200, 108], [250, 86], [300, 72], [350, 45], [400, 22], [450, 0]],
-      rampWeeks: 6, maxLevel: 800,
-      axis: 'serm', ceilingNg: 800,
+      // CORRECTED 2026-10-20, same correction as clomiphene. The old curve zeroed at 450. Below 300 it was
+      // arithmetically "a constant +216 ng/dL" (Tienforti 2023: 150x1.44 = 216, 250x0.86 = 215, 300x0.72 = 216);
+      // the fall to zero above that was an inference. Forge keeps the constant-absolute shape and tapers it mildly
+      // above 550. UNLIKE clomiphene this has NO eugonadal measurement behind it at all — the whole arm above
+      // ~350 ng/dL is inferred from clomiphene's measured eugonadal response (Tenover 1991, Bremner 1987) scaled
+      // by 216/274, on the mechanistic grounds that enclomiphene is clomiphene's active trans-isomer. ASSUMPTION.
+      tPctByBaseline: [[150, 144], [200, 108], [250, 86], [300, 72], [350, 62], [400, 54], [450, 48], [500, 43], [550, 39], [650, 32], [800, 24], [1000, 17]],
+      rampWeeks: 6, maxLevel: 764,
+      // Ceiling = 764 ng/dL, the highest group mean any enclomiphene trial reported (Wiehle 2013, 25 mg, day-42
+      // Cmax). Lower than the old 800, which was a class-wide guess.
+      axis: 'serm', ceilingNg: 764,
       tCI: [0.87, 1.13],              // Tienforti 2023: 188–245 ng/dL around 216
       e2Pct: 45, e2ActionPct: 45, shbgDelta: 3,
       e2Note: 'Estradiol rises, but less than on racemic clomiphene (the estrogenic zuclomiphene isomer is removed). As with clomiphene, Forge credits no fat change from it.',
       bodyComp: 'extrapolated', bcMaxLevel: 604,
-      bcNote: 'EXTRAPOLATED: no enclomiphene trial has ever measured body composition. Forge runs the modeled testosterone rise through the Bhasin curve and stops at 604 ng/dL — the highest on-treatment group mean reported (Wiehle 2013, 25 mg, day 42: 604 ± 160 ng/dL). Treat the lean number as an extrapolation, not a result.',
+      bcNote: 'EXTRAPOLATED TWICE OVER, and the weakest row of the three SERMs. (1) No enclomiphene trial has ever measured body composition, at any baseline. (2) No enclomiphene trial has ever enrolled a eugonadal man, so even the hormone rise Forge shows you above ~350 ng/dL is inferred from clomiphene rather than measured. Forge runs the modeled rise through the Bhasin curve and stops at 604 ng/dL (Wiehle 2013, 25 mg, day-42 morning mean) with a range starting at zero. And the Bhasin curve itself came from testosterone given from outside with the gonadotropins switched off, which is not what this drug does.',
       monitor: ['Total testosterone', 'Estradiol', 'Hematocrit', 'PSA', 'LH/FSH', 'IGF-1 (it fell in phase 2)'],
       fertility: 'Preserved: LH and FSH rise and sperm concentration was maintained where gel suppressed it (Kim 2016).',
       timeCourse: 'Testosterone rises within 14 days; the LH/T effect persisted a week after stopping.',
       wada: 'WADA prohibited at all times, S4.2.',
-      suits: 'Overweight men with secondary hypogonadism (T ≤300, LH <9.4) who want fertility preserved and prefer fewer estrogenic effects than clomiphene.',
-      notSuits: 'Anyone in the normal range; anyone who wants an FDA-approved product (it is not one) or long-term safety data (none exist).',
-      gate: { lowTOnly: true, noEffectAbove: 450, secondaryOnly: true },
+      suits: 'Overweight men with secondary hypogonadism (T ≤300, with a normal or only slightly raised LH) who want fertility preserved and prefer fewer estrogenic effects than clomiphene.',
+      notSuits: 'Anyone in the normal range — not because it would do nothing, but because no enclomiphene trial has ever studied one, so Forge is inferring from clomiphene. Clomiphene is the better-evidenced choice at a normal baseline. Also: no FDA approval and no long-term safety data at all.',
+      gate: { secondaryOnly: true },
     },
   },
   {
@@ -944,6 +988,7 @@ const LIST = [
       'Crucially, in that same trial shoulder and knee strength, physical activity, gait and balance did not improve. More lean mass on the scan did not become more function.',
       'Habous 2018 (randomized, 282 hypogonadal men wanting fertility, baseline ≈67 ng/dL, 5,000 IU twice weekly, 12 weeks): clomiphene +158, hCG +134, both together +153 ng/dL — the combination was no better than clomiphene alone (p=0.57). This is the single best piece of evidence that these drugs do not add up.',
       'Alongside testosterone therapy it preserves sperm: in Hsieh 2013 no man became azoospermic and semen parameters held steady.',
+      'It works at a normal baseline too, which is the point of the hCG stimulation test: Cailleux-Bounacer 2008 found dose-dependent testosterone and estradiol rises in NORMAL men (peak at 72 h), and Panidis 2002 gave 5,000 IU to 30 fertile eugonadal men aged 23–38 and tracked the testosterone rise for a week. Those are single injections, though — nobody has run chronic hCG in a eugonadal man, so Forge\'s numbers above ~430 ng/dL are a conservative assumption, not a measurement.',
       'Forge credits muscle up to about 870 ng/dL here, inferred from Liu 2002\'s ≤15 nmol/L (433 ng/dL) entry criterion and its reported +150% rise. The exact achieved level is not in the paper, so that bound is an assumption.',
     ],
     risks: [
@@ -964,25 +1009,36 @@ const LIST = [
       kind: 'tEndogenous',
       dose: { unit: '% of the studied regimen', default: 100, label: 'as studied (prescriber-set dose)', studied: [0, 100] },
       response: [[0, 0], [100, 1]],
-      tPctByBaseline: [[150, 200], [250, 160], [350, 150], [430, 140], [500, 0]],
+      // CORRECTED 2026-10-20: the old curve fell off a cliff to zero at 500 ng/dL. That was the same unexamined
+      // inference as clomiphene's, and it is contradicted by the fact that hCG stimulation IS the standard
+      // clinical test of Leydig-cell reserve in NORMAL men, precisely because a normal testis makes more
+      // testosterone when you give it more LH signal. Cailleux-Bounacer 2008 (Eur J Endocrinol 159:171-8,
+      // doi:10.1530/EJE-07-0876) showed dose-dependent rises in plasma testosterone and estradiol in normal men,
+      // peaking 72 h after the injection, and Panidis 2002 did the same with 5,000 IU in 30 fertile men aged
+      // 23-38. So the number is NOT zero at a normal baseline.
+      // BUT: those are single-injection stimulation tests. Nobody has given chronic hCG to a eugonadal man and
+      // measured anything. The arm above 430 ng/dL is therefore an ASSUMPTION — a conservative taper, deliberately
+      // below the near-doubling a full stimulation test produces acutely.
+      tPctByBaseline: [[150, 200], [250, 160], [350, 150], [430, 140], [500, 120], [600, 95], [800, 65], [1100, 40]],
       rampWeeks: 4, maxLevel: 1100,
-      // hCG drives the Leydig cell directly, so it can push past the pituitary-driven plateau. 1,100 ng/dL is the
-      // top of the male reference range and an ASSUMPTION: the highest level actually observed is Liu 2002's ≈870.
+      // 1,100 ng/dL is an ASSUMPTION (top of the male reference range): the highest level actually observed on
+      // hCG is Liu 2002's inferred ≈870, well below the 1,390 clomiphene has been measured to reach.
       axis: 'gonadotropin', ceilingNg: 1100,
       tCI: [0.6, 1.4],
       e2Pct: 150, e2ActionPct: 150, shbgDelta: 0,
       e2Note: 'Estradiol rose about 150% alongside testosterone in Liu 2002 — hCG drives the whole steroidogenic pathway, not just testosterone. Fat fell 1 kg in that trial, which is the measured number Forge uses; no separate estradiol term is applied.',
-      bodyComp: 'measured', bcMaxLevel: 870,
+      bodyComp: 'measured', bcMaxLevel: 870, bcMaxBaseline: 433,
       bcNote: 'MEASURED, and the only placebo-controlled lean-mass result in this whole class: Liu 2002, 40 men over 60, 3 months, lean +2 kg (p<0.001) and fat −1 kg (p<0.05) — with NO improvement in shoulder or knee strength, gait, balance or physical activity. The 870 ng/dL bound is inferred from the ≤433 ng/dL entry criterion and the reported +150%; the achieved mean is not published, so the bound is an assumption.',
       monitor: ['Total testosterone and estradiol', 'Hematocrit', 'Testis volume (it fell ~5 mL in the trial)', 'LH/FSH (they are suppressed while you use it)'],
       fertility: 'The reason it exists: intratesticular testosterone is what sperm production needs, so it is used alongside testosterone therapy to protect fertility.',
       timeCourse: 'Levels rise within days; Liu 2002 ran 3 months.',
       wada: 'WADA prohibited at all times in males, S2.2 (chorionic gonadotropin).',
       suits: 'Low testosterone with fertility to protect, including men already on testosterone therapy. It works even when the pituitary signal is the problem, because it replaces LH.',
-      notSuits: 'A normal testosterone; primary (testicular) failure where the testes cannot respond; anyone who would rather not inject.',
-      // Primary (testicular) failure blocks this too: hCG replaces the LH signal, but a testis that cannot respond
-      // to its own high LH will not respond to hCG either.
-      gate: { lowTOnly: true, noEffectAbove: 500, secondaryOnly: true },
+      notSuits: 'Primary (testicular) failure where the testes cannot respond; anyone who would rather not inject. At a normal baseline it still raises the number — that is what a Leydig stimulation test is — but no one has run it chronically in a eugonadal man or measured what it does to him.',
+      // Primary (testicular) failure blocks this: hCG replaces the LH signal, but a testis that cannot respond
+      // to its own already-maximal LH will not respond to hCG either. `lowTOnly`/`noEffectAbove` removed — see
+      // the curve comment above.
+      gate: { secondaryOnly: true },
       levelRisks: [{ min: 1, text: 'Estradiol rises with hCG: breast tenderness and gynecomastia are the common complaints, and your own LH and FSH are suppressed while you use it.' }],
     },
   },
@@ -1052,7 +1108,7 @@ const LIST = [
   {
     id: 'tamoxifen', name: 'Tamoxifen (off-label in men)', category: 'prescription', rx: true, evidence: 'moderate',
     status: 'Prescription only; approved for breast cancer, used off-label in men for gynecomastia and infertility. WADA prohibited (S4.2).',
-    summary: 'The one HPG-axis drug with a randomized testosterone rise in men whose levels were already normal: about +60% in infertile but eugonadal men. Nobody has ever measured muscle on it, and Forge credits none, because no trial has shown that pushing a normal man higher this way builds anything.',
+    summary: 'The only PLACEBO-CONTROLLED testosterone rise in men whose levels were already normal: 490 → 790 ng/dL (+61%) against 530 → 560 on placebo, in eugonadal infertile men. Clomiphene does more in the same population, but without a placebo arm. Nobody has ever measured muscle on tamoxifen in men, so the lean number here is an extrapolation whose range starts at zero.',
     mechanism: 'A selective estrogen receptor modulator, like clomiphene: blocks estrogen feedback at the hypothalamus and pituitary.',
     effects: [
       'Krause 1992 (randomized, placebo-controlled, 76 eugonadal infertile men): testosterone 490 → 790 ng/dL (+61%) versus 530 → 560 on placebo. LH did not differ significantly between groups.',
@@ -1075,13 +1131,19 @@ const LIST = [
       kind: 'tEndogenous',
       dose: { unit: '% of the studied regimen', default: 100, label: 'as studied (prescriber-set dose)', studied: [0, 100] },
       response: [[0, 0], [100, 1]],
-      tPct: 60, rampWeeks: 6, maxLevel: 800,
-      axis: 'serm', ceilingNg: 800, tCI: [0.5, 1.5], gate: { secondaryOnly: true },
+      // Was a flat `tPct: 60` at every baseline. Krause 1992 measured it at ONE baseline (490 → 790 ng/dL, a
+      // +300 ng/dL absolute rise, placebo arm 530 → 560). Forge now carries that as a constant +300 ng/dL —
+      // the same constant-absolute shape the clomiphene and enclomiphene data support — which makes the
+      // percentage shrink as the baseline rises instead of staying flat. Everything away from 490 ng/dL is an
+      // extrapolation from that single anchor; tamoxifen has no dose ladder and no hypogonadal absolute figures.
+      tPctByBaseline: [[150, 200], [250, 120], [350, 86], [450, 67], [490, 61], [550, 55], [650, 46], [800, 37], [1000, 28]],
+      rampWeeks: 6, maxLevel: 790,
+      axis: 'serm', ceilingNg: 790, tCI: [0.5, 1.5], gate: { secondaryOnly: true },
       e2Pct: 60, e2ActionPct: 0, shbgDelta: 0,
       e2Note: 'Serum estradiol rises as on any SERM, but tamoxifen also blocks the receptor in several tissues, so whether estrogen action goes up or down in fat is unknown. Forge models no fat effect either way.',
       shbgNote: 'SHBG did not change significantly in Krause 1992.',
       bodyComp: 'extrapolated', bcMaxLevel: 790,
-      bcNote: 'EXTRAPOLATED, and the most uncertain row in the catalogue: nobody has ever measured body composition on tamoxifen in men. Krause 1992 is the ONLY randomized testosterone rise in men who were not hypogonadal (490 → 790 ng/dL vs 530 → 560 on placebo), so Forge runs it through the Bhasin curve and stops at 790. The lower end of the range is zero, because zero is what has actually been measured.',
+      bcNote: 'EXTRAPOLATED: nobody has ever measured body composition on tamoxifen in men. Krause 1992 is the only PLACEBO-CONTROLLED testosterone rise in men who were not hypogonadal (490 → 790 ng/dL vs 530 → 560 on placebo, 30 mg/day, 6 months, n=39 vs 37), so Forge runs it through the Bhasin curve and stops at 790. The lower end of the range is zero, because zero is what has actually been measured — and because that curve was built on testosterone given from outside, not made by your own testes.',
       monitor: ['Total testosterone and estradiol', 'Any leg swelling, chest pain or breathlessness: venous thromboembolism is the serious risk', 'Eye symptoms', 'Liver panel'],
       fertility: 'Used for male infertility; hormones improve but a Cochrane review found no improvement in pregnancy rates (OR 1.26, 95% CI 0.99–1.56).',
       timeCourse: 'Krause 1992 ran 6 months.',
@@ -1109,7 +1171,13 @@ const LIST = [
       kind: 'tEndogenous',
       dose: { unit: '% of the studied regimen', default: 100, label: 'as studied (prescriber-set dose)', studied: [0, 100] },
       response: [[0, 0], [100, 1]],
-      tPctByBaseline: [[150, 180], [250, 100], [350, 40], [450, 0]],
+      // This one taper to ~zero is KEPT, and it is the one place where the shape is right rather than inferred:
+      // cabergoline is cause-correction, not axis-pushing. It removes prolactin's suppression of GnRH, so it can
+      // only give back what the prolactin took. A man whose testosterone is already normal has lost nothing to
+      // give back, however high his prolactin is. The cliff at exactly 450 was still arbitrary, so the curve now
+      // tapers smoothly to zero at 700 instead of stopping dead, and `lowTOnly`/`noEffectAbove` are gone — the
+      // curve itself does that job, and the `highProlactin` gate (which IS what Colao 2004 shows) still stands.
+      tPctByBaseline: [[150, 180], [250, 100], [350, 45], [450, 20], [550, 8], [700, 0]],
       rampWeeks: 12, maxLevel: 900,
       // Cause-correction, not an LH drug: it removes the thing suppressing GnRH, so it raises the set-point and
       // therefore shrinks what a SERM or hCG could still add on top.
@@ -1122,8 +1190,8 @@ const LIST = [
       timeCourse: 'Testosterone normalized in ~61% by 6 months.',
       wada: 'Not prohibited.',
       suits: 'A confirmed high prolactin with low testosterone. This treats the cause rather than pushing the axis.',
-      notSuits: 'A normal prolactin — then there is nothing here to treat and Forge models zero.',
-      gate: { highProlactin: true, lowTOnly: true, noEffectAbove: 450, secondaryOnly: true },
+      notSuits: 'A normal prolactin — then there is nothing here to treat and Forge models zero. A normal testosterone with a high prolactin also gets little or nothing: this gives back what prolactin took, and if nothing was taken there is nothing to give.',
+      gate: { highProlactin: true, secondaryOnly: true },
     },
   },
   {

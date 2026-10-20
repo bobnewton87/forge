@@ -209,7 +209,12 @@ export function tPlan(profile, opts = {}) {
     return {
       id: ids.join('+'), ids, name: cand.name || items.map(i => i.name.split(' (')[0]).join(' + '),
       combo: ids.length > 1, rationale: cand.why || null, inStack: already, partlyInStack: !already && addIds.length < ids.length,
-      rx: items.some(isRx), evidence, bodyComp: bc.includes('measured') ? 'measured' : bc.includes('extrapolated') ? 'extrapolated' : 'none',
+      // An item can be classed 'measured' in the catalogue and still be EXTRAPOLATED for this particular man:
+      // clomiphene's body composition was measured in obese men who ended near 500 ng/dL, so a eugonadal man
+      // taken to 800 is past the evidence even though the item's class says 'measured'. The per-man flag from
+      // combineEndogenous wins, both for the badge and for the ranking score below.
+      rx: items.some(isRx), evidence,
+      bodyComp: t.extrapolated ? 'extrapolated' : bc.includes('measured') ? 'measured' : bc.includes('extrapolated') ? 'extrapolated' : 'none',
       extrapolated: !!t.extrapolated, cost: ids.some(id => COST_IDS.includes(id)),
       applies: moves || already,
       t: { from: Math.round(t0), to: Math.round(t.level ?? t0), lo: Math.round(t.levelLo ?? t.level ?? t0), hi: Math.round(t.levelHi ?? t.level ?? t0),
@@ -224,7 +229,7 @@ export function tPlan(profile, opts = {}) {
       // conservative end of its own range (which is zero), not on the mid-point of an extrapolation
       // through the T->lean curve. Otherwise a drug with a published T rise and no body-composition
       // trial outranks everything that has actually been measured. The mid-point still shows on the row.
-      score: r2(bc.includes('measured') ? lean - fat : leanLo - fatHi),
+      score: r2(bc.includes('measured') && !t.extrapolated ? lean - fat : leanLo - fatHi),
       why, monitor: [...new Set(items.flatMap(i => i.model?.monitor || []))],
       suits: items.map(i => i.model?.suits).filter(Boolean), notSuits: items.map(i => i.model?.notSuits).filter(Boolean),
       wada: [...new Set(items.map(i => i.model?.wada).filter(w => w && !/^not prohibited/i.test(w)))],
