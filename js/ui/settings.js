@@ -9,10 +9,10 @@ import { GROUPS, GROUP_ORDER, VOLUME_UNITS, UNIT_ORDER } from '../data/muscles.j
 import { EQUIPMENT } from '../data/equipment.js';
 import { esc } from './components.js';
 import { ds } from '../util.js';
-import { setTargets } from './targets.js';
+import { setTargets, openTargetsSheet } from './targets.js';
 import { styleChipsHTML, customStylesListHTML, openStyleEditor, openStyleInfo, deleteStyle } from './styles.js';
 import { buildWorkout } from '../engine/generator.js';
-import { resolveTargets, unitTargets, maxNote, starredGroups, STAR_LEGEND, LIMITS, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
+import { resolveTargets, unitTargets, maxNote, starredGroups, STAR_LEGEND, LIMITS, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY, GOAL_INFO, GOAL_ORDER, priorityLimits } from '../engine/targets.js';
 import { accountsSectionHTML, bindAccountsSection } from './accounts.js';
 // CONTRACT-NOTE (INTEGRATOR §18): goal, sculpt focus, muscle priority, default length/style, the
 //   weekly cardio target and adherence all read resolveTargets and write through setTargets (planning
@@ -23,15 +23,17 @@ import { accountsSectionHTML, bindAccountsSection } from './accounts.js';
 // CONTRACT-NOTE (§19): the Accounts section (#sec-accounts, last) comes from ui/accounts.js.
 
 const CAT_ORDER = [['free', 'Free weights & benches'], ['cable', 'Cables'], ['machine', 'Machines'], ['bodyweight', 'Bodyweight stations'], ['cardio', 'Cardio'], ['other', 'Other']];
-const GOALS = [['recomp', 'Recomp', 'Lose fat, build muscle'], ['lean_bulk', 'Lean bulk', 'Small surplus, max growth'], ['cut', 'Cut', 'Get lean, keep muscle']];
+// §23: the goal list (including 'weight_loss') comes from the engine so every screen shows the same names.
+const GOALS = GOAL_ORDER.map(id => [id, GOAL_INFO[id].name, GOAL_INFO[id].blurb]);
 const NUTRI = [['off', 'Off'], ['simple', 'Simple'], ['cycling', 'Carb cycling']];
 
 export function title(ctx, params) { return ctx.route === 'more' ? '' : 'Settings'; }
 
 // ---------------- More hub ----------------
 
+// §23: the slider floor drops from 0.5x to 0x under the weight-loss goal (priorityLimits).
 const PR = LIMITS.priority;
-const prioPct = v => ((Number(v) - PR[0]) / (PR[1] - PR[0])) * 100;
+const prioPct = (v, lim = PR) => ((Number(v) - lim[0]) / (lim[1] - lim[0])) * 100;
 // "→ 15 sets/wk (max 20)" for a group's counted muscles at the profile's slider.
 function prioLine(p, g) {
   const U = unitTargets(p);
@@ -119,11 +121,18 @@ function renderSettings(ctx) {
   const gp = p.groupPriority || {};
   const rt = p.restTimer || {};
   const T = resolveTargets(p);
+  const PL = priorityLimits(p);   // §23: [0, 2] under the weight-loss goal, [0.5, 2] otherwise
   const starG = starredGroups(p);
   const cmax = Math.max(600, T.cardio.minPerWeek);
+  // §23: the weight-loss goal gets its own line here plus a shortcut into the shared targets sheet, which
+  // owns goal weight, rate and lean protection (one editor, CONTRACT §18).
+  const lp = T.goals.plan;
   return `<div class="section-title" id="sec-goal">Goal</div>
   <div class="card">${seg('goal', GOALS.map(([v, l]) => [v, l]), T.goals.goal)}
-    <p class="small muted mt">${esc(GOALS.find(g => g[0] === T.goals.goal)?.[2] || '')}</p></div>
+    <p class="small muted mt">${esc(GOALS.find(g => g[0] === T.goals.goal)?.[2] || '')}</p>
+    ${T.goals.losing ? `<p class="small mt" id="st-wl">${T.goals.goalWeightLb ? `Goal weight <b class="num">${T.goals.goalWeightLb} lb</b>` : 'No goal weight set'} · <b class="num">${T.goals.lossRatePctPerWeek}%</b> of bodyweight a week${lp?.lbPerWeek ? ` (${lp.lbPerWeek} lb/wk, about ${lp.deficitKcal} kcal/day under maintenance)` : ''} · muscle: ${esc(T.goals.leanProtection === 'minimal' ? 'not protected' : T.goals.leanProtection === 'balanced' ? 'maintenance' : 'protected')}</p>
+      ${(lp?.warnings || []).map(w => `<p class="tiny" style="color:var(--warn)">${esc(w)}</p>`).join('')}
+      <button class="btn btn-sm btn-ghost btn-block mt" data-wl-edit>Goal weight, rate &amp; muscle protection ›</button>` : ''}</div>
 
   <div class="section-title" id="sec-sculpt">Sculpt focus <span class="tiny muted" style="text-transform:none;letter-spacing:0">${goals.size} on</span></div>
   <div class="card"><p class="small muted mb">Tap to toggle. ⓘ explains what's trainable and what's genetic.</p>
@@ -131,9 +140,9 @@ function renderSettings(ctx) {
   </div>
 
   <div class="section-title" id="sec-priority">Muscle priority</div>
-  <div class="card"><p class="small muted mb">Scales each group's weekly set target. 1.0 = standard, lower = maintenance. Sliders move the target, not the max: tap a line to see why each max is where it is. ${esc(STAR_LEGEND)}.</p>
+  <div class="card"><p class="small muted mb">Scales each group's weekly set target. 1.0 = standard, lower = maintenance. Sliders move the target, not the max: tap a line to see why each max is where it is. ${esc(STAR_LEGEND)}.${PL[0] === 0 ? ' <b style="color:var(--warn)">Your goal is losing weight, so sliders go all the way to 0× (no planned sets for that muscle). Below 0.5× you are training under the volume that keeps muscle.</b>' : ''}</p>
     ${GROUP_ORDER.filter(g => GROUPS[g]).map(g => { const v = gp[g] ?? 1; return `<div style="min-height:44px"><div class="row" style="gap:12px"><span style="width:96px;font-weight:650;font-size:15px">${esc(GROUPS[g].name)}${starG.has(g) ? ' <span class="star">★</span>' : ''}</span>
-      <input type="range" min="${PR[0]}" max="${PR[1]}" step="0.05" value="${v}" data-prio="${g}" style="--pct:${prioPct(v)}%" class="grow" aria-label="${esc(GROUPS[g].name)} priority"><span class="num bold" style="width:44px;text-align:right" data-prio-v="${g}">×${Number(v).toFixed(2)}</span></div>
+      <input type="range" min="${PL[0]}" max="${PL[1]}" step="0.05" value="${v}" data-prio="${g}" style="--pct:${prioPct(v, PL)}%" class="grow" aria-label="${esc(GROUPS[g].name)} priority"><span class="num bold" style="width:44px;text-align:right" data-prio-v="${g}">×${Number(v).toFixed(2)}</span></div>
       ${(() => { const n = prioNote(p, g); return `<details class="st-maxd" data-prio-d="${g}"${n.capped ? ' open' : ''}><summary class="tiny muted" data-prio-t="${g}">${esc(prioLine(p, g))}</summary><div class="tiny muted" data-prio-n="${g}">${esc(n.text)}</div></details>`; })()}</div>`; }).join('')}
     <button class="btn btn-sm btn-ghost mt" data-prio-reset>Reset to Forge defaults</button></div>
 
@@ -262,7 +271,8 @@ function bindSettings(root, ctx, params) {
     const g = r.dataset.prio; const lab = root.querySelector(`[data-prio-v="${g}"]`);
     const tl = root.querySelector(`[data-prio-t="${g}"]`), tn = root.querySelector(`[data-prio-n="${g}"]`), td = root.querySelector(`[data-prio-d="${g}"]`);
     r.addEventListener('input', () => {
-      lab.textContent = '×' + Number(r.value).toFixed(2); r.style.setProperty('--pct', prioPct(r.value) + '%');
+      const lim = priorityLimits(ctx.store.getProfile());
+      lab.textContent = '×' + Number(r.value).toFixed(2); r.style.setProperty('--pct', prioPct(r.value, lim) + '%');
       const p = ctx.store.getProfile(), q = { ...p, groupPriority: { ...(p.groupPriority || {}), [g]: Number(r.value) } };
       if (tl) tl.textContent = prioLine(q, g);
       const n = prioNote(q, g); if (tn) tn.textContent = n.text; if (td && n.capped) td.open = true;   // the moment a slider hits the cap, say why
@@ -273,6 +283,8 @@ function bindSettings(root, ctx, params) {
     const { defaultProfile } = await import('../store.js');
     setTargets(ctx, { training: { groupPriority: { ...defaultProfile().groupPriority } } }, { reason: 'default muscle priorities' });
   };
+  const wlBtn = root.querySelector('[data-wl-edit]');
+  if (wlBtn) wlBtn.onclick = () => openTargetsSheet(ctx, { focus: 'adherence' });
   root.querySelectorAll('[data-loc]').forEach(b => b.onclick = () => locationSheet(ctx, b.dataset.loc));
   root.querySelector('[data-addloc]').onclick = () => locationSheet(ctx, null);
   root.querySelectorAll('[data-vmax]').forEach(b => b.onclick = () => setTargets(ctx, { training: { volumePolicy: { maxMinutes: Number(b.dataset.vmax) } } }));
