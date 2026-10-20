@@ -274,8 +274,8 @@ function planCard(I) {
     projectFn: typeof PJ.project === 'function' ? PJ.project : null }), null);
   if (!plan || plan.hidden) return '';
   const act = (plan.actions || []).find(a => a.kind === 'labs');
-  const worth = plan.rows.filter(r => r.applies && !r.cost && r.score > 0.05);
-  const negative = plan.rows.filter(r => r.applies && !r.cost && r.score <= 0.05);
+  const worth = plan.rows.filter(r => r.applies && !r.cost && (r.score > 0.05 || r.inStack));
+  const negative = plan.rows.filter(r => r.applies && !r.cost && r.score <= 0.05 && !r.inStack);
   const zero = plan.rows.filter(r => !r.applies && !r.cost);
   const cost = plan.rows.filter(r => r.cost);
   const shown = worth.slice(0, PLAN_MAX);

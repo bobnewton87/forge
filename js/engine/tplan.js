@@ -146,21 +146,27 @@ export function tPlan(profile, opts = {}) {
     if (items.length !== ids.length) return null;
     const already = ids.every(id => inStack.has(id));
     const addIds = ids.filter(id => !inStack.has(id));
-    const p2 = { ...profile, supplements: [...(Array.isArray(profile.supplements) ? profile.supplements : []), ...entriesFor(addIds, today)] };
+    const list = Array.isArray(profile.supplements) ? profile.supplements : [];
+    // Not in the stack: what adding it would do. Already in the stack: what it is currently contributing, which is
+    // the same comparison run the other way round, so the row keeps its place and the button becomes "Remove".
+    const p2 = already
+      ? { ...profile, supplements: list.filter(x => !(x && ids.includes(x.id) && x.active !== false && (!x.end || x.end > today))) }
+      : { ...profile, supplements: [...list, ...entriesFor(addIds, today)] };
     const mid = already ? refMid : modsFn(p2, midDate, modOpts);
-    const end = already ? modsFn(profile, addDays(today, weeks * 7), modOpts) : modsFn(p2, addDays(today, weeks * 7), modOpts);
+    const end = modsFn(already ? profile : p2, addDays(today, weeks * 7), modOpts);
     const t = end.testosterone || {};
     const t0 = num(t.natural, 1, 1e5) ?? ctxFacts.totalT ?? 550;
 
     // Does anything move at all? If not, say so and skip the expensive projection.
-    const moves = !already && !sameMods(mid, refMid);
+    const moves = already ? !sameMods(modsFn(p2, midDate, modOpts), refMid) : !sameMods(mid, refMid);
+    const sign = already ? -1 : 1;             // for an in-stack row, p2 is "without it", so flip the comparison
     let lean = 0, fat = 0, projected = false;
     if (moves && canProject && projections < maxProj) {
       try {
         const r = projectFn({ ...projArgs, profile: p2 });
         if (r && r.summary && refSum) {
-          lean = (Number(r.summary.leanLb) || 0) - refSum.lean;
-          fat = (Number(r.summary.fatLb) || 0) - refSum.fat;
+          lean = sign * ((Number(r.summary.leanLb) || 0) - refSum.lean);
+          fat = sign * ((Number(r.summary.fatLb) || 0) - refSum.fat);
           projected = true; projections++;
         }
       } catch (e) { projected = false; }
@@ -170,8 +176,8 @@ export function tPlan(profile, opts = {}) {
       // change in the training-driven ceiling applied to a nominal 1 lb/month of natural gain. Clearly rougher.
       const tl = MET.stackTimeline(p2, { from: today, weeks, age, bodyweightLb: bw });
       const tlRef = MET.stackTimeline(profile, { from: today, weeks, age, bodyweightLb: bw });
-      lean = (tl.cumLeanDirect - tlRef.cumLeanDirect) + (tl.avgCeiling - tlRef.avgCeiling) * (weeks / 4.345);
-      fat = tl.cumFatDirect - tlRef.cumFatDirect;
+      lean = sign * ((tl.cumLeanDirect - tlRef.cumLeanDirect) + (tl.avgCeiling - tlRef.avgCeiling) * (weeks / 4.345));
+      fat = sign * (tl.cumFatDirect - tlRef.cumFatDirect);
     }
 
     // Range: scale the lean/fat point estimate by the log-level ratio at the two ends of the T confidence interval.
@@ -259,5 +265,5 @@ export function tPlan(profile, opts = {}) {
 
 export const WADA_NOTE = 'If you ever race in a drug-tested event: SERMs and other anti-estrogens (clomiphene, enclomiphene, tamoxifen) are WADA-prohibited at all times under S4.2, aromatase inhibitors under S4.1, hCG in males under S2.2, and testosterone by any route under S1. Ashwagandha, tongkat ali, cabergoline, sleep and food are not prohibited.';
 
-// Convenience for the UI: the stack entries a row would add.
-export function rowEntries(row, today) { return entriesFor(row.ids, today); }
+// Convenience for the UI: the stack entries a row (or a bare list of ids) would add.
+export function rowEntries(row, today) { return entriesFor(Array.isArray(row) ? row : (row?.ids || []), today); }

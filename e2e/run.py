@@ -1563,6 +1563,79 @@ def t_female(t, ctx):
     app.store("(store.updateProfile({ body: { ...store.getProfile().body, pregnancy: null } }), 1)")
 
 
+@test('T1', 'Testosterone planner: open it, add a recommended combination, Projection changes (CONTRACT §22)')
+def t_tplan(t, ctx):
+    """§22: the planner ranks ways to raise your OWN testosterone by modeled lean/fat. With low-T labs entered it
+    recommends something; one tap adds the whole combination to the stack and the projection must move."""
+    app = t.app
+    app.load(bobir(app), 'supplements')
+    # Give him the labs the planner is gated on: low T with a normal LH (secondary hypogonadism).
+    app.store("(store.updateProfile({ metabolic: { ...(store.getProfile().metabolic || {}), totalT: 300, lh: 3.2, labDate: '2026-07-01' } }), 1)")
+    app.go('supplements', settle=600)
+    t.check(app.has('#sp-plan-wrap'), 'planner section', '#sp-plan-wrap on Supplements', short(app.text(), 150))
+    txt = app.text('#sp-plan-wrap')
+    t.sub('T1a', 'Planner ranks by lean/fat and says so', bool(re.search(r'lean and fat', txt, re.I)) and 'lb net' in txt,
+          'planner intro', 'ranked by modeled lean and fat', short(txt, 160))
+    t.sub('T1b', 'Planner states the anti-doping position (S4.2 / S4.1 / S2.2)',
+          all(s in txt for s in ['S4.2', 'S4.1', 'S2.2']), 'WADA note', 'S4.2, S4.1 and S2.2 named', short(txt[-400:], 160))
+    rows = app.page.eval_on_selector_all('#sp-plan-wrap [data-prow]', 'els => els.map(e => e.dataset.prow)')
+    t.check(rows, 'planner rows', 'at least one ranked row', rows)
+    combo = next((r for r in rows if '+' in r), None)
+    t.sub('T1c', 'Planner offers a combination, not just single items', bool(combo), 'rows', 'an id containing "+"', rows[:6])
+    pick = combo or rows[0]
+    # Baseline projection before adding anything.
+    app.go('projection', settle=700)
+    before = app.text('#pjOut') if app.has('#pjOut') else app.text()
+    e0 = len(app.errors)
+    app.go('supplements', settle=600)
+    app.click(f'#sp-plan-wrap [data-popen="{pick}"]')
+    app.page.wait_for_timeout(250)
+    t.check(app.has(f'#sp-plan-wrap [data-ptoggle="{pick}"]'), 'row expands', 'Add button inside the open row',
+            short(app.text('#sp-plan-wrap'), 150))
+    detail = app.text(f'#sp-plan-wrap [data-prow="{pick}"]')
+    low = detail.lower()
+    t.sub('T1d', 'Row shows modeled T, estradiol and a lean/fat range',
+          all(k in low for k in ['total t', 'estradiol', 'lean', 'fat']) and ' to ' in low,
+          'row numbers', 'Total T, Estradiol, Lean and Fat tiles with ranges', short(detail, 180))
+    m = app.toast_mark()
+    app.click(f'#sp-plan-wrap [data-ptoggle="{pick}"]')
+    t.check(app.wait_toast('added', m), 'add toast', 'toast "… added"', app.toasts(m))
+    app.page.wait_for_timeout(400)
+    ids = [s.get('id') for s in (app.profile().get('supplements') or [])]
+    want = pick.split('+')
+    t.check(all(i in ids for i in want), 'profile.supplements', want, ids)
+    # Projection must change.
+    app.go('projection', settle=900)
+    after = app.text('#pjOut') if app.has('#pjOut') else app.text()
+    t.sub('T1e', 'Projection changes after adding the recommendation', before != after, 'projection output',
+          'different numbers', 'unchanged')
+    t.sub('T1f', 'Projection lists the added item in its stack', any(
+        re.search(re.escape((SUPP_NAMES.get(i) or i).split(' (')[0]), app.text(), re.I) for i in want),
+        'projection stack', 'the added item is named', short(app.text(), 160))
+    # Second tap removes it.
+    app.go('supplements', settle=600)
+    if not app.has(f'#sp-plan-wrap [data-ptoggle="{pick}"]'):      # the row may already be expanded
+        app.click(f'#sp-plan-wrap [data-popen="{pick}"]')
+        app.page.wait_for_timeout(250)
+    t.check(app.has(f'#sp-plan-wrap [data-prow="{pick}"].in'), 'row marked as in-stack', 'row keeps its place with an "In stack" badge',
+            short(app.text('#sp-plan-wrap'), 150))
+    m = app.toast_mark()
+    app.click(f'#sp-plan-wrap [data-ptoggle="{pick}"]')
+    t.check(app.wait_toast('removed', m), 'remove toast', 'toast "… removed"', app.toasts(m))
+    app.page.wait_for_timeout(350)
+    ids = [s.get('id') for s in (app.profile().get('supplements') or [])]
+    t.sub('T1g', 'Second tap removes the whole combination', not any(i in ids for i in want), 'profile.supplements',
+          'none of ' + ', '.join(want), ids)
+    errs = [f'{k}: {short(x, 90)}' for k, x, _ in app.errors[e0:]]
+    t.sub('T1h', 'No page errors through the planner flow', not errs, 'console', 'no errors', errs[:2])
+
+
+SUPP_NAMES = {'clomiphene': 'Clomiphene', 'enclomiphene': 'Enclomiphene', 'hcg': 'hCG', 'tamoxifen': 'Tamoxifen',
+              'aromatase_inhibitor': 'Aromatase inhibitor', 'ashwagandha': 'Ashwagandha', 'sleep_hygiene': 'Sleep',
+              'energy_availability': 'Eating enough', 'fat_loss': 'Fat loss', 'cabergoline': 'Cabergoline',
+              'zma': 'ZMA', 'vitamin_d': 'Vitamin D3'}
+
+
 @test('E1', 'No console/page errors during flows')
 def t_errors(t, ctx):
     app = t.app

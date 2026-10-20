@@ -707,7 +707,9 @@ export function combineEndogenous(parts, ctx = {}) {
       if (share) e2Mult *= 1 + (e.model.e2Pct * e.resp * e.ramp * share) / 100;
     }
     if (fin(e.model.e2ActionPct) && e.axis === 'ai') actionMult *= 1 + (e.model.e2ActionPct * e.resp * e.ramp) / 100;
-    if (fin(e.model.shbgDelta)) shbg += e.model.shbgDelta * e.resp * e.ramp;
+    // SHBG only moves if the item is actually doing something (an item gated to zero changes no hormone but its own
+    // direct pharmacology — which, for the aromatase inhibitors, is the estradiol drop handled above).
+    if (fin(e.model.shbgDelta) && e.pct0 !== 0) shbg += e.model.shbgDelta * e.resp * e.ramp;
   }
   shbg = clamp(shbg, 3, 250);
   const e2 = clamp(e2Base * e2Mult, 0.5, 500);

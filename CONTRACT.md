@@ -979,3 +979,151 @@ frame, male unchanged), `test/mesh-female.test.js` (asset selection by sex incl.
 three female bodies fitted within ±1 % on bust / natural waist / hips and ±3 % elsewhere, head, poses, cup, modesty,
 bun, muscle shift, BF calibration smooth/monotone/shifted), e2e `S4` (female profile mounts the female 3D on Body and
 Projection, fetches `body-female.bin` and not `body.bin`, no page errors).
+
+## 22. Natural testosterone therapies, interactions and the planner (2026-10-20)
+
+Bob: "a major thing I want and most men will want is to increase testosterone **without direct testosterone
+injections** — any of these therapies or pills that can do that we should accurately model based on the research
+like the one that starts with a c, and we should **recommend combinations** that could be useful and attempt to
+determine **combined interactions for muscle growth and fat loss**." Then: "Do what I asked for please — accurate
+as possible."
+
+This is informational modeling of published clinical literature, in the same spirit as §17: it reports what trials
+measured, names the populations the results apply to, and says prescription items need a clinician. It is not
+dosing advice. **Accuracy is the whole point, including reporting honestly when the modeled effect for a given man
+is small or zero.** Every number carries a citation in a code comment and in
+`docs/research/endogenous-testosterone.md`; every number that is *not* recoverable from a paper is labelled an
+**assumption** in the code, the doc (§9 there) and the UI.
+
+Ownership (TESTO): `js/engine/tplan.js` (new), the §22 parts of `js/data/supplements.js` and
+`js/engine/metabolic.js`, the planner section of `js/ui/supplements.js`, the §22 block of `css/supp.css`,
+`test/supp-testo.test.js`, e2e test `T1`, and this section.
+
+### 22.1 Catalogue (`js/data/supplements.js`)
+
+Every route to a man's own testosterone carries these fields on `model`, in addition to §17's:
+
+```js
+axis: 'serm'|'ai'|'gonadotropin'|'dopamine'|'nutrient'|'lifestyle'|'herbal'|'exogenous'
+ceilingNg            // the highest serum total T this route can plausibly reach
+tCI: [lo, hi]        // the trial/meta CI on the T rise, as a multiple of the point estimate
+e2Pct                // modeled % change in serum estradiol at full effect
+e2ActionPct          // modeled % change in estrogen ACTION (aromatase inhibitors only)
+shbgDelta            // nmol/L; free T is then computed with Vermeulen
+bodyComp: 'measured'|'extrapolated'|'none'
+bcMaxLevel           // serum T up to which muscle is credited
+bcNote               // where that bound comes from, in words
+monitor: [labs], fertility, timeCourse, wada, suits, notSuits
+gate: { lowTOnly, noEffectAbove, secondaryOnly, obesityOnly, deficiencyOnly, highProlactin,
+        shortSleepOnly, deficitOnly }
+```
+
+`rx: true` marks every prescription item; `isRx()` / `RX_IDS` let a build exclude the group cleanly.
+`isExogenousT()` covers testosterone by any route. `T_LAB_PANEL` is the panel the planner asks for.
+
+Coverage: clomiphene, enclomiphene, tamoxifen, aromatase inhibitors, hCG (an injection, **labelled as not
+testosterone**), kisspeptin, pulsatile GnRH, cabergoline; oral testosterone undecanoate and nasal testosterone,
+both marked exogenous with Natesto's partial-preservation data; ashwagandha, tongkat ali, fenugreek, boron, zinc,
+vitamin D, magnesium, DHEA, D-aspartic acid; fat loss, sleep, alcohol, energy availability, endurance load and
+resistance training.
+
+New profile field (lead): `profile.metabolic.deficitKcal` — typical daily calorie deficit, kcal/day.
+
+### 22.2 The muscle-credit ceiling replaces `T_NORMAL_MID = 550`
+
+The flat constant is **deleted**. Muscle credit follows achieved serum T on the existing Bhasin dose-response and
+is bounded per item by `bodyComp` and `bcMaxLevel`:
+
+- **measured** — trials of that item measured body composition; credit up to where they landed (hCG 870,
+  clomiphene 500, sleep 900, eating enough 1,100, fat loss 700).
+- **extrapolated** — no body-composition data but a measured T rise; run through the T→lean curve, bounded by the
+  highest level that item's own trials reached, **labelled an extrapolation** wherever it is shown, and with a
+  lower range bound of **zero** (enclomiphene 604, tamoxifen 790, ashwagandha 726, tongkat 350, zinc 500,
+  cabergoline 700).
+- **none** — trials measured body composition and found none; credit nothing (`tLeanShare: 0`). Aromatase
+  inhibitors only.
+
+The bound is composed the way the level is: a cause-correction item with generous evidence cannot launder a drug's
+rise past that drug's own bound. For a man already mid-normal the HPG-axis items have little or no headroom and
+Forge **shows the number rather than hiding the option**.
+
+### 22.3 Interaction engine (`combineEndogenous`, not additive)
+
+```js
+// js/engine/metabolic.js (pure)
+export function combineEndogenous(parts, ctx) → {
+  baselineT, causeBase, level, levelLo, levelHi, cap, capped, driverId,
+  e2, e2Base, e2Assumed, e2Lo, e2Hi, e2ActionDrop, shbg, freeT, freeTBase,
+  creditLevel, creditSource, extrapolated, bcNote, parts:[{ id, role, pct, delta, gateNote }], notes, warnings }
+export function estradiolFatEffect(dropFrac, { weeksOn, bmi, estradiol }) → { fatDirectLbPerWeek, cumLb, loLb, hiLb, reversed, note }
+export const COMBO_BONUS = 0, COMBO_BONUS_HI = 0.25, PITUITARY_CEILING = 800, TESTIS_CEILING = 1100,
+             ASSUMED_E2 = 25, ASSUMED_SHBG = 35, E2_FAT = { … }
+```
+
+1. **Cause-correction first** (`dopamine`, `nutrient`, `lifestyle`): they raise the set-point, multiplicatively,
+   and therefore **shrink** what a drug can add, because every drug's response falls with baseline.
+2. **LH-driven items share one final common path**, so the **largest wins** and the rest add `COMBO_BONUS` = 0.
+   That is the measured result: Habous 2018 (RCT, 282 men) gave clomiphene +158, hCG +134, both +153 ng/dL, with
+   the combination no better than clomiphene alone (p = 0.57). The optimistic bound adds 25 % — an assumption.
+3. **Testicular-capacity ceiling**: 800 ng/dL for pituitary-driven routes (the highest group mean any SERM or AI
+   trial reached is 790), 1,100 for hCG, which replaces LH at the Leydig cell.
+4. **Primary hypogonadism** (LH > 9.4) blocks SERMs, AIs, hCG and cabergoline. An AI still blocks aromatase, so it
+   still costs estrogen and fat.
+5. **Exogenous testosterone** by any route suppresses everything axis-dependent (kept from §17, extended to the
+   oral and nasal routes).
+6. **Prolactin, zinc and vitamin D** corrections only help when the deficiency exists.
+
+**Lean tracks androgen; fat tracks estradiol.** Finkelstein 2013 (doi:10.1056/NEJMoa1206168): cohort × dose
+interaction P = 0.001 for % body fat, and no interaction for lean mass (P = 0.22) or strength (P = 0.91). The
+per-arm kg magnitudes live only in that paper's figures, so **every coefficient in `E2_FAT` is an assumption**
+(1.5 kg / 16 wk at ~90 % loss of estrogen action, range 0.5–3.0), scaled linearly by the fraction of estrogen
+**action** lost — which is what reconciles Finkelstein with Burnett-Bowie 2009 ×2, Loves 2013, Mauras 2000 and
+Dias 2016, where a 20–50 % estradiol drop produced nothing. A SERM's serum-E2 rise is never turned into fat loss.
+`tLeanShare: 0` stays on the AIs. Sign-reversal gate: BMI ≥ 35 with estradiol ≥ 25 pg/mL switches the penalty off
+(Colleluori 2020, doi:10.3389/fendo.2020.00277) — and deliberately does not model a benefit, because that arm also
+lost 5.1 kg more weight. Every combined output carries a range.
+
+### 22.4 The planner (`js/engine/tplan.js`, pure)
+
+```js
+export function tPlan(profile, { now, age, bodyweightLb, baseline, sessions, bodyLog, foodLog,
+                                 weeks = 52, projectFn, modifiersFn, maxProjections = 16 }) → {
+  female, hidden, labs:{ have, missing, panel, complete, decisive }, actions:[{ kind:'labs', title, body, labs }],
+  rows:[{ id, ids, name, combo, rationale, inStack, rx, evidence, bodyComp, extrapolated, cost, applies,
+          t:{ from, to, lo, hi, credited }, freeT:{ from, to }, e2:{ from, to, assumed, actionDrop }, shbg,
+          lean:{ lb, lo, hi }, fat:{ lb, lo, hi }, projected, weeks, score,
+          why[], monitor[], suits[], notSuits[], wada[], fertility[], bcNote[], warnings[] }],
+  notes, assumptions, wada, exogenous, facts, projected, projections }
+export function labStatus(profile), rowEntries(rowOrIds, today)
+export const SINGLE_IDS, COMBOS, EXOGENOUS_IDS, COST_IDS, WADA_NOTE
+```
+
+- **Ranked by `score` = lean gained − fat gained, in lb over 12 months**, not by the testosterone rise. Ties break
+  on evidence grade, then on not needing a prescriber.
+- Lean and fat come from the **existing projection engine** (`project()` with and without the candidate), so
+  Projection and Body stay cohesive: adding a row changes Projection by exactly what the row said.
+- **Labs first.** When total T or LH is missing, "get the panel" is the first action, with the exact list and why.
+- **Honesty.** An option modeled at ~0 is shown as ~0 with the reason, never omitted and never padded. Lifestyle
+  levers rank in the same list on their own merits. Extrapolated rows show a range starting at zero.
+- **One tap** adds the item or whole combination to the stack; a second tap removes it.
+- **Anti-doping** is stated: S4.2 for SERMs/anti-estrogens, S4.1 for aromatase inhibitors, S2.2 for hCG in males,
+  S1 for testosterone by any route.
+- **§20 Female mode**: `tPlan()` returns `{ female: true, hidden: true, rows: [] }` and the UI does not render the
+  section. These are male-axis therapies and are never recommended to women.
+
+### 22.5 UI
+
+`js/ui/supplements.js` renders the planner between the impact card and the metabolic form, as a ranked list of
+tappable rows with a numbers strip (total T with range, free T, estradiol, lean, fat) and an expandable detail
+(rationale, per-item gate text, suits / not for, fertility, labs to watch, anti-doping, prescriber note). Three
+collapsed groups follow: "changes something, but not in your favour", "modeled at ~0 for you, with the reason",
+and "what might be costing you". Styles live under the §22 block of `css/supp.css`.
+
+### 22.6 Tests
+
+`test/supp-testo.test.js`: single-item responses against the trial means; non-additivity of combinations and the
+Habous anchor; the testicular and pituitary ceilings; primary-hypogonadism and on-exogenous-T gating; deficiency
+gating; the aromatase-inhibitor case (T up, lean flat, fat up through the estradiol term) and its obese
+hyperestrogenemic reversal; planner ranking by lean/fat rather than T; the labs-first action; female mode hidden;
+garbage-in robustness; and byte-identical outputs for a user with none of these items. e2e `T1`: open the planner,
+add a recommended combination, see Projection change, remove it again, no page errors.
