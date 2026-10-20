@@ -476,6 +476,84 @@ function prepareAsset(A) {
     if (z < nz) { nz = z; notch = i; }
   }
   A.notchV = notch;
+  if (A.sex === 'female') A.strap = strapPath(A);
+}
+
+// ---------------------------------------------------------------- sports-top strap centre-line (CONTRACT §21c)
+// The strap is a tube of constant radius around a centre-line that follows the canonical surface, so it reads as
+// a band of constant width wherever it crosses, whatever the surface is doing there. (It used to be the slab
+// |canonical x − const| < w, which is as wide as the surface is flat in x: over a broad, flattened shoulder that
+// smeared into a wedge, and compensating the width with a screen-space derivative made the edge sawtooth.)
+// Anchors are landmark-relative and snapped to real vertices, so the path follows a rebuilt asset.
+function strapPath(A) {
+  const { base, part, nMesh, lm, B, bones } = A;
+  const at = i => [base[i * 3], base[i * 3 + 1], base[i * 3 + 2]];
+  // nearest surface vertex on the left half, with per-axis weights so a seed placed off the body slides onto it
+  // along the intended direction (in front of the chest → straight back; above the shoulder → straight down).
+  const LIFT = 0.07;   // dm the centre-line floats above the surface
+  const snapIdx = (s, w = [1, 1, 1], torsoOnly = false) => {
+    let bi = -1, bd = Infinity;
+    for (let i = 0; i < nMesh; i++) {
+      const p = part[i];
+      if (torsoOnly ? p !== 0 : p > 1) continue;
+      const x = base[i * 3]; if (x < 0.04) continue;
+      const d = w[0] * (x - s[0]) ** 2 + w[1] * (base[i * 3 + 1] - s[1]) ** 2 + w[2] * (base[i * 3 + 2] - s[2]) ** 2;
+      if (d < bd) { bd = d; bi = i; }
+    }
+    return bi;
+  };
+  const snap = (s, w = [1, 1, 1], torsoOnly = true) => { const i = snapIdx(s, w, torsoOnly); return i < 0 ? s.slice() : at(i); };
+  const nip = at(lm.nippleV), notch = at(A.notchV), sj = at(bones[B.uarm1L].head);
+  const xs = 0.55 * sj[0];                       // the strap crosses the trapezius midway out from the neck
+  const FRONT = [8, 8, 1], TOP = [25, 1, 10], BACK = [8, 8, 1];
+  const nodes = [
+    snap([0.86 * nip[0], nip[1] + 0.40, nip[2] + 0.8], FRONT),                        // front: top of the cup
+    snap([mix(0.86 * nip[0], xs, 0.6), mix(nip[1] + 0.40, notch[1], 0.55), nip[2] + 0.8], FRONT),  // front: mid chest
+    snap([xs, notch[1] - 0.05, nip[2] + 0.8], FRONT),                                 // front: over the clavicle
+    snap([xs, notch[1] + 3.0, -0.15], TOP),                                           // top of the trapezius
+    snap([0.95 * xs, notch[1] - 0.40, -3.0], BACK),                                   // back: below the shoulder
+    snap([0.58 * xs, notch[1] - 1.10, -3.0], BACK),                                   // back: racer-back sweep
+    snap([0.17, notch[1] - 1.80, -3.0], BACK),                                        // back: onto the spine
+  ];
+  // Catmull-Rom through the anchors, re-snapped so the polyline hugs the surface instead of chording across it.
+  const cr = (p0, p1, p2, p3, t) => {
+    const t2 = t * t, t3 = t2 * t, o = [];
+    for (let k = 0; k < 3; k++) o[k] = 0.5 * ((2 * p1[k]) + (-p0[k] + p2[k]) * t + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * t2 + (-p0[k] + 3 * p1[k] - 3 * p2[k] + p3[k]) * t3);
+    return o;
+  };
+  const out = [];
+  const SUB = 3;   // ≈ 0.13 dm between points, so the chords never sag far enough inside to pinch the band
+  for (let i = 0; i < nodes.length - 1; i++) {
+    const p0 = nodes[Math.max(0, i - 1)], p1 = nodes[i], p2 = nodes[i + 1], p3 = nodes[Math.min(nodes.length - 1, i + 2)];
+    for (let k = 0; k < SUB; k++) out.push(cr(p0, p1, p2, p3, k / SUB));
+  }
+  out.push(nodes[nodes.length - 1]);
+  const pts = out.map((q, i) => (i === 0 || i === out.length - 1 ? q : snap(q, [1, 1, 1], false)));
+  // Snapping quantises the line onto the vertex grid (spacing ≈ the strap width), which shows as a wobbly edge.
+  // Laplacian passes take that out, but they also pull the line inside a convex shoulder — so re-snap afterwards
+  // and finish with one light pass: smooth, and back within a couple of hundredths of a dm of the surface.
+  const smooth = (w) => {
+    const prev = pts.map(q => q.slice());
+    for (let i = 1; i < pts.length - 1; i++) for (let k = 0; k < 3; k++) pts[i][k] = (1 - 2 * w) * prev[i][k] + w * (prev[i - 1][k] + prev[i + 1][k]);
+  };
+  smooth(0.25); smooth(0.25);
+  for (let i = 1; i < pts.length - 1; i++) pts[i] = snap(pts[i], [1, 1, 1], false);
+  smooth(0.12);
+  // Float the line OFF the surface by a fixed lift along the canonical normal. The band is then
+  // 2·sqrt(r² − d²) wide, with d the surface-to-line distance: where a chord sags toward the surface the band
+  // gets a little wider instead of pinching shut, which is what a line lying exactly on the surface would do.
+  const N = A.canonNormals;
+  for (let i = 0; i < pts.length; i++) {
+    const j = snapIdx(pts[i]);
+    if (j >= 0) for (let k = 0; k < 3; k++) pts[i][k] += LIFT * N[j * 3 + k];
+  }
+  return { pts, radius: 0.135, lift: LIFT };      // ≈ 0.45 in half-width on the surface (a ≈ 0.9 in strap)
+}
+const STRAP_BUF = new WeakMap();
+function strapBuf(sp) {   // flat Float32Array for the uStrapP uniform array (cached per asset)
+  let b = STRAP_BUF.get(sp);
+  if (!b) { b = new Float32Array(20 * 3); for (let i = 0; i < Math.min(20, sp.pts.length); i++) b.set(sp.pts[i], i * 3); STRAP_BUF.set(sp, b); }
+  return b;
 }
 
 // ================================================================== head anthropometry
@@ -1648,6 +1726,7 @@ uniform vec2 uFlex;         // bulge amplitude per arm (already × flexAmp)
 uniform ivec4 uUA;          // uarm1L, uarm2L, uarm1R, uarm2R
 uniform float uLat;         // lat flare (inches at the armpit)
 layout(location=7) in vec3 aFlare;
+layout(location=8) in float aArmW;   // smooth arm share of the skin weights (§21c fabric edges)
 uniform vec4 uEyeRef;        // eyeY, eyeX, eyeZ, chinY (canonical dm)
 float hairLift(vec3 c){   // hair-cap thickness: same hairline as the fragment mask, ramped over ~1 in (no ledge)
   float ax = abs(c.x), ey = uEyeRef.x, ez = uEyeRef.z;
@@ -1668,7 +1747,7 @@ float hairLineF(vec3 c){     // female hairline: rounded forehead (no temple rec
   float line = mix(front, side, smoothstep(0.42, 0.66, ax));
   return mix(line, backL, smoothstep(ez - 1.0, ez - 1.5, c.z));
 }
-out vec3 vW; out vec3 vN; out vec3 vC; out float vPart; out float vCav;
+out vec3 vW; out vec3 vN; out vec3 vC; out float vPart; out float vCav; out float vArm;
 float ss(float a, float b, float x){ float t = clamp((x-a)/(b-a), 0., 1.); return t*t*(3.-2.*t); }
 void main(){
   vec3 p = aPos;
@@ -1693,12 +1772,12 @@ void main(){
   } else if (aPart > 0.5 && aPart < 1.5) p += aNrm * hairLift(aCanon) * 0.12;
   mat4 M = aWeight.x * uBones[j.x] + aWeight.y * uBones[j.y] + aWeight.z * uBones[j.z] + aWeight.w * uBones[j.w];
   vec4 w = M * vec4(p, 1.0);
-  vW = w.xyz; vN = mat3(M) * aNrm; vC = aCanon; vPart = aPart; vCav = max(aCav, 0.0);
+  vW = w.xyz; vN = mat3(M) * aNrm; vC = aCanon; vPart = aPart; vCav = max(aCav, 0.0); vArm = aArmW;
   gl_Position = uVP * w;
 }`;
 const FRAG = `#version 300 es
 precision highp float;
-in vec3 vW; in vec3 vN; in vec3 vC; in float vPart; in float vCav;
+in vec3 vW; in vec3 vN; in vec3 vC; in float vPart; in float vCav; in float vArm;
 uniform vec3 uEye;
 uniform vec3 uKey, uFill, uRim, uRim2;
 uniform float uDef;          // 1 main body, 0 ghost
@@ -1721,6 +1800,9 @@ float hairMask(vec3 c){
 }
 uniform float uFem;          // 1 = female mesh
 uniform vec4 uBra;           // female sports top: inframammary-fold y, bust-point y, bust-point x, suprasternal-notch y (canonical dm)
+uniform vec3 uStrapP[20];    // sports-top strap centre-line on the canonical surface, left half (x >= 0), dm
+uniform float uStrapR;       // strap half-width, canonical dm
+uniform int uStrapN;         // points in use
 float hairMaskF(vec3 c){
   float ax = abs(c.x), ey = uEyeRef.x, ez = uEyeRef.z;
   float front = ey + 0.6 - 0.05 * smoothstep(0.2, 0.6, ax);
@@ -1733,24 +1815,42 @@ float hairMaskF(vec3 c){
             * smoothstep(ey - 0.7, ey - 0.6, c.y) * (1.0 - smoothstep(ey + 0.12, ey + 0.2, c.y));
   return smoothstep(line - 0.02, line + 0.05, c.y) * (1.0 - ear);
 }
+// CONTRACT §21c — every fabric edge is a signed field rendered with one pixel of analytic antialiasing: the soft
+// width comes from the field's own screen-space gradient, so a diagonal edge (the armpit, the shorts hem) is as
+// clean as a horizontal one. A hard step, or a step softened by fwidth of some other quantity, stair-stepped.
+float edge(float f){ return smoothstep(-1.0, 1.0, f / max(fwidth(f), 1e-6)); }
+// Distance (canonical dm) to the sports-top strap centre-line, a polyline that lies on the canonical surface.
+float strapDist(vec3 q){
+  float d = 1e9;
+  for (int i = 0; i < 19; i++) {
+    if (i + 1 >= uStrapN) break;
+    vec3 a = uStrapP[i], ab = uStrapP[i + 1] - a, r = q - a;
+    d = min(d, length(r - ab * clamp(dot(r, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0)));
+  }
+  return d;
+}
 // Sports top as a material region in canonical space (no geometry): a band under the bust, a scoop neckline rising
 // to the cup tops, side panels up to the armpits, a low back with a racer-back converging to the spine, and straps
-// over the shoulders. Returns 0..1 (anti-aliased by fw).
-float braMask(vec3 c, float fw, float part, float sw){
+// over the shoulders (a constant-width tube around uStrapP, not a slab in canonical x). Returns 0..1.
+float braMask(vec3 c, float armw){
   float ax = abs(c.x), y = c.y, imf = uBra.x, nip = uBra.y, nx = uBra.z, notch = uBra.w;
-  float bottom = imf - 0.30;
+  float bottom = imf - 0.22;   // §21c: the hem sits ≈ 0.9 in below the fold (it was 1.2 in, which rode onto the belly)
   float fb = smoothstep(-0.1, 0.55, c.z);                                       // 1 front … 0 back
-  float scoop = nip + 0.40 + 0.40 * smoothstep(0.05, nx * 0.95, ax);
+  // the cup line rises from the sternum and levels off just INSIDE the strap, so the strap rises out of a flat
+  // cup line instead of crossing a still-climbing edge (which left a notch exactly where a seam should be smooth)
+  float scoop = nip + 0.40 + 0.40 * smoothstep(0.05, nx * 0.78, ax);
   float topF = mix(scoop, nip + 0.40, smoothstep(nx * 1.05, nx * 1.4, ax));
   float topB = nip + 0.12 + 0.28 * smoothstep(nx * 1.2, nx * 1.5, ax);
   float top = mix(topB, topF, fb);
-  // the panel stays on the trunk: fragments interpolated toward the arm (part → 2) are left bare, so raised arms
-  // never drag a "sleeve" of fabric up from the armpit
-  float panel = smoothstep(bottom - fw, bottom + fw, y) * (1.0 - smoothstep(top - fw, top + fw, y)) * (1.0 - smoothstep(0.45, 0.6, part));
-  float scF = nx * 0.88, scB = mix(0.2, nx * 0.88, smoothstep(nip, notch - 0.2, y));
-  float sc = mix(scB, scF, fb);
-  float strap = (1.0 - smoothstep(sw - fw, sw + fw, abs(ax - sc))) * smoothstep(bottom + 0.3, bottom + 0.4, y);
-  return max(panel, strap);
+  // signed fields in canonical dm (positive inside), joined with a POLYNOMIAL SMOOTH MAX so the seam where the
+  // straps meet the cup tops is a rounded join like a sewn garment; a hard max() left a visible notch there.
+  float fPanel = min(y - bottom, top - y);
+  float fStrap = uStrapR - strapDist(vec3(ax, y, c.z));
+  float k = 0.13;
+  float h = clamp(0.5 + 0.5 * (fStrap - fPanel) / k, 0.0, 1.0);
+  float f = mix(fPanel, fStrap, h) + k * h * (1.0 - h);
+  // the whole top stops at the deltoid: an iso-contour of the arm skin weight, which is smooth across the armpit
+  return edge(f) * edge(0.26 - armw);
 }
 out vec4 frag;
 float ss(float a, float b, float x){ float t = clamp((x-a)/(b-a), 0., 1.); return t*t*(3.-2.*t); }
@@ -1801,23 +1901,18 @@ void main(){
     return;
   }
   bool torso = vPart < 0.5;
-  // shorts (canonical space): from just below the navel to mid-thigh
+  // shorts (canonical space): from just below the navel to mid-thigh. Both edges are diagonal (they follow |x|),
+  // so each is antialiased by its own gradient (§21c); the arm edge keeps the hands bare without a jagged seam.
   float waistband = uCanon.x - 0.55 - 0.12 * smoothstep(0.0, 1.2, abs(vC.x));
   float hem = uCanon.z - 1.25 + 0.25 * ss(0.4, 1.4, abs(vC.x));
-  bool legOrTorso = vPart < 0.5;
-  float fw = max(fwidth(vC.y), 1e-4);   // anti-aliased fabric edges (a hard step aliased into jaggies at the hem)
-  float shorts = legOrTorso ? ss(hem - fw, hem + fw, vC.y) * (1.0 - ss(waistband - fw, waistband + fw, vC.y)) : 0.0;
-  float band = shorts * ss(waistband - 0.16, waistband - 0.12, vC.y);
-  // female: sports top (torso, plus the neck part only where the straps cross the trapezius)
+  float shorts = edge(vC.y - hem) * edge(waistband - vC.y) * edge(0.20 - vArm) * edge(0.52 - vPart);
+  float band = shorts * edge(vC.y - (waistband - 0.15));
+  // female: sports top (torso, plus the neck part only where the straps cross the trapezius). The whole mask is
+  // evaluated under the uniform uFem branch so every fwidth() inside it sits in uniform control flow.
   float cloth = shorts, bra = 0.0, braBand = 0.0;
-  if (uFem > 0.5 && vPart < 1.5 && vC.y < uBra.w + 0.6) {
-    // §21b: the strap is a band of constant width ON THE BODY (≈ 1.25 in), not a band of constant canonical x.
-    // |∇c.x| along the surface converts inches to canonical units per fragment. A fixed canonical band covered
-    // far more surface wherever the shoulder was broad and flat, which smeared the straps into wide dark wedges
-    // over the trapezius — the "shoulders look way too big right in the centre" artefact on broad female tapes.
-    float gx = length(vec2(dFdx(vC.x), dFdy(vC.x))) / max(1e-5, length(vec2(length(dFdx(vW)), length(dFdy(vW)))));
-    bra = braMask(vC, max(fwidth(vC.y) + fwidth(vC.x), 1e-4), vPart, clamp(gx * 0.62, 0.055, 0.22));
-    braBand = bra * (1.0 - ss(uBra.x - 0.17, uBra.x - 0.13, vC.y));
+  if (uFem > 0.5) {
+    bra = braMask(vC, vArm) * edge(uBra.w + 0.6 - vC.y);
+    braBand = bra * edge((uBra.x - 0.15) - vC.y);
     cloth = max(shorts, bra);
   }
   // definition: perturb the normal with the gradient of the field (torso front only)
@@ -2059,6 +2154,12 @@ export function mountBody3D(el, opts = {}) {
     // kind: 0 torso/legs (shorts + definition eligible), 1 head/neck, 2 arm, 3 eye — interpolates safely
     const kind = new Uint8Array(n + nb).fill(1); for (let i = 0; i < n; i++) { const pt = A.part[i]; kind[i] = pt === 6 ? 3 : pt === 1 ? 1 : pt === 2 || pt === 3 ? 2 : 0; }
     bufs.part = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufs.part); gl.bufferData(gl.ARRAY_BUFFER, kind, gl.STATIC_DRAW);
+    // §21c: the smooth arm share of each vertex's skin weights. `kind` is a per-vertex integer, so thresholding it
+    // traced the polygonal boundary of a vertex set and the armpit edge of the top came out as a sawtooth; the
+    // skin weights vary smoothly across the shoulder, so an iso-contour of them is a smooth curve.
+    const armW = new Uint8Array(n + nb);
+    for (let i = 0; i < n; i++) armW[i] = Math.round(255 * clamp(A.grp[i * 6 + 2] + A.grp[i * 6 + 3], 0, 1));
+    bufs.armw = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufs.armw); gl.bufferData(gl.ARRAY_BUFFER, armW, gl.STATIC_DRAW);
     for (const k of ['main', 'ghost']) { bufs[k + 'Pos'] = gl.createBuffer(); bufs[k + 'Nrm'] = gl.createBuffer(); bufs[k + 'Cav'] = gl.createBuffer(); bufs[k + 'Flare'] = gl.createBuffer(); }
     const mk = (k) => {
       const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
@@ -2066,7 +2167,7 @@ export function mountBody3D(el, opts = {}) {
       attr(0, bufs[k + 'Pos'], 3, gl.FLOAT, false); attr(1, bufs[k + 'Nrm'], 3, gl.FLOAT, false);
       attr(2, bufs.joint, 4, gl.UNSIGNED_BYTE, false); attr(3, bufs.weight, 4, gl.UNSIGNED_BYTE, true);
       attr(4, bufs.canon, 3, gl.FLOAT, false); attr(5, bufs.part, 1, gl.UNSIGNED_BYTE, false); attr(6, bufs[k + 'Cav'], 1, gl.FLOAT, false);
-      attr(7, bufs[k + 'Flare'], 3, gl.FLOAT, false);
+      attr(7, bufs[k + 'Flare'], 3, gl.FLOAT, false); attr(8, bufs.armw, 1, gl.UNSIGNED_BYTE, true);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bufs.idx);
       gl.bindVertexArray(null);
       return vao;
@@ -2167,6 +2268,10 @@ export function mountBody3D(el, opts = {}) {
     gl.uniform1f(L.uFem, fem ? 1 : 0);
     if (fem) {
       gl.uniform4f(L.uBra, c[lm.imfV * 3 + 1], c[lm.nippleV * 3 + 1], Math.abs(c[lm.nippleV * 3]), c[A.notchV * 3 + 1]);
+      const sp = A.strap;   // §21c: strap centre-line on the canonical surface (constant-width tube)
+      gl.uniform3fv(L.uStrapP, strapBuf(sp));
+      gl.uniform1f(L.uStrapR, sp.radius);
+      gl.uniform1i(L.uStrapN, Math.min(20, sp.pts.length));
     }
     const drawBody = (f, vao, ghost) => {
       const p = ghost ? currentPose(f, pt) : pose;

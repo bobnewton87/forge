@@ -719,8 +719,11 @@ export function bodyGeometry(input = {}) {
   const underbustG = FEM ? clamp(ubTape || g.chest * clamp(0.862 + 0.0035 * (28 - bf), 0.78, 0.95), g.chest * 0.7, g.chest - 0.25)
     : g.waist + (g.chest - g.waist) * clamp(0.62 + 0.16 * (mu.lats - 0.5), 0.5, 0.75);
   if (FEM && ubTape && ubTape >= g.chest - 0.25) warnings.push(`Underbust (${ubTape}) should be smaller than the bust (${g.chest}): measure it snug under the breasts, the bust over the fullest part.`);
-  // inframammary fold height (female): 0.030 H + 0.22 × (bust − underbust) below the bust point
-  const ubY = FEM ? tMap(HT.chest * H - (0.030 * H + 0.22 * (g.chest - underbustG))) : null;
+  // inframammary fold height (female): 0.030 H + 0.22 × (bust − underbust) below the bust point. §21c: the fold
+  // is where the breast meets the CHEST WALL, so however heavy the bust is it cannot slide past the bottom of the
+  // ribcage — floored at 0.035 H (≈ 2.2 in at 64 in) above the natural waist. Without the floor a 52 in bust put
+  // the fold 1.4 in above the waist and a 58 in bust 1.1 in, and the sports top's band sat over the upper belly.
+  const ubY = FEM ? Math.max(tMap(HT.chest * H - (0.030 * H + 0.22 * (g.chest - underbustG))), tMap(HT.waist * H) + 0.035 * H) : null;
   const sec = {
     neck: solveSection(g.neck, aspect.neck, N.neck),
     chest: solveSection(g.chest, aspect.chest, N.chest),
