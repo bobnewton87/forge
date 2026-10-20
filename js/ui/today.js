@@ -282,7 +282,7 @@ function builderSection(sessions, profile, loc) {
     const st = gs[g] || {};
     const col = readinessColor(st.readiness ?? 1, st.need ?? 0);
     const on = B.targets.includes(g);
-    const tgt = st.target?.min ?? GROUPS[g].weeklySets?.min;
+    const tgt = st.target?.target ?? st.target?.min ?? GROUPS[g].volume?.target;   // vs TARGET, not the floor
     return `<button type="button" class="tr-tile ${on ? 'on' : ''}" style="--rc:${col}" data-t="group" data-id="${g}" aria-pressed="${on}">
       <span class="tr-tile-dot"></span>
       <span class="tr-tile-name">${esc(GROUPS[g].name)}</span>

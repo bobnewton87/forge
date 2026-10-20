@@ -42,11 +42,12 @@
 //   targets.volumePolicyOf(profile) (extend ≤ maxMinutes; 'fixed'/'ask' stay within the slot) and
 //   carry plan.extended = { from, to, reason }, session.minutes = to. planRange accepts an optional
 //   `volumePolicy` override (the UI's 'ask' mode plans with 'extend' to build the proposal) and
-//   `topUp:false` (skip the minimums pass; the greedy walk alone, e.g. to compare decisions).
+//   `topUp:false` (skip the end-of-week passes: cardio, balance, minimums/targets/max; the greedy walk
+//   alone, e.g. to compare day decisions).
 //   weekPlanSummary warns per group "Triceps 9/13 sets: short 4" and returns `minimums`
 //   ({ met, short:[{ group, name, total, min, short }] }) and `extended` ([{ date, from, to, reason }]).
 import { recommend, groupStatus, muscleStatus, sessionVolume } from './recovery.js';
-import { buildWorkout, estimateMinutes, addExercise, exercisesFor } from './generator.js';
+import { buildWorkout, estimateMinutes, addExercise, exercisesFor, swapBlock, alternatives } from './generator.js';
 import { getEx } from '../data/exercises.js';
 import { CARDIO, INTENSITIES, cardioOptions } from '../data/cardio.js';
 import { classify } from '../classes/classify.js';
@@ -845,7 +846,7 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
     for (const [u2, x] of Object.entries(unitCredits(ex))) {
       if (x < 0.5) continue;
       if (plannedUnitVol(w.s, u2) + n * x > unitCap(u2, raise && u2 === uid) + 0.01) return false;
-      if (weekMaxCheck && (tot.units[u2] || 0) + n * x > (UT[u2]?.max ?? 99) + 0.01) return false;
+      if ((weekMaxCheck || u2 !== uid) && (tot.units[u2] || 0) + n * x > (UT[u2]?.max ?? 99) + 0.01) return false;
     }
     // pull ≥ push: outside the minimums, never add a press/fly that tips the balance
     if (phase !== 'min' && PUSH_PATTERNS.has(ex.pattern) && tot.push + n > PUSH_PULL_TOL * tot.pull) return false;
@@ -970,14 +971,70 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
   for (const w of W) w.limitT = pol.mode === 'extend' && pol.fillTargets === 'extend' ? w.limit : Math.max(w.slot, Math.min(w.limit, ceilTo(estimateMinutes(w.s.blocks))));
   phase = 'target'; runPhase(shortList);
   phase = 'min';
+  // NEVER OVERDO: no unit past its weekly max (fractional credit, incl. done sessions). Trim the
+  // exercises contributing most (isolations for that muscle first, then compounds; each keeps ≥2 sets,
+  // an isolation may be dropped), then swap a compound for an alternative that loads it less, never
+  // taking another unit under its min or breaking pull ≥ push.
+  const keepsFloors = (ex, n = 1) => !Object.entries(unitCredits(ex)).some(([u, c]) => UT[u]?.min > 0 && (tot.units[u] || 0) - n * c < UT[u].min - 0.25)
+    && !(PULL_PATTERNS.has(ex.pattern) && tot.pull - n < tot.push / PUSH_PULL_TOL - 0.5);
+  const overList = () => UNIT_ORDER.filter(u => (tot.units[u] || 0) > UT[u].max + 0.05);
+  const stuck = new Set();
+  // one press/fly set above every floor, flies first (frees pull sets for trimming without breaking pull ≥ push)
+  const trimPush = () => {
+    const ps = [];
+    for (const w of W) (w.s.blocks || []).forEach((b, i) => { const ex = b.kind === 'lift' ? getEx(b.exId) : null; if (ex && PUSH_PATTERNS.has(ex.pattern) && setsOf(b) > 2 && keepsFloors(ex)) ps.push({ w, i, ex }); });
+    ps.sort((a, b) => (a.ex.pattern === 'fly' ? 0 : 1) - (b.ex.pattern === 'fly' ? 0 : 1) || setsOf(b.w.s.blocks[b.i]) - setsOf(a.w.s.blocks[a.i]));
+    const x = ps[0]; if (!x) return false;
+    x.w.s.blocks = x.w.s.blocks.map((y, j) => (j === x.i ? clone(y) : y)); setSets(x.w.s.blocks[x.i], setsOf(x.w.s.blocks[x.i]) - 1);
+    bump(x.ex, -1); x.w.added.max_trim = (x.w.added.max_trim || 0) - 1; x.w.changed = true;
+    return true;
+  };
+  for (let guard = 300; guard-- > 0;) {
+    const u = overList().find(x => !stuck.has(x)); if (!u) break;
+    const cands = [];
+    for (const w of W) (w.s.blocks || []).forEach((b, i) => { const ex = b.kind === 'lift' ? getEx(b.exId) : null; const c = ex ? unitWeight(ex, u) : 0; if (c > 0) cands.push({ w, i, ex, c, iso: ex.category !== 'compound' }); });
+    cands.sort((a, b) => (b.iso - a.iso) || b.c - a.c || setsOf(b.w.s.blocks[b.i]) - setsOf(a.w.s.blocks[a.i]));
+    let done = false;
+    for (const x of cands) {
+      const b = x.w.s.blocks[x.i]; const n = setsOf(b);
+      if (n > 2 && keepsFloors(x.ex)) {
+        x.w.s.blocks = x.w.s.blocks.map((y, j) => (j === x.i ? clone(y) : y)); setSets(x.w.s.blocks[x.i], n - 1);
+        bump(x.ex, -1); x.w.added.max_trim = (x.w.added.max_trim || 0) - 1; x.w.changed = done = true; break;
+      }
+      // drop a whole exercise aimed at this muscle (isolations first by sort order) if floors hold
+      if (x.c >= 0.8 && keepsFloors(x.ex, n) && x.w.s.blocks.filter(y => y.kind === 'lift').length > 2) {
+        x.w.s.blocks = x.w.s.blocks.filter((_, j) => j !== x.i);
+        bump(x.ex, -n); x.w.added.max_trim = (x.w.added.max_trim || 0) - n; x.w.changed = done = true; break;
+      }
+    }
+    if (!done) {   // swap a compound for an alternative that loads u less, keeping the other floors
+      for (const x of cands.filter(c => !c.iso)) {
+        const b = x.w.s.blocks[x.i]; const n = setsOf(b);
+        const loc = locationFor(ctx.profile, x.w.s.location);
+        const alt = alternatives(x.ex.id, { equipment: expandEquipment(loc.equipment || []), exclude: (x.w.s.blocks || []).map(y => y.exId).filter(Boolean) })
+          .filter(e => unitWeight(e, u) < x.c - 0.2 && !avoid.has(e.id))
+          .find(e => { const before = unitCredits(x.ex), after = unitCredits(e);
+            return Object.keys({ ...before, ...after }).every(v => !(UT[v]?.min > 0) || (tot.units[v] || 0) - n * (before[v] || 0) + n * (after[v] || 0) >= UT[v].min - 0.25)
+              && (tot.units[u] || 0) - n * x.c + n * unitWeight(e, u) < (tot.units[u] || 0); });
+        if (!alt) continue;
+        const ns = swapBlock(x.w.s, x.i, alt.id, { sessions: ctx.history, now: noonOf(x.w.s.date) });
+        bump(x.ex, -n); bump(alt, setsOf(ns.blocks[x.i]));
+        x.w.s = { ...x.w.s, blocks: ns.blocks }; x.w.added.max_swap = (x.w.added.max_swap || 0) + 1; x.w.changed = done = true; break;
+      }
+    }
+    if (!done && cands.some(c => PULL_PATTERNS.has(c.ex.pattern) && setsOf(c.w.s.blocks[c.i]) > 2) && trimPush()) continue;
+    if (!done) stuck.add(u);   // can't trim without breaking a floor or pull ≥ push: the summary warns
+  }
   // Commit working copies.
   for (const w of W) {
     if (!w.changed) continue;
     const est = estimateMinutes(w.s.blocks);
     const nm = k => (k === 'pull' ? 'pulling' : (VOLUME_UNITS[k]?.name || k).toLowerCase());
-    const parts = Object.entries(w.added).filter(([k, v]) => v >= 0.5 && k !== 'push_trim' && k !== 'trim').map(([k, v]) => `${nm(k)} +${fmt(v)}`);
+    const parts = Object.entries(w.added).filter(([k, v]) => v >= 0.5 && VOLUME_UNITS[k] || (k === 'pull' && v >= 0.5)).map(([k, v]) => `${nm(k)} +${fmt(v)}`);
     if (w.added.push_trim) parts.push(`${-w.added.push_trim} fewer press/fly sets (pull ≥ push)`);
     if (w.added.trim) parts.push(`${-w.added.trim} fewer sets (max ~12 per muscle per session)`);
+    if (w.added.max_trim) parts.push(`${-w.added.max_trim} fewer sets (weekly max)`);
+    if (w.added.max_swap) parts.push(`${w.added.max_swap} exercise swapped to stay under a weekly max`);
     const repl = { ...w.s, estMinutes: est, plan: { ...w.s.plan, topUp: Object.fromEntries(Object.entries(w.added).map(([k, v]) => [k, r1(v)])) } };
     if (w.raised.size) repl.plan.topUp.raisedCap = [...w.raised];
     const raisedTxt = w.raised.size ? ` (${[...w.raised].map(nm).join(', ')} up to ${PRIORITY_CAP} sets this session: priority)` : '';
@@ -1044,7 +1101,6 @@ export function planRange({ from, days = 7, profile, sessions = [], schedule, cl
   const fromDs = toDs(from) || ds(now);
   const ctx = makeCtx({ profile, sessions, schedule, classSchedule, now, seed });
   if (volumePolicy) ctx.volumePolicy = { ...volumePolicyOf(profile), ...volumePolicy };
-  if (globalThis.__PLAN_DEBUG) ctx.debug = true;
   seedHistory(ctx, sessions, fromDs, keep);
   ctx.firstDate = fromDs < ctx.today ? ctx.today : fromDs;
   const out = [];
@@ -1062,7 +1118,7 @@ export function planRange({ from, days = 7, profile, sessions = [], schedule, cl
         ctx.history.push(simulateDone(s));
       }
     }
-    if (isLast) { const { ws, we } = weekBounds(date); balanceCardio(ctx, out, ws, we, date); balanceWeek(ctx, out, ws, we); if (topUp) balanceVolume(ctx, out, ws, we); }
+    if (isLast) { const { ws, we } = weekBounds(date); if (topUp) { balanceCardio(ctx, out, ws, we, date); balanceWeek(ctx, out, ws, we); balanceVolume(ctx, out, ws, we); } }
   }
   return out;
 }
@@ -1132,7 +1188,9 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
   for (const u of UNIT_ORDER) {
     const t = UT[u], total = r1(uw.units[u] || 0), done = r1(Math.min(total, uDone.units[u] || 0));
     units[u] = { name: t.name, group: t.group, tier: t.tier, sub: t.sub, done, planned: r1(total - done), total, min: t.min, target: t.target, max: t.max, base: t.base, slider: t.slider, extra: t.extra,
-      status: total < t.min - 0.25 ? 'under' : total < t.target - 0.25 ? 'below_target' : total > t.max + 0.25 ? 'over' : 'ok' };
+      // bands vs TARGET: < min 'under' (red) · min…target 'toward' (amber) · target…max 'ok' (green) · > max 'over' (orange)
+      status: total > t.max + 0.25 ? 'over' : total < t.min - 0.25 ? 'under' : total < t.target - 0.25 ? 'toward' : 'ok',
+      pctTarget: t.target > 0 ? Math.round(Math.min(1, total / t.target) * 100) / 100 : 1 };
   }
   const pol = volumePolicyOf(profile || {});
   const liftDays = (sessions || []).filter(s => s && s.status === 'planned' && s.date >= from && s.date <= to && s.date >= today && s.plan?.kind === 'lift');
@@ -1149,10 +1207,8 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
     short: tUnits.filter(u => !tMet.includes(u)).map(u => ({ unit: u, name: units[u].name, total: units[u].total, target: units[u].target })) };
   const pushPull = { push: uw.push, pull: uw.pull, ratio: uw.pull ? Math.round(uw.push / uw.pull * 100) / 100 : null, ok: uw.push <= uw.pull * 1.1 + 0.5 };
   if (!pushPull.ok) warnings.push(`Pushing outweighs pulling (${uw.push} press/fly vs ${uw.pull} row/pulldown sets): add rows or pulldowns`);
-  for (const [r, x] of Object.entries(regions)) {
-    if (x.status !== 'under' || underPrio.includes(REGIONS[r].group) || x.target.min < 3) continue;
-    if (x.total < x.target.min * 0.75) warnings.push(`${REGIONS[r].name} only ${fmt(x.total)}/${Math.round(x.target.min)} sets planned`);
-  }
+  // (per-head region warnings retired: side/rear delts and upper chest are units now)
+  for (const u of UNIT_ORDER) if (units[u].status === 'over') warnings.push(`${units[u].name} ${fmt(units[u].total)} sets: over the ${fmt(units[u].max)}-set weekly max (diminishing returns, more recovery cost)`);
   const setsNeeded = Math.round(prio.reduce((a, g) => a + (T.groups[g]?.target.min || 0), 0));
   if (underPrio.length >= 2) {
     warnings.push(`Not enough lifting time to hit every priority minimum: ~${Math.round(liftMinutes)} lift min this week yields ~${Math.round(lDone + lPlan)} working sets, while the priority groups alone want ~${setsNeeded} group-sets. Add a lift day or more minutes, or accept a slower week.`);
@@ -1177,12 +1233,16 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
       : sPlan ? '. Re-plan the week to rebalance auto days.' : '. Plan the week to fill it.'));
   }
 
-  // Score: priority-weighted coverage of minimums (80%) + cardio coverage (20%).
+  // Score: priority-weighted TARGET attainment per unit (80%; a missed minimum or an over-max unit
+  // costs extra) + cardio coverage (20%).
   let num = 0, den = 0;
-  for (const [g, x] of Object.entries(groups)) {
-    if (!(x.target.min > 0)) continue;
-    const w = prio.includes(g) ? 2 : LEG_GROUPS.has(g) ? 0.5 : 1;
-    num += w * Math.min(1, x.total / x.target.min); den += w;
+  for (const u of UNIT_ORDER) {
+    const x = units[u]; if (!(x.target > 0) || x.sub) continue;
+    const w = x.tier === 'priority' ? 2 : x.tier === 'maintenance' ? 0.5 : 1;
+    let a = Math.min(1, x.total / x.target);
+    if (x.status === 'under') a *= 0.7;
+    if (x.status === 'over') a *= 0.85;
+    num += w * a; den += w;
   }
   const liftCov = den ? num / den : 1;
   const cardioCov = target > 0 ? Math.min(1, cTot / target) : 1;

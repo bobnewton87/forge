@@ -243,13 +243,13 @@ function summaryCard(sessions, profile, ws, roomLine = '') {
   const rows = ids.map(u => {
     const x = units[u];
     const done = Number(x.done) || 0, planned = Number(x.planned) || 0, total = Number(x.total) || 0;
-    const scale = Math.max(x.target, x.min, total, 1) * 1.1;
-    const st = x.status === 'under' ? 'under' : x.status === 'below_target' ? 'tgt' : x.status === 'over' ? 'over' : 'ok';
-    return `<div class="pl-bar-row ${st === 'tgt' ? 'ok pl-below-tgt' : st}${x.sub ? ' pl-sub' : ''}">
+    const scale = Math.max(x.max, total, 1);
+    const st = x.status || 'ok';   // under (red) · toward (amber) · ok (green) · over (orange), vs target
+    return `<div class="pl-bar-row ${st}${x.sub ? ' pl-sub' : ''}" title="${esc(`${x.name}: ${fmtNum(total, 1)} sets · min ${x.min} · target ${x.target} · max ${x.max}`)}">
       <div class="pl-bar-top"><span>${x.tier === 'priority' && !x.sub ? '<span class="star">★</span> ' : ''}${esc(x.name)}</span>
-        <span class="num"><b>${fmtNum(total, 0)}</b><span class="muted">/${x.min ? fmtNum(x.min, 0) : '0'} · target ${fmtNum(x.target, 0)}</span></span></div>
+        <span class="num"><b>${fmtNum(total, 0)}</b><span class="muted"> / ${fmtNum(x.target, 0)} target</span></span></div>
       <div class="pl-track"><i class="d" style="width:${(done / scale) * 100}%"></i><i class="p" style="left:${(done / scale) * 100}%;width:${(planned / scale) * 100}%"></i>
-        ${x.min > 0 ? `<span class="tick" style="left:${(x.min / scale) * 100}%"></span>` : ''}<span class="tick tgt" style="left:${(x.target / scale) * 100}%"></span></div>
+        ${x.min > 0 ? `<span class="tick" style="left:${(x.min / scale) * 100}%"></span>` : ''}<span class="tick tgt" style="left:${(x.target / scale) * 100}%"></span><span class="tick max" style="left:${(x.max / scale) * 100 - 0.5}%"></span></div>
     </div>`;
   }).join('');
   const tracked = UNIT_ORDER.filter(u => units[u] && !(units[u].min > 0 || units[u].target > 0)).map(u => `${units[u].name} ${fmtNum(units[u].total, 0)}`).join(' · ');
@@ -271,7 +271,7 @@ function summaryCard(sessions, profile, ws, roomLine = '') {
   return `${head}<div class="card pl-sum">
     <div class="pl-sum-head">${ring}<div class="grow"><div class="card-title">${sc == null ? 'This week' : sc >= 80 ? 'Well covered' : sc >= 55 ? 'Mostly covered' : 'Gaps to fill'}</div>
       <div class="muted small">${Number(ss.done) || 0} done · ${Number(ss.planned) || 0} planned${sc != null ? ' · coverage score' : ''}</div></div></div>
-    <div class="pl-legend"><span><i class="d"></i>Done</span><span><i class="p"></i>Planned</span><span><i class="t"></i>Minimum</span><span><i class="t tgt"></i>Target</span></div>
+    <div class="pl-legend"><span><i class="d"></i>Done</span><span><i class="p"></i>Planned</span><span><i class="t tgt"></i>Target</span><span><i class="t"></i>Min</span><span class="muted">bar end = max</span></div>
     <div class="pl-bars">${rows}</div>
     ${tracked ? `<div class="tiny muted" style="margin-top:6px">Tracked, not counted: ${esc(tracked)}</div>` : ''}
     <div class="pl-bar-row cardio">

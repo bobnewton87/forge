@@ -747,10 +747,10 @@ export function buildWorkout({
   if (!autoLabel && res.groups.length) {
     const gs = safe(() => groupStatus(sessions, { now, profile, upcoming }), {});
     const bits = res.groups.filter(g => gs[g]).sort((a, b) => (gs[b].need ?? 0) - (gs[a].need ?? 0)).slice(0, 2).map(g => {
-      const s = gs[g]; const tgt = s.target?.min ?? s.target;
+      const s = gs[g]; const tgt = s.target?.target ?? s.target?.min ?? s.target;   // compare with the TARGET
       const sets = Number.isFinite(s.sets7d) ? Math.round(s.sets7d * 10) / 10 : null;
       const parts = [];
-      if (sets != null && tgt) parts.push(`${sets}/${Math.round(tgt)} sets this week${Array.isArray(upcoming) ? ' incl. planned' : ''}`);
+      if (sets != null && tgt) parts.push(`${sets}/${Math.round(tgt)} target sets this week${Array.isArray(upcoming) ? ' incl. planned' : ''}`);
       if (Number.isFinite(s.daysSince)) parts.push(`${s.daysSince}d since last`);
       return GROUPS[g].name + (parts.length ? ` (${parts.join(', ')})` : '');
     });

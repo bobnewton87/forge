@@ -12,8 +12,10 @@ import { groupStatus, sessionVolume } from '../engine/recovery.js';
 import { sessionPRs, personalRecords } from '../engine/progression.js';
 import { swapBlock, addExercise } from '../engine/generator.js';
 import { cardioWeek } from '../engine/targets.js';
+import { targetBar } from './targets.js';
 // CONTRACT-NOTE (INTEGRATOR §18): the finish summary shows this week's cardio vs the weekly target
-//   (targets.cardioWeek) when the session had cardio or the week is behind.
+//   (targets.cardioWeek) when the session had cardio or the week is behind. "Your week now" bars
+//   compare weekly sets with the TARGET (targets.targetBar).
 import {
   esc, fmtNum, exName, unitLabel, safe, debounce, fmtDuration, openSheet, closeSheet, toast, startRest, stopRest,
   muscleBar, addExerciseSheet, swapSheet, cardioFormHtml, bindCardioForm, readCardioForm, cardioName, exerciseInfoHtml,
@@ -460,7 +462,7 @@ export function summaryHtml(s, sessions, profile) {
     </div>
     ${prs.length ? `<div class="section-title">🏆 New PRs</div><div class="tr-prs">${prs.map(r => `<div class="tr-pr"><b>${esc(exName(r.exId))}</b><span>${fmtNum(r.w)}×${r.r}${r.previous ? ` <span class="muted">(was ${fmtNum(r.previous.w)}×${r.previous.r})</span>` : ''}</span></div>`).join('')}</div>` : ''}
     ${groups.length ? `<div class="section-title">This session</div><div class="tr-sum-groups">${groups.map(([g, v]) => `<span class="badge">${esc(GROUPS[g]?.name || g)} <b>${fmtNum(v)}</b></span>`).join('')}</div>` : ''}
-    ${weekGroups.length ? `<div class="section-title">Your week now</div>${weekGroups.map(g => muscleBar(GROUPS[g]?.name || g, gs[g].sets7d || 0, gs[g].target)).join('')}` : ''}
+    ${weekGroups.length ? `<div class="section-title">Your week now</div>${weekGroups.map(g => targetBar(GROUPS[g]?.name || g, gs[g].sets7d || 0, gs[g].target)).join('')}` : ''}
     ${cardioWeekLine(s, sessions, profile, vol)}
     <button type="button" class="btn btn-primary tr-big" data-sum-close>Nice</button>
   </div>`;

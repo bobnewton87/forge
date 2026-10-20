@@ -127,8 +127,10 @@ function readinessFor(key, kind, entries, nowMs, recoveryHours) {
 }
 
 function needScore(sets7d, target, daysSince, prioMult) {
-  const goal = target.target ?? target.min;   // need is scored against the (priority-moved) target
-  const deficit = goal > 0 ? clamp((goal - sets7d) / goal, 0, 1) : 0;
+  // need is scored against the (priority-moved) TARGET; a shortfall below the minimum weighs extra
+  const goal = target.target ?? target.min;
+  const minGap = target.min > 0 ? clamp((target.min - sets7d) / target.min, 0, 1) : 0;
+  const deficit = goal > 0 ? clamp((goal - sets7d) / goal + 0.3 * minGap, 0, 1) : 0;
   const over = sets7d >= target.max ? -0.2 : 0;
   const stale = daysSince == null ? 0.35 : clamp((daysSince - 3) / 4, 0, 1) * 0.4;
   const raw = Math.max(0, (0.7 * deficit + stale + over) * prioMult);
@@ -364,16 +366,17 @@ function daysText(d, sets = 0) { return d == null ? (sets > 0 ? 'no direct work 
 function groupReason(gid, st) {
   const name = groupName(gid);
   const wk = st.planned != null ? 'sets this week incl. planned' : 'sets this week';
-  const behind = st.target.min - st.sets7d;
+  const goal = t => t.target ?? t.min;   // reasons compare with the TARGET ("Triceps: 8/19 sets this week")
+  const behind = goal(st.target) - st.sets7d;
   // Name a specific region when it lags clearly behind the rest of its group.
   let focus = null;
   for (const r of Object.values(st.regions)) {
     if (r.target.min >= 2 && r.need >= st.need + 0.15 && (!focus || r.need > focus.need)) focus = r;
   }
-  if (focus) return `${regionName(focus.region)}: ${daysText(focus.daysSince, focus.sets7d)}, ${fmtSets(focus.sets7d)}/${Math.round(focus.target.min)} ${wk}`;
-  if (st.planned != null) return `${name}: ${fmtSets(st.sets7d)}/${Math.round(st.target.min)} ${wk}${behind >= 2 && st.priority >= 1.1 ? ' (priority)' : ''}`;
+  if (focus) return `${regionName(focus.region)}: ${daysText(focus.daysSince, focus.sets7d)}, ${fmtSets(focus.sets7d)}/${Math.round(goal(focus.target))} ${wk}`;
+  if (st.planned != null) return `${name}: ${fmtSets(st.sets7d)}/${Math.round(goal(st.target))} ${wk}${behind >= 2 && st.priority >= 1.1 ? ' (priority)' : ''}`;
   if (st.priority >= 1.1 && behind >= 2) return `${name} ${isPlural(name) ? 'are' : 'is'} a priority and ${fmtSets(behind)} sets behind`;
-  return `${name}: ${daysText(st.daysSince, st.sets7d)}, ${fmtSets(st.sets7d)}/${Math.round(st.target.min)} ${wk}`;
+  return `${name}: ${daysText(st.daysSince, st.sets7d)}, ${fmtSets(st.sets7d)}/${Math.round(goal(st.target))} ${wk}`;
 }
 
 export function recommend(sessions, { now = new Date(), profile, minutes, location, upcoming = null } = {}) {

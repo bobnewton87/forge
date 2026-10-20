@@ -12,7 +12,7 @@ import { sessionVolume } from '../js/engine/recovery.js';
 import { VOLUME_UNITS, GROUP_ORDER } from '../js/data/muscles.js';
 import { SCULPT_GOALS } from '../js/data/sculpt.js';
 import { resolveTargets, applyTargetChange, volumePolicyOf, unitTargets, volumeRoomOptions, MINIMUMS_EVIDENCE } from '../js/engine/targets.js';
-import { extendedToast } from '../js/ui/targets.js';
+import { extendedToast, setsBand } from '../js/ui/targets.js';
 import { parseDs } from '../js/util.js';
 
 const MON = '2026-10-26';
@@ -50,13 +50,10 @@ function checkWeek(name, p, out) {
     }
     if (s.plan.extended) assert.ok(s.minutes <= cap(s) && Math.abs(estimateMinutes(s.blocks) - s.minutes) <= s.minutes * 0.1, `${name} ${s.date} ${s.minutes} est ${estimateMinutes(s.blocks)}`);
   }
+  // never overdo: no unit past its weekly max (fractional credit, incl. what the generator built)
   for (const [u, x] of Object.entries(sum.units)) {
-    const touched = lifts.some(s => (s.plan.topUp?.[u] || 0) >= 0.5);
-    if (touched && x.total > x.max + 0.5) {
-      // allowed only if the plan before the top-up was already over (the top-up never pushes past max)
-      const before = summary(week(p, { topUp: false }), p).units[u].total;
-      assert.ok(before > x.max - 0.5, `${name}: top-up pushed ${u} to ${x.total} > max ${x.max}`);
-    }
+    assert.ok(x.total <= x.max + 0.25, `${name}: ${u} ${x.total} > max ${x.max}`);
+    assert.equal(x.status, setsBand(x.total, x), `${name}: ${u} status ${x.status} vs band`);
   }
   return sum;
 }
@@ -81,10 +78,21 @@ test('policy, unit targets (one priority mechanism) and evidence', () => {
   assert.ok(volumeRoomOptions(prof()).every(o => o.label && o.patch));
 });
 
-test("Bob's default week: minimums met, delts enforced separately, back = lats + upper back, pull ≥ push", () => {
+test('status bands compare with the target: under min red, toward target amber, on target green, over max orange', () => {
+  const t = { min: 8, target: 14, max: 20 };
+  assert.equal(setsBand(6, t), 'under'); assert.equal(setsBand(10, t), 'toward'); assert.equal(setsBand(14, t), 'ok');
+  assert.equal(setsBand(19.9, t), 'ok'); assert.equal(setsBand(21, t), 'over');
+  assert.equal(setsBand(0, { min: 0, target: 3, max: 6 }), 'toward');
+});
+
+test("Bob's default week: minimums met, nothing over max, delts separate, back = lats + upper back, pull ≥ push", () => {
   const p = prof();
   const out = week(p);
   const sum = checkWeek('default', p, out);
+  assert.ok(!Object.values(sum.units).some(x => x.status === 'over'), 'no "over" in the default week');
+  assert.ok(!sum.warnings.some(w => /over the/.test(w)));
+  // the coverage score is target attainment: a fully-on-target week would score higher than this one
+  assert.ok(sum.score >= 0 && sum.score <= 100);
   assert.equal(sum.minimums.met, true, sum.warnings.join(' | '));
   assert.ok(sum.units.delt_side.total >= 9.75 && sum.units.delt_rear.total >= 3.75, `side ${sum.units.delt_side.total} rear ${sum.units.delt_rear.total}`);
   assert.ok(sum.units.traps && sum.units.lower_back && sum.units.traps.min === 0, 'traps / lower back tracked, not enforced');
@@ -98,13 +106,13 @@ test('matrix: sliders × groups, arms/shoulders, chest/back, all sculpt goals (d
     ['arms+shoulders', { groupPriority: { triceps: 1.5, biceps: 1.5, shoulders: 1.5 } }],
     ['chest+back', { groupPriority: { chest: 1.5, back: 1.5 } }],
     ['all sculpt', { sculptGoals: Object.keys(SCULPT_GOALS) }]];
-  for (const [name, patch] of cases) { const p = prof(patch); checkWeek(name, p, week(p)); }
+  for (const [name, patch] of cases) for (const seed of [1, 42]) { const p = prof(patch); checkWeek(`${name} s${seed}`, p, week(p, { seed })); }
 });
 
 test('matrix: 3/4/5/6 lift days × 30/45/60 min', () => {
-  for (const n of [3, 4, 5, 6]) for (const m of [30, 45, 60]) {
+  for (const n of [3, 4, 5, 6]) for (const m of [30, 45, 60]) for (const seed of [1, 42]) {
     const p = prof({ schedule: sched(n, m) });
-    checkWeek(`${n}x${m}`, p, week(p));
+    checkWeek(`${n}x${m} s${seed}`, p, week(p, { seed }));
   }
   const p = prof({ schedule: sched(3, 30), groupPriority: { triceps: 1.5, biceps: 1.5, shoulders: 1.5 } });
   checkWeek('3x30 arms', p, week(p));

@@ -63,6 +63,17 @@ const CSS = `
 .tg-diff .tg-from{color:var(--muted);text-decoration:line-through}
 .tg-mins{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .tg-units{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.tgb{margin:8px 0 10px}.tgb-top{display:flex;justify-content:space-between;font-size:13px;font-weight:650;margin-bottom:4px}
+.tgb-track{position:relative;height:8px;border-radius:4px;background:var(--card2)}
+.tgb-track i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--good)}
+.tgb.under .tgb-track i{background:var(--bad)}.tgb.toward .tgb-track i{background:var(--warn)}.tgb.over .tgb-track i{background:var(--accent2)}
+.tgb.under .tgb-top b{color:var(--bad)}.tgb.toward .tgb-top b{color:var(--warn)}.tgb.over .tgb-top b{color:var(--accent2)}
+.tgb-track .tk{position:absolute;top:-3px;bottom:-3px;width:2px;border-radius:1px}
+.tgb-track .tk.min{background:var(--text);opacity:.55}.tgb-track .tk.tgt{border-left:2px dashed var(--accent2);width:0}.tgb-track .tk.max{background:var(--muted);opacity:.5;width:3px}
+.pl-bar-row.toward .pl-track i.d{background:var(--warn)}.pl-bar-row.toward .pl-bar-top .num b{color:var(--warn)}
+.pl-bar-row.under .pl-track i.d{background:var(--bad)}.pl-bar-row.under .pl-bar-top .num b{color:var(--bad)}
+.pl-bar-row.over .pl-track i.d{background:var(--accent2)}
+.pl-track .tick.max{background:var(--muted);opacity:.5;width:3px}
 .tg-unit{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
 .pl-track .tick.tgt,.pl-legend i.t.tgt{background:none;border-left:2px dashed var(--accent2);width:0}
 .pl-legend i.t.tgt{display:inline-block;height:10px}
@@ -183,6 +194,31 @@ export function openMakeRoomSheet(ctx) {
   });
 }
 
+// ---------------------------------------------------------------- weekly sets vs TARGET
+// Band of a weekly set count: < min 'under' (red) · min…target 'toward' (amber) · target…max 'ok'
+// (green) · > max 'over' (orange). t = { min, target, max } (target falls back to min).
+export function setsBand(sets, t = {}) {
+  const min = Number(t.min) || 0, target = Number(t.target ?? t.min) || 0, max = Number(t.max) || Math.max(target, min) || 0;
+  if (max && sets > max + 0.25) return 'over';
+  if (sets < min - 0.25) return 'under';
+  if (sets < target - 0.25) return 'toward';
+  return 'ok';
+}
+export const BAND_LABEL = { under: 'below minimum', toward: 'toward target', ok: 'on target', over: 'over max' };
+// Bar comparing weekly sets with the target: fill coloured by band, solid tick = minimum, dashed tick =
+// target, end marker = max (in the tooltip too). Text reads "14 / 15 target".
+export function targetBar(label, sets, t = {}, { sub = '' } = {}) {
+  ensureStyles();
+  const min = Number(t.min) || 0, target = Number(t.target ?? t.min) || 0, max = Number(t.max) || Math.max(target, min, 1);
+  const band = setsBand(sets, t), scale = Math.max(max, sets, 1);
+  const pct = v => Math.min(100, (v / scale) * 100);
+  const f = v => (Math.round(v * 10) / 10).toString();
+  return `<div class="tgb ${band}" title="${esc(`${label}: ${f(sets)} sets · min ${f(min)} · target ${f(target)} · max ${f(max)} (${BAND_LABEL[band]})`)}">
+    <div class="tgb-top"><span>${esc(label)}</span><span class="num"><b>${f(sets)}</b><span class="muted"> / ${f(target)} target</span></span></div>
+    <div class="tgb-track"><i style="width:${pct(sets)}%"></i>${min > 0 ? `<span class="tk min" style="left:${pct(min)}%"></span>` : ''}<span class="tk tgt" style="left:${pct(target)}%"></span><span class="tk max" style="left:${pct(max)}%"></span></div>
+    ${sub ? `<div class="tiny muted">${sub}</div>` : ''}</div>`;
+}
+
 // ---------------------------------------------------------------- weekly minimums sheets
 const DOWS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const dayName = date => DOWS[new Date(date + 'T12:00:00').getDay()];
@@ -209,8 +245,8 @@ export function openMinimumsInfo(ctx) {
   const tracked = Object.entries(U).filter(([, x]) => !(x.min > 0 || x.target > 0)).map(([, x]) => x.name).join(', ');
   const deriv = x => `${x.base}${x.slider !== 1 ? ` × ${x.slider} (slider)` : ''}${x.extra ? ` + ${x.extra} (sculpt goals)` : ''}${x.base * x.slider + x.extra > x.max + 0.05 ? `, capped at ${x.max}` : ''}`;
   ctx.openSheet(`<div class="tg-sheet"><h2>Why these numbers?</h2>
-    <p class="muted small">Each muscle has a <b>minimum</b> (the evidence floor, always planned), a <b>target</b> (filled with spare time) and a <b>cap</b>. Your priority sliders and sculpt goals move only the target.</p>
-    <div class="tg-units">${rows.map(([, x]) => `<div class="tg-unit"><div class="row between"><b>${esc(x.name)}</b><span class="num small">min <b>${x.min}</b> · target <b>${x.target}</b> · cap ${x.max}</span></div>
+    <p class="muted small">Weekly sets are compared with your <b>target</b>. Each muscle also has a <b>minimum</b> (the evidence floor, always planned) and a <b>max</b> Forge never plans past: returns flatten beyond ~20 sets a week while recovery cost keeps rising (Pelland et al. 2025, Sports Med; Baz-Valle et al. 2022), so the max is ~20 (24 for triceps and side delts, which recover fast; lower for maintenance muscles). Sliders and sculpt goals move only the target.</p>
+    <div class="tg-units">${rows.map(([, x]) => `<div class="tg-unit"><div class="row between"><b>${esc(x.name)}</b><span class="num small">target <b>${x.target}</b> · min ${x.min} · max ${x.max}</span></div>
       <div class="tiny muted">Floor ${x.min}: ${esc(FLOOR_WHY[x.tier] || FLOOR_WHY.normal)}. Target = ${esc(deriv(x))}.</div></div>`).join('')}</div>
     ${tracked ? `<p class="tiny muted">${esc(tracked)}: tracked, not counted (pressing covers front delts; traps and lower back don't count toward back).</p>` : ''}
     <div class="label mt">The evidence</div>
