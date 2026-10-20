@@ -43,8 +43,10 @@ test('BMR: female Mifflin-St Jeor is 166 kcal below male at the same size; Katch
 
 test('body fat: female Navy (hips), Gallagher healthy range, female missing-info wording, waist:hip', () => {
   const b = herBase();
-  assert.equal(b.sex, 'female'); assert.equal(b.bodyFatMethod, 'navy');
-  assert.equal(b.bodyFatPct, navyBodyFat({ sex: 'female', heightIn: 65, neckIn: 13, waistIn: 29, hipsIn: 39 }));
+  assert.equal(b.sex, 'female'); assert.equal(b.bodyFatSource, 'navy');
+  // §20b: female Navy + 1.7 onto the DXA scale (Taylor 2024); the value is the DXA-scale blend.
+  near(b.bodyFatSources.navy, navyBodyFat({ sex: 'female', heightIn: 65, neckIn: 13, waistIn: 29, hipsIn: 39 }) + 1.7, 0.06);
+  assert.equal(b.bodyFatMethod, 'blend');
   assert.deepEqual(b.bodyFatCategory.healthy, [21, 33]);
   assert.equal(b.bodyFatCategory.label, 'Healthy range');
   assert.equal(b.ratios.waistToHip, Math.round(29 / 39 * 100) / 100);
@@ -228,7 +230,7 @@ test('glute_shelf goal: evidence-honest and mapped to real exercises; female wor
 
 test('targets: female goal body fat defaults to 22 % and is clamped to 14–35 %; male unchanged', () => {
   assert.equal(resolveTargets(herProfile()).goals.goalBodyFatPct, 22);
-  assert.equal(resolveTargets(defaultProfile()).goals.goalBodyFatPct, 12);
+  assert.equal(resolveTargets(defaultProfile()).goals.goalBodyFatPct, 15);
   assert.equal(applyTargetChange(herProfile(), { goals: { goalBodyFatPct: 8 } }).body.goalBodyFat, 14);
   assert.equal(applyTargetChange(herProfile(), { goals: { goalBodyFatPct: 33 } }).body.goalBodyFat, 33);
   assert.equal(applyTargetChange(defaultProfile(), { goals: { goalBodyFatPct: 8 } }).body.goalBodyFat, 8);
@@ -239,6 +241,6 @@ test('male results carry no female-only fields', () => {
   assert.equal(b.bodyFatCategory, undefined); assert.equal(b.femaleStatus, undefined);
   const r = project({ baseline: b, profile: bobProfile(), sessions: bobPlan('2026-10-19', 4), weeks: 12, now: NOW });
   assert.equal(r.energyAvailability, undefined); assert.equal(r.paused, undefined);
-  assert.equal(r.ceiling.ffmiNatural, 25);
+  assert.equal(r.ceiling.ffmiNatural, 24.2);
   assert.equal('ffmiCeilingDelta' in modifiersAt(bobProfile(), '2026-10-20', {}), false);
 });

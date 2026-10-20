@@ -69,7 +69,11 @@ test('baseline: merges latest weigh-in, latest per site, arm average, age', () =
   assert.equal(b.measuredOn.arm, '2026-10-15');
   assert.equal(b.age, 2026 - 1987);
   assert.equal(b.bodyFatSource, 'navy');
-  assert.equal(b.bodyFatPct, b.navyBodyFatPct);
+  // §20b DXA scale: the value is the inverse-variance blend of the DXA-scale estimates (Navy + 3, one-site Army, RFM − 0.5,
+  // Deurenberg), no longer the raw Navy number (which read ~3 points low vs DXA in men).
+  assert.equal(b.bodyFatMethod, 'blend');
+  near(b.bodyFatSources.navy, b.navyBodyFatPct + 3, 0.06);
+  assert.ok(b.bodyFatPct > b.navyBodyFatPct);
   near(b.ratios.shoulderToWaist, 46 / 34, 0.01);
   assert.ok(b.missing.includes('chest'));
   assert.ok(!b.missing.includes('waist'));
@@ -89,7 +93,8 @@ test('baseline: body-fat source priority manual > navy > estimate', () => {
   assert.ok(est.bodyFatPct > 12 && est.bodyFatPct < 30, String(est.bodyFatPct));
   assert.ok(est.missing.includes('bodyFat'));
   const noH = baseline({ profile: { ...p, body: { ...p.body, heightIn: null } }, bodyLog: bobBodyLog(), measurements: noManual, now: NOW });
-  assert.equal(noH.bodyFatSource, null); assert.equal(noH.bodyFatPct, null);
+  // §20b: the one-site Army equation needs only waist + weight, so a body-fat estimate exists without height.
+  assert.equal(noH.bodyFatSource, 'estimate'); assert.equal(noH.bodyFatMethod, 'onesite');
   assert.ok(noH.missing.includes('height'));
   assert.equal(noH.ratios.waistToHeight, null);
 });
@@ -171,13 +176,17 @@ test('baseline: body-fat sources, spread and uncertainty; RFM estimate when only
   for (const k of ['manual', 'navy', 'rfm', 'bmi']) assert.ok(all.bodyFatSources[k] > 5, k);
   const vals = Object.values(all.bodyFatSources);
   near(all.bodyFatSpread, Math.max(...vals) - Math.min(...vals), 0.11);
-  assert.ok(all.bodyFatUncertainty >= 3 && all.bodyFatUncertainty >= all.bodyFatSpread / 2 - 0.05);
+  // §20b: an entered value with no method counts as a DXA scan (the reference scale): ±2, not widened by tape disagreement.
+  assert.equal(all.bodyFatUncertainty, 2);
   assert.ok(all.bodyFatRange.low < 22 && all.bodyFatRange.high > 22);
   assert.match(all.bodyFatNote, /Navy/);
   // waist but no neck → RFM estimate (not the BMI formula)
   const waistOnly = baseline({ profile: p, bodyLog: bobBodyLog(), measurements: [{ d: '2026-10-18', waist: 33.5 }], now: NOW });
-  assert.equal(waistOnly.bodyFatSource, 'estimate'); assert.equal(waistOnly.bodyFatMethod, 'rfm');
-  near(waistOnly.bodyFatPct, 22.8, 0.1);
+  // §20b: waist + weight + height → one-site Army, RFM and Deurenberg are blended on the DXA scale (was RFM alone, 22.8).
+  assert.equal(waistOnly.bodyFatSource, 'estimate'); assert.equal(waistOnly.bodyFatMethod, 'blend');
+  near(waistOnly.bodyFatSources.rfm, 22.8 - 0.5, 0.11);
+  assert.ok(waistOnly.bodyFatPct > 20 && waistOnly.bodyFatPct < 26, String(waistOnly.bodyFatPct));
+  assert.ok(waistOnly.bodyFatUncertainty >= 3.5);
   const none = baseline({ profile: p, bodyLog: bobBodyLog(), measurements: [], now: NOW });
   assert.equal(none.bodyFatMethod, 'bmi'); assert.equal(none.bodyFatSpread, null); assert.ok(none.bodyFatUncertainty >= 5);
   assert.deepEqual(findBad([all, waistOnly, none]), []);

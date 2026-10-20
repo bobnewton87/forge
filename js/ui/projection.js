@@ -85,8 +85,9 @@ export function mount3D(key, root, host, opts) {
 export function estMuscle(p, heightIn = 69, sex = 'male') {
   const lean = Number(p?.leanLb) || 0; if (!lean) return null;
   const m = heightIn * 0.0254, ffmi = lean / 2.20462 / (m * m);
-  // Female scale shifted by the ~3.5-point sex gap in FFMI (sex.js BODY.female.ffmiScoreLo vs male 15).
-  const lo = sex === 'female' ? 16 - (BODY.male.ffmiScoreLo - BODY.female.ffmiScoreLo) : 16;
+  // DXA scale (§20b): FFMI 15.2 → 0, 24.2 → 1 for men (was 16 → 25 on the skinfold scale; −0.8 so the same body keeps the same
+  // score); women 12.5 → 21.5 (female DXA-scale data, 3.5 below the original male anchor).
+  const lo = sex === 'female' ? 12.5 : 15.2;
   const v = clampN((ffmi - lo) / 9, 0, 1);
   return { chest: v, delts: v, lats: v, arms: v, abs: v, quads: v + 0.08 > 1 ? 1 : v + 0.08, calves: v, traps: v };
 }
@@ -426,7 +427,7 @@ function compute(store, o) {
   const today = ds(I.now), end = ds(addDays(I.now, weeks * 7 - 1));
   const planned = I.sessions.filter(s => s.status === 'planned' && s.date >= today && s.date <= end && !(s.plan && s.plan.kind === 'rest' && !(s.blocks || []).length));
   const nutritionOn = I.profile.nutrition && I.profile.nutrition.mode && I.profile.nutrition.mode !== 'off';
-  const goalBf = Number(I.targets?.goals?.goalBodyFatPct) || Number(I.profile.body?.goalBodyFat) || (I.b?.sex === 'female' ? BODY.female.goalBodyFat : 12);
+  const goalBf = Number(I.targets?.goals?.goalBodyFatPct) || Number(I.profile.body?.goalBodyFat) || (I.b?.sex === 'female' ? BODY.female.goalBodyFat : BODY.male.goalBodyFat);
   return { ...I, res, weeks, planned, nutritionOn, end, kcal, maint, pg, fatPct, plan, adherence: adhOf(I, o), cmod: cmodOf(I, o), goalBf };
 }
 
@@ -776,7 +777,7 @@ function outputs(D, o) {
   const shape0 = s0.shape || s0.measurements || b.measurements || {}, shapeN = sN.shape || sN.measurements || shape0;
   const past = bodyLog.filter(e => e.d < s0.date && daysBetween(e.d, s0.date) <= 42).map(e => ({ d: e.d, v: e.w }));
   const mk = key => S.map(p => ({ d: p.date, v: p[key], lo: p.low?.[key], hi: p.high?.[key] }));
-  const goalBf = D.goalBf || profile.body?.goalBodyFat || 12;
+  const goalBf = D.goalBf || profile.body?.goalBodyFat || BODY.male.goalBodyFat;
   const phs = (res.phases || []).filter(ph => ph.endWeek > ph.startWeek);
   const ceil = res.ceiling;
   const charts = `
@@ -784,7 +785,7 @@ function outputs(D, o) {
       <div class="mt">${lineChart({ id: 'pw', data: mk('weightLb'), past, unit: 'lb', today: s0.date, phases: phs })}</div>
       ${waterNote(S) ? `<div class="small bd-water">💧 ${waterNote(S)}</div>` : ''}
       <div class="tiny muted">Shaded = realistic low–high range. Grey dots = recent weigh-ins.</div></div>
-    <div class="card"><div class="row between"><div class="card-title">Body fat</div><div class="small muted num">${f1(s0.bodyFatPct)} → <b style="color:var(--text)">${f1(sN.bodyFatPct)}</b>%</div></div>
+    <div class="card"><div class="row between"><div class="card-title">Body fat <span class="tiny muted" title="Every method is converted to the DXA scan scale so all numbers compare directly">DXA-equivalent</span></div><div class="small muted num">${f1(s0.bodyFatPct)} → <b style="color:var(--text)">${f1(sN.bodyFatPct)}</b>%</div></div>
       <div class="mt">${lineChart({ id: 'pb', data: mk('bodyFatPct'), unit: '%', target: goalBf, targetLabel: `goal ${goalBf}%`, color: 'var(--accent2)', today: s0.date, phases: phs })}</div>
       <div class="label" style="margin-top:10px">What your weight is made of</div>
       <div class="mt" style="margin-top:4px">${compChart(S, 340, 150, phs)}</div>

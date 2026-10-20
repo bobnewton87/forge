@@ -48,7 +48,7 @@ import { SCULPT_GOALS } from '../data/sculpt.js';
 import { ds, parseDs, addDays, weekStart } from '../util.js';
 import { BUILTIN_STYLES, STYLE_LIMITS, normalizeCustomStyle, styleOptions, isStyleId, resolveStyle } from './generator.js';
 import { sexOf, BODY } from './sex.js';
-// CONTRACT-NOTE (§20 Female mode): goals.goalBodyFatPct defaults to 22 for women (12 for men) and is clamped to the
+// CONTRACT-NOTE (§20 Female mode): goals.goalBodyFatPct defaults to 22 for women (15 DXA-equivalent for men, §20b) and is clamped to the
 //   female limits [14, 35] (men keep LIMITS.goalBodyFatPct [5, 30]); goalBodyFatLimits(profile) exposes them for UI steppers.
 //   Weekly set targets are NOT sex-specific: no study supports different targets for women (Roberts 2020: same relative
 //   hypertrophy; Nuzzo 2024: little sex influence on reps at a given %1RM; women are, if anything, less fatigable, Hunter 2014).
@@ -79,7 +79,8 @@ export const MINIMUMS_EVIDENCE = [
   { claim: 'Side and rear delts are enforced separately: pressing works the front delts, not the width-building side delts. Back counts lats and upper back only (traps and lower back are tracked but don\'t count).', source: 'Weekly-volume audit (docs/research/weekly-volume-audit.md)' },
 ];
 const DEF_VOLUME = { mode: 'extend', maxMinutes: 90 };
-const DEF = { cardioMin: 120, hardPerWeek: 1, adherence: 0.85, defaultMinutes: 45, style: 'hypertrophy', proteinGPerLb: 1.0, fatPct: 25, goalBodyFatPct: 12, goal: 'recomp' };
+// goalBodyFatPct: 15 % DXA-equivalent ≈ the colloquial "12 %" (§20b); a saved goal is never changed.
+const DEF = { cardioMin: 120, hardPerWeek: 1, adherence: 0.85, defaultMinutes: 45, style: 'hypertrophy', proteinGPerLb: 1.0, fatPct: 25, goalBodyFatPct: BODY.male.goalBodyFat, goal: 'recomp' };
 export function goalBodyFatLimits(profile) { return sexOf(profile) === 'female' ? BODY.female.goalBfLimits : LIMITS.goalBodyFatPct; }
 const goalBfDefault = profile => (sexOf(profile) === 'female' ? BODY.female.goalBodyFat : DEF.goalBodyFatPct);
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];

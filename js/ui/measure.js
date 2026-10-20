@@ -70,6 +70,10 @@ function latestSites(meas) {
 }
 const ACT = [['desk', 'Desk', 'Mostly sitting'], ['light', 'Light', 'On your feet some'], ['active', 'Active', 'On your feet most of the day']];
 const SRC = { manual: 'scale / DEXA', navy: 'Navy tape formula', estimate: 'BMI estimate (rough)' };
+// §20b: one canonical DXA-equivalent body-fat scale; how the number was made, in words.
+const BFM = { manual: 'your entry', onesite: 'Army waist formula', navy: 'Navy tape formula', rfm: 'waist-to-height', bmi: 'BMI (rough)', blend: 'blend of tape formulas' };
+const BF_METHOD_OPTS = [['dxa', 'DXA scan'], ['bia', 'Smart scale (BIA)'], ['calipers', 'Calipers'], ['other', 'Other']];
+const DXA_WHY = 'DXA-equivalent: every method is converted to the DXA scan scale, so tape, smart-scale and scan numbers compare directly and match the milestones and 3D model.';
 let editProfile = false;
 let cur3d = null;
 
@@ -122,7 +126,8 @@ function formCard(meas, log, heightIn = null, sex = 'male') {
       ${SITES.map(s => (s.pair ? `<div class="bd-pairhead">${esc(s.pair)} · left / right</div>` : '') + field(s.k, sex === 'female' && s.k === 'chest' ? 'Chest (bust)' : s.label, (sex === 'female' && FEMALE_TIPS[s.k]) || s.tip, last[s.k], s.req || (sex === 'female' && s.k === 'hips'))).join('')}
       <div class="bd-pairhead bd-lenhead">Bone lengths (optional, improves the 3D model)<div class="tiny muted" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:2px">Bony landmark to bony landmark, left and right. Measure once; redo only if unsure.</div></div>
       ${LEN_SITES.map(s => (s.pair ? `<div class="bd-pairhead">${esc(s.pair)} · left / right${typicalLen(s, heightIn) ? `<div class="tiny muted" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:2px">${esc(typicalLen(s, heightIn))}</div>` : ''}</div>` : '') + field(s.k, s.label, s.tip, last[s.k], false)).join('')}
-      ${field('bodyFat', 'Body fat (optional)', 'Only if you have a reading from a smart scale, calipers or a DEXA scan. DEXA is the most accurate; smart scales swing with hydration. Leave blank to use the tape formula.', last.bodyFat, false, '%')}
+      ${field('bodyFat', 'Body fat (optional)', 'Only if you have a reading from a smart scale, calipers or a DXA scan; pick which below. Forge converts it to the DXA scale (smart scales and calipers usually read 3-4 points lower than DXA) and blends it with the tape formulas. Leave blank to use the tape formulas.', last.bodyFat, false, '%')}
+      <div class="field bd-field"><label for="m-bfm">Measured with</label><select id="m-bfm" data-bfm>${BF_METHOD_OPTS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></div>
     </div>
     <button class="btn btn-primary btn-block" data-savem>Save measurements</button>
   </div>`;
@@ -166,7 +171,8 @@ function snapshot(b, meas = []) {
         <div class="label">Current · ${fmtShort(b.weightDate || b.date)}</div>
         <div class="bd-big num">${f1(b.weightLb)}<small> lb</small></div>
         <div class="bd-big num" style="color:var(--accent2)">${b.bodyFatPct != null ? f1(b.bodyFatPct) + '<small>% fat</small>' : '<small>body fat ?</small>'}</div>
-        <div class="tiny muted">${b.bodyFatSource ? 'from ' + esc(SRC[b.bodyFatSource] || b.bodyFatSource) : `add waist + neck${sex === 'female' ? ' + hips' : ''} + height`}${b.bodyFatSource === 'manual' && b.navyBodyFatPct ? ` · tape says ${f1(b.navyBodyFatPct)}%` : ''}</div>
+        <div class="tiny muted" data-bfdxa>${b.bodyFatPct != null ? `DXA-equivalent · ${esc(BFM[b.bodyFatMethod] || SRC[b.bodyFatSource] || '')}${b.bodyFatRange ? ` · likely ${f1(b.bodyFatRange.low)}–${f1(b.bodyFatRange.high)}%` : ''}` : `add waist + neck${sex === 'female' ? ' + hips' : ''} + height`}${b.bodyFatSource === 'manual' && b.bodyFatSources?.navy != null ? ` · tape ${f1(b.bodyFatSources.navy)}%` : ''}</div>
+        ${b.bodyFatPct != null ? `<div class="tiny muted" style="margin-top:2px">${esc(DXA_WHY)}</div>` : ''}
         ${b.bodyFatCategory ? `<div class="tiny" style="color:var(--${b.bodyFatCategory.cls === 'good' ? 'good' : 'warn'})" data-bfcat>${esc(b.bodyFatCategory.label)} <span class="muted">(healthy ${b.bodyFatCategory.healthy[0]}–${b.bodyFatCategory.healthy[1]}% for women your age, Gallagher 2000)</span></div>` : ''}
         <div class="grid2 mt" style="gap:8px">
           ${tile(c.leanLb != null ? f1(c.leanLb) : null, 'lb', 'Lean mass')}
@@ -341,6 +347,7 @@ export function bind(root, ctx) {
     if (!Object.keys(vals).length) { ctx.toast('Enter at least one value'); return; }
     if (document.activeElement) document.activeElement.blur();
     const { weight, ...rest } = vals;
+    if (rest.bodyFat != null) rest.bodyFatMethod = root.querySelector('[data-bfm]')?.value || 'dxa';   // §20b
     const n = Object.keys(vals).length;
     if (weight) store.logBodyweight(d, weight);
     if (Object.keys(rest).length) store.logMeasurement({ d, ...rest });

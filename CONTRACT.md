@@ -803,3 +803,27 @@ energyAvailability({ intakeKcal, exerciseKcal, leanLb }) → kcal/kg FFM/day; EA
 **UI:** sex selector + female fields + "what changes" sheet (`ui/female.js`) on Measure's body profile and Settings → Profile. Women see
 female FFMI bands, the Gallagher range, waist:hip instead of the golden ratio, female lab ranges and testosterone chart, female
 nutrition tips (iron, energy availability) and no Bob-specific Adderall prompts. 3D/silhouette options carry `sex` for the renderer.
+
+### 20b. One body-fat scale: DXA-equivalent (2026-10-20)
+Bob: the 3D model looked fatter than him. The number wasn't biased high; the reference scales were mixed. Every body-fat number
+(estimate, milestones, goals, floors, FFMI ceiling, the value passed to the 3D model) is now **DXA-equivalent**, for both sexes.
+Evidence and the before/after numbers for Bob: `docs/research/body-fat-dxa-scale.md`. Owner: FEMALE (bodycomp/projection).
+```js
+// bodycomp.js
+BF_DXA                    // equations, offsets, SDs (below)
+oneSiteBodyFat({ sex, waistIn /* navel */, weightLb, age }) // Taylor 2024 (doi:10.1002/osp4.747): men −27.05 + 2.06·abd − 0.12·wt (−1 at 40+),
+                                                          // women −8.06 + 1.25·abd − 0.004·wt; DXA-referenced
+toDxaScale(kind, value, sex, manualMethod)                // navy +3 men / +1.7 women; rfm −0.5 / −0.9; bmi 0; manual bia +3.5/+4, calipers +3/+3.5, dxa/other 0
+baseline() → bodyFatPct (DXA-equivalent): a DXA entry (method 'dxa' or blank) as-is (±2), else inverse-variance blend of every
+  available DXA-scale estimate (SD one-site 3.4/4.1, RFM 4.2/4.9, Navy 5, Deurenberg 6, BIA 5, calipers 4.5, other 5);
+  bodyFatMethod 'manual'|'onesite'|'navy'|'rfm'|'bmi'|'blend'; bodyFatSources (DXA scale) + bodyFatSourcesRaw; navyBodyFatPct (raw);
+  bodyFatUncertainty = likely ±(max 3.5, blend SD, spread/2), ±2 for DXA; bodyFatRange, bodyFatRange95 (±2×); bodyFatScale 'dxa'
+// measurement entries: bodyFat + bodyFatMethod: 'dxa' | 'bia' | 'calipers' | 'other'   (Measure asks "Measured with")
+```
+Constants on the DXA scale: male natural FFMI ceiling 24.2 (Kouri's skinfold-scale 25 × 0.87/0.90; `FFMI_NATURAL_CEILING`), male
+FFMI bands 17.4/19.3/21.3/22.7/24.2, milestones `ffmi_22`/`ffmi_23` at 21.3/22.2 (ids kept), 3D muscle score FFMI 14.2–23.2 and
+`estMuscle()` 15.2–24.2 (women 12.5–21.5), male abs 15/13 %, female abs 22/18 % (rule of thumb), default male goal 15 % (≈ the
+colloquial 12 %; saved goals untouched, a saved male goal ≤ 13 % gets a note), race-weight default 137 lb at 9.5 %, lean-model
+thresholds `sex.leanModelBf(sex)` (men: surplus pivot 21, recomp 23/15, protection 13). Unchanged and already DXA-consistent:
+essential/defended 5/6 % (men; Friedl 1994 DXA), 10/13 % (women), Gallagher categories, defaults 20/28 %, Forbes' 10.4 kg.
+The UI labels body fat "DXA-equivalent" with a one-line why (Measure, Body, Projection). Renderers receive the canonical value.

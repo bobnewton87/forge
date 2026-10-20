@@ -14,7 +14,7 @@ Sources were retrieved from PubMed and checked against the PubMed record for tit
 
 | Area | Male (unchanged) | Female | Basis |
 |---|---|---|---|
-| Body fat formulas | Navy (men), RFM, Deurenberg | Navy (women, adds hips), RFM (+12), Deurenberg | already sex-specific |
+| Body fat formulas | one-site Army, Navy, RFM, Deurenberg on the DXA scale | female versions (one-site Army women, Navy + hips, RFM +12) on the DXA scale | Taylor 2024; see body-fat-dxa-scale.md |
 | BMR without body fat | Mifflin +5 | Mifflin −161 | Mifflin-St Jeor 1990 |
 | Healthy body fat | — | 21–33 % at 20–39 (23–34, 24–36 older) | Gallagher 2000 |
 | Lean-gain rate | % of bodyweight (Aragon/McDonald) | same % applied to lean ÷ 0.80 | Roberts 2020; Refalo 2025 |
@@ -23,7 +23,7 @@ Sources were retrieved from PubMed and checked against the PubMed record for tit
 | Defended / floor body fat | 6 % / 5 % | 13 % / 10 % | Hulmi 2017; Halliday 2016; Meyer 2013 |
 | Default goal body fat | 12 % | 22 % (limits 14–35) | Gallagher 2000 range (preference) |
 | Tape response to fat | waist first | less waist, more hips/thighs | Kuk & Ross 2009 (direction only) |
-| Milestones | abs 12/10, V-taper 1.5/1.618, FFMI 22/23, race weight | abs ~20/~16 (rule of thumb), waist:hip 0.85, waist:height 0.5, FFMI 18.5/20 | see §3 |
+| Milestones | abs 15/13 (DXA), V-taper 1.5/1.618, FFMI 21.3/22.2, race weight | abs ~22/~18 (DXA, rule of thumb), waist:hip 0.85, waist:height 0.5, FFMI 18.5/20 | see §3 |
 | Natural testosterone | ~550 ng/dL default; low T limits the ceiling | ~27 (pre) / 18 (post) default; never limits the ceiling | Kushnir 2010; Haring 2012; Roberts 2020 |
 | Testosterone therapy | Bhasin 1996/2001 fit | Huang 2014 slope + trans-men cohorts | §4 |
 | Creatine | ceiling ×1.12, water 1.6 lb | ceiling ×1.024, water 1.0 lb | Delpino 2022; Mihic 2000 |
@@ -69,8 +69,8 @@ had no full text to re-check the table.* Used for the Measure snapshot and the d
 - Graybeal AJ et al. 2020, *J Strength Cond Res* 34:1676, doi:10.1519/JSC.0000000000002831: female bodybuilders 18.3 (4C)
   vs male 25.1.
 - McClung HL et al. 2022, *Med Sci Sports Exerc* 54:1527, doi:10.1249/MSS.0000000000002942: female Ranger graduates 20.0.
-- **Forge (assumption):** natural ceiling 22 ± 1.5, i.e. the male ceiling minus the ~3.5-point sex gap in typical FFMI,
-  which also equals the female-athlete mean + ~1.5 SD (18.8 + 1.5 × 2.1). FFMI bands and milestones use the athlete data
+- **Forge (assumption):** natural ceiling 22 ± 1.5 (DXA scale): the female-athlete DXA mean + ~1.5 SD (18.8 + 1.5 × 2.1), which
+  is also the male DXA-scale ceiling (≈24.2) minus the ~3.5-point sex gap in typical FFMI. FFMI bands and milestones use the athlete data
   (18.5 "athletic", 20 "very muscular").
 
 **Hypertrophy rate.** Women gain the same relative amount of muscle.
@@ -108,8 +108,8 @@ isn't set Forge infers it from age (<45 pre, 45–54 peri, ≥55 post; assumptio
 ## 3. Milestones
 
 - **Visible abs.** No peer-reviewed study measured where abs show, for either sex. Female milestones use a labelled rule of
-  thumb (ab outline ~20 %, defined ~16 %) and say that female physique competitors average ~13 % on stage (Hulmi 2017) at
-  the cost of regular periods.
+  thumb on the DXA-equivalent scale (ab outline ~22 %, defined ~18 %; caliper and smart-scale numbers read 3–4 points lower)
+  and say that female physique competitors average ~13 % DXA on stage (Hulmi 2017) at the cost of regular periods.
 - **Waist-to-hip < 0.85** (WHO expert consultation 2008, published 2011; no DOI; overview: Nishida C et al. 2010, *Eur J Clin
   Nutr* 64:2, doi:10.1038/ejcn.2009.139) replaces the male shoulder:waist golden ratio.
 - **Waist-to-height < 0.5** works for both sexes: Ashwell M, Gunn P, Gibson S 2012, *Obes Rev* 13:275,

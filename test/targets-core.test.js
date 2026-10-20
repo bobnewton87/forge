@@ -30,7 +30,7 @@ test('resolveTargets: defaults for an empty profile', () => {
   assert.equal(t.nutrition.fatPct, 25);
   assert.deepEqual(t.nutrition.phases, []);
   assert.equal(t.goals.goal, 'recomp');
-  assert.equal(t.goals.goalBodyFatPct, 12);
+  assert.equal(t.goals.goalBodyFatPct, 15);   // §20b: default 15 % DXA-equivalent ≈ the colloquial 12 %
   assert.deepEqual(t.stack, { active: [], count: 0 });
 });
 

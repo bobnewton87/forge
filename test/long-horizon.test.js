@@ -41,7 +41,8 @@ test('genetic ceiling: soft cap curve, natural FFMI never exceeds the ceiling (b
     assert.ok(p.low.fatLb > 0 && p.low.bodyFatPct >= 4.9, `fat band week ${p.week}`);
   }
   assert.ok(maxF > 23.5, `should approach the ceiling: ${maxF}`);
-  assert.equal(r.ceiling.ffmiNatural, 25);
+  assert.equal(r.ceiling.ffmiNatural, FFMI_NATURAL_CEILING);   // §20b: 24.2 on the DXA scale (Kouri's skinfold-scale 25)
+  assert.equal(FFMI_NATURAL_CEILING, 24.2);
   // someone starting near the ceiling barely moves
   const big = { ...P, body: { ...P.body, trainingMonths: 60 } };
   const bb = baseline({ profile: big, bodyLog: [{ d: TODAY, w: 182 }], measurements: [{ d: TODAY, bodyFat: 10 }], now: NOW });
@@ -58,9 +59,10 @@ test('supraphysiologic testosterone raises the reachable FFMI (Kouri), natural T
   const nat = long({ intake, modifiersFn: neutral({ leanCeilingMult: 2.5 }) });
   const sup = long({ intake, modifiersFn: neutral({ leanCeilingMult: 2.5, testosterone: { source: 'trt', level: 2400, natural: 550 } }) });
   const fNat = ffmiOf(nat.seriesFull[260].leanLb), fSup = ffmiOf(sup.seriesFull[260].leanLb);
-  assert.ok(fNat <= 25.05, `natural ${fNat}`);
-  assert.ok(fSup > 25.5 && fSup <= 27.05, `supraphysiologic ${fSup}`);
-  assert.equal(sup.ceiling.ffmiEffective, 27);
+  // §20b: natural ceiling 24.2 (DXA scale), +2.0 FFMI at 2,400 ng/dL → 26.2 (was 25 / 27).
+  assert.ok(fNat <= FFMI_NATURAL_CEILING + 0.05, `natural ${fNat}`);
+  assert.ok(fSup > FFMI_NATURAL_CEILING + 0.5 && fSup <= FFMI_NATURAL_CEILING + 2.05, `supraphysiologic ${fSup}`);
+  assert.equal(sup.ceiling.ffmiEffective, FFMI_NATURAL_CEILING + 2);
   assert.ok(sup.assumptions.some(a => /raises the reachable ceiling/.test(a)));
   const natHigh = long({ intake, modifiersFn: neutral({ testosterone: { source: 'natural', level: 1200 } }) });
   assert.equal(natHigh.ceiling.tShift, 0);
@@ -171,7 +173,7 @@ test('milestones at long horizons: FFMI, near-ceiling, lean +15/+20, dates on se
   assert.ok(by.ffmi_22.date && by.lean_15.date, 'reached within 5 years');
   const dates = new Set(r.series.map(p => p.date));
   for (const m of r.milestones) if (m.date) { assert.ok(dates.has(m.date), m.id); assert.ok(m.week >= 0 && m.week <= 260); }
-  const first = r.series.find(p => p.ffmi >= 22);
+  const first = r.series.find(p => p.ffmi >= by.ffmi_22.target);   // §20b: 21.3 on the DXA scale (id kept)
   assert.equal(by.ffmi_22.date, first.date);
   assert.ok(r.assumptions.some(a => /Kouri/.test(a)) && r.assumptions.some(a => /Hall/.test(a)) && r.assumptions.some(a => /phases/i.test(a)));
 });

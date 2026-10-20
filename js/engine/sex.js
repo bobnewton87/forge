@@ -70,11 +70,17 @@ export function femaleStatus(profile, { age = null } = {}) {
 }
 
 // ---------------------------------------------------------------- body composition constants
-// Male values are the engines' original constants (do not change: male results must stay identical).
+// Every body-fat number is on the DXA-equivalent scale (§20b; docs/research/body-fat-dxa-scale.md).
+// Male: default 20 = the top of Gallagher 2000's healthy range (4C/DXA scale); floor 5 and defended 6 match the DXA lower limit
+// of 4–6 % in lean men (Friedl 1994, J Appl Physiol 77:933, doi:10.1152/jappl.1994.77.2.933) and a drug-free bodybuilder at
+// 5.1 % DXA on stage (Pardue 2017, Int J Sport Nutr Exerc Metab, doi:10.1123/ijsnem.2017-0064). Natural FFMI ceiling: Kouri 1995's
+// ~25 (doi:10.1097/00042752-199510000-00003) used skinfolds, which read ~3 points low vs DXA in lean men, so its DXA-scale
+// equivalent is 25 × 0.87/0.90 ≈ 24.2 (estimate). Goal 15 = the colloquial "12 %" (caliper/smart-scale scale) on the DXA scale.
+// Muscle-score scale shifted by the same −0.8 FFMI so the same body keeps the same 3D score.
 export const BODY = {
   male: {
-    defaultBf: 20, essentialBf: 5, defendedBf: 6, ffmiCeiling: 25, ffmiCeilSd: 1.5, goalBodyFat: 12, goalBfLimits: [5, 30],
-    ffmiScoreLo: 15, ffmiScoreHi: 24, smmFracOfLean: 0.55,
+    defaultBf: 20, essentialBf: 5, defendedBf: 6, ffmiCeiling: 24.2, ffmiCeilSd: 1.5, goalBodyFat: 15, goalBfLimits: [5, 30],
+    ffmiScoreLo: 14.2, ffmiScoreHi: 23.2, smmFracOfLean: 0.55,
   },
   female: {
     // No measured body fat at all: the middle of Gallagher 2000's healthy range for women 20–39 (21–33 %;
@@ -88,16 +94,16 @@ export const BODY = {
     // to ~20 % within months (Hulmi 2017); a 12–14 % health minimum has been suggested (Meyer 2013, Br J Sports Med
     // 47:1044, doi:10.1136/bjsports-2013-092561). Forge uses 13 (male analogue: 6).
     defendedBf: 13,
-    // Natural FFMI ceiling (normalized). No female equivalent of Kouri 1995 exists. Women's median FFMI is ~3.5 below
-    // men's (15.4 vs 18.9, Schutz 2002, Int J Obes 26:953, doi:10.1038/sj.ijo.0802037; athletes 17.9 vs 21.5, Magee
-    // 2024, J Strength Cond Res 38:311, doi:10.1519/JSC.0000000000004621), so 25 − 3.5 ≈ 21.5; the 97.5th percentile of
-    // 372 female college athletes was 23.9 (Harty 2019, J Sports Sci 37:2381, doi:10.1080/02640414.2019.1634964).
-    // Forge uses 22 ± 1.5 (ASSUMPTION anchored on those studies).
+    // Natural FFMI ceiling (normalized, DXA scale). No female equivalent of Kouri 1995 exists. DXA FFMI in 372 female college
+    // athletes was 18.8 ± 2.1, 97.5th percentile 23.9 (Harty 2019, J Sports Sci 37:2381, doi:10.1080/02640414.2019.1634964), so
+    // mean + ~1.5 SD ≈ 22; women's median FFMI is ~3.5 below men's (15.4 vs 18.9, Schutz 2002, Int J Obes 26:953,
+    // doi:10.1038/sj.ijo.0802037; athletes 17.9 vs 21.5, Magee 2024, J Strength Cond Res 38:311, doi:10.1519/JSC.0000000000004621),
+    // close to the male DXA-scale 24.2 − 3.5. Forge uses 22 ± 1.5 (ASSUMPTION anchored on those studies).
     ffmiCeiling: 22, ffmiCeilSd: 1.5,
     // Default goal body fat: inside Gallagher's healthy range, on the lean side (male default 12 sits in the same place
     // in the male range 8–20). Limits keep it away from the defended floor.
     goalBodyFat: 22, goalBfLimits: [14, 35],
-    // 3D muscle-score mapping: shifted down by the ~3.5-point sex gap in FFMI so 0.5 means "average trained woman".
+    // 3D muscle-score mapping on female (DXA-scale) FFMI data so 0.5 means "average trained woman" (median 15.4 → ~0.43).
     ffmiScoreLo: 11.5, ffmiScoreHi: 20.5,
     // Skeletal muscle as a share of lean mass. Janssen 2000 (J Appl Physiol 89:81, doi:10.1152/jappl.2000.89.1.81):
     // SM 38.4 % of body mass in men vs 30.6 % in women; at typical body fat that is ~8 % less SM per kg of FFM in
@@ -106,6 +112,16 @@ export const BODY = {
   },
 };
 export const bodyConst = sex => BODY[sexOf(sex)];
+
+// Body-fat thresholds inside the lean model (§20b). They were colloquial (caliper/smart-scale scale, ~3 points below DXA) and are
+// now on the DXA scale, expressed as a distance above the sex's defended floor so women get the matching value:
+//   surplusPivot: leaner people put a bit more of a surplus into muscle (Forbes-style, mild): male 18 → 21
+//   recompHigh / recompLow: above recompHigh recomposition is a bit easier, below recompLow harder: male 20 → 23, 12 → 15
+//   protectFull: lean-loss protection by lifting is full above this body fat: male 10 → 13
+export function leanModelBf(sex) {
+  const d = BODY[sexOf(sex)].defendedBf;
+  return { surplusPivot: d + 15, recompHigh: d + 17, recompLow: d + 9, protectFull: d + 7 };
+}
 
 // Lean-gain rate basis for women. The training-age anchors are % of bodyweight per month for men (Aragon/McDonald
 // guideline models). Women gain muscle at the same RELATIVE rate (Roberts 2020, J Strength Cond Res 34:1448,
@@ -154,13 +170,14 @@ export function bodyFatCategory(bf, { sex = 'male', age = null } = {}) {
 // female college athletes 18.8 ± 2.1 (Harty 2019), female bodybuilders 18.3 (Graybeal 2020, J Strength Cond Res
 // 34:1676, doi:10.1519/JSC.0000000000002831), female Ranger graduates 20.0 (McClung 2022, Med Sci Sports Exerc 54:1527,
 // doi:10.1249/MSS.0000000000002942), athlete 97.5th percentile 23.9 (Harty 2019).
+// Male bands = the original Kouri-scale bands × 0.967 (skinfold → DXA scale, see BODY.male).
 export function ffmiBand(v, sex = 'male') {
   if (v == null || !Number.isFinite(Number(v))) return null;
   if (sexOf(sex) === 'female') {
     return v < 14 ? ['Below average', 'muted'] : v < 16.5 ? ['Average', 'muted'] : v < 18 ? ['Above average, athletic', 'good']
       : v < 19.5 ? ['Very muscular', 'good'] : v < 22 ? ['Elite natural range', 'accent'] : ['Rare (top of female athletes)', 'warn'];
   }
-  return v < 18 ? ['Below average', 'muted'] : v < 20 ? ['Average', 'muted'] : v < 22 ? ['Above average, athletic', 'good'] : v < 23.5 ? ['Very muscular', 'good'] : v < 25 ? ['Elite natural range', 'accent'] : ['Rare without drugs', 'warn'];
+  return v < 17.4 ? ['Below average', 'muted'] : v < 19.3 ? ['Average', 'muted'] : v < 21.3 ? ['Above average, athletic', 'good'] : v < 22.7 ? ['Very muscular', 'good'] : v < 24.2 ? ['Elite natural range', 'accent'] : ['Rare without drugs', 'warn'];
 }
 
 // ---------------------------------------------------------------- hormones (female reference values)
@@ -217,7 +234,7 @@ export const PREGNANCY_KCAL = [0, 340, 452];
 
 // ---------------------------------------------------------------- plain-language summary (UI)
 export const FEMALE_MODE_INFO = [
-  'Body fat: the female Navy tape formula (adds hips), female Relative Fat Mass and BMI formulas, and the healthy range for women your age (21-33% at 20-39; Gallagher 2000).',
+  'Body fat: female versions of the waist formulas (one-site Army, Navy with hips, Relative Fat Mass), all on the same DXA-equivalent scale as men, and the healthy range for women your age (21-33% at 20-39; Gallagher 2000).',
   'Calorie burn: the female Mifflin-St Jeor equation when body fat is unknown; otherwise your lean mass sets it, which already accounts for sex.',
   'Muscle gain: women build muscle at the same rate relative to their muscle as men (Roberts 2020; Refalo 2025). Forge applies the training-age curve to your lean mass, so absolute gains are smaller but the progress you feel is the same.',
   'Natural ceiling and milestones use female norms (natural FFMI limit about 22; female athlete data), and waist-to-hip replaces the male V-taper milestones.',

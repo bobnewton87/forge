@@ -74,7 +74,12 @@
 //   ({ start, min, low, threshold } kcal/kg FFM/day) and, when pregnant, an empty result with paused:'pregnancy';
 //   postpartum adds caution:'postpartum'. energy.exerciseKcal (avg net exercise kcal/day, weeks 1-12) is returned for
 //   both sexes (additive). MUSCLE_SHARE stays the male table; FEMALE_MUSCLE_SHARE is exported.
-import { sexOf, BODY, FAT_COEF as SEX_FAT_COEF, SMM_SHARE_RAW_MALE, SMM_SHARE_RAW_FEMALE, FEMALE_RATE_REF_LEAN_FRAC, femaleStatus, EA_LOW } from './sex.js';
+import { sexOf, BODY, FAT_COEF as SEX_FAT_COEF, SMM_SHARE_RAW_MALE, SMM_SHARE_RAW_FEMALE, FEMALE_RATE_REF_LEAN_FRAC, femaleStatus, EA_LOW, leanModelBf } from './sex.js';
+// CONTRACT-NOTE (§20b DXA-equivalent scale): body fat is DXA-equivalent everywhere. FFMI_NATURAL_CEILING is 24.2 (Kouri's
+//   skinfold-scale 25 on the DXA scale), muscle scores map FFMI 14.2–23.2, male abs milestones ~15/~13 %, goal default 15 %,
+//   FFMI milestones 21.3/22.2 (ids ffmi_22/ffmi_23 kept for compatibility), race-weight default 137 lb at 9.5 % (the remembered
+//   ~6.5 % on the DXA scale); lean-model body-fat thresholds come from sex.leanModelBf(). Forbes' constant (10.4 kg) is unchanged:
+//   it came from potassium-40 lean mass, not DXA, and no DXA recalibration exists (a 1–3 point shift moves p by ~0.02).
 import { sessionVolume } from './recovery.js';
 import { dailyTargets, macrosFor, adaptiveTdee } from './nutrition.js';
 import { _sessionDetail, NEAT_FACTORS, tdee as formulaTdee } from './bodycomp.js';
@@ -100,9 +105,10 @@ const ESSENTIAL_BF = { male: BODY.male.essentialBf, female: BODY.female.essentia
 const LEAN_RATE_ANCHORS = [[0, 1.25], [6, 1.1], [12, 0.85], [18, 0.68], [24, 0.55], [36, 0.33], [48, 0.21], [60, 0.15], [84, 0.1], [120, 0.065]];
 const LEAN_RATE_TAIL_TAU = 72;   // months, decay beyond the last anchor
 const TA_FULL_RESP = 0.5;        // weekly whole-body set response that counts as a full month of "training age"
-// Genetic ceiling (normalized FFMI). Kouri et al. 1995 (Clin J Sport Med): drug-free athletes rarely exceeded ≈25;
-// individual ceilings vary (±≈1.5 here). Gains slow smoothly over the last 4 FFMI points and stop at the ceiling.
-export const FFMI_NATURAL_CEILING = 25;
+// Genetic ceiling (normalized FFMI, DXA scale). Kouri et al. 1995 (Clin J Sport Med): drug-free athletes rarely exceeded ≈25
+// with skinfold body fat, which reads ~3 points low vs DXA in lean men → ≈24.2 on the DXA scale (estimate; sex.js BODY.male).
+// Individual ceilings vary (±≈1.5 here). Gains slow smoothly over the last 4 FFMI points and stop at the ceiling.
+export const FFMI_NATURAL_CEILING = BODY.male.ffmiCeiling;
 const FFMI_CEIL_SD = 1.5, FFMI_SOFT_SPAN = 4;
 // Supraphysiologic testosterone raises the reachable FFMI (Kouri: users averaged ≈3 points higher, up to ≈32).
 // Conservative mapping: +0 at the top of the normal range (1,000 ng/dL), +2.0 at the highest studied level (2,400,
@@ -182,7 +188,7 @@ const MUSCLE_GROUPS = {
   chest: { chest: 1 }, delts: { shoulders: 1 }, lats: { back: 1 }, arms: { biceps: 1, triceps: 1, forearms: 0.3 },
   abs: { core: 1 }, quads: { quads: 1, glutes: 0.4, hamstrings: 0.4 }, calves: { calves: 1 }, traps: { back: 0.6, shoulders: 0.3 },
 };
-const FFMI_SCORE_LO = 15, FFMI_SCORE_HI = 24;   // normalized FFMI mapped to 0..1 (19.5 ≈ 0.5)
+const FFMI_SCORE_LO = BODY.male.ffmiScoreLo, FFMI_SCORE_HI = BODY.male.ffmiScoreHi;   // normalized FFMI (DXA scale) → 0..1 (18.7 ≈ 0.5)
 const SITES = ['neck', 'shoulders', 'chest', 'waist', 'hips', 'arm', 'forearm', 'thigh', 'calf'];
 // Reference bodies for estimating unmeasured silhouette sites (rough population-ish values).
 const REF_BODY = {
@@ -290,7 +296,7 @@ export function adaptation(rawBalance, week = 99, lbLost = 0) {
   return -(TEF_FRAC * d + Math.min(AT_CAP, AT_DEFICIT_FRAC * d * Math.min(1, (week + 1) / AT_RAMP_WEEKS) + AT_PER_LB_LOST * Math.max(0, lbLost)));
 }
 // Leaner people put more of a surplus into muscle (Forbes); mild.
-function bfSurplusFactor(bf) { return clamp(1 + 0.01 * (18 - bf), 0.88, 1.06); }
+function bfSurplusFactor(bf, pivot = 21) { return clamp(1 + 0.01 * (pivot - bf), 0.88, 1.06); }
 function carbFactor(carbs) { return !(carbs >= 0) ? 1 : carbs < 100 ? 0.95 : carbs < 150 ? 0.98 : 1; }
 
 const emptyDay = () => ({ sets: 0, groupSets: 0, groups: {}, cardioMin: 0, cardioKcal: 0, eqMin: 0, kcal: 0, minutes: 0, lift: 0, cardio: 0 });
@@ -700,7 +706,7 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
     smm0, bmrOf, exNetPerDay, avgEx, tdeeFormula, calib, tdeeStart, stackUsed, modsAt, water0,
     intakeMode, intakeSource, userSet, goalIntake, fixedIntake, specSurplus,
     midDates, endDates, ageMid, rmrAge, leanAgeFactor, ffmiCeil, leanAtFfmi, PA0, gammaFatLb, phasePlan, realism, modsWeek, waterWeek,
-    weekResp, stopAtGoal: !!stopAtGoal, share, smmFrac, fstat,
+    weekResp, stopAtGoal: !!stopAtGoal, share, smmFrac, fstat, lmBf: leanModelBf(sex),
   };
 }
 
@@ -909,7 +915,7 @@ function simulate(ctx, opts = {}) {
     const itfUpper = 1 - (1 - itf) * 0.5;
     const Ceff = ctx.ffmiCeil + ceilShift + mods.ffmiShift;
     const ff = ceilingFactor(Ceff - ffmiOf(L));
-    const bff = raw > 0 ? bfSurplusFactor(bfNow) : 1;
+    const bff = raw > 0 ? bfSurplusFactor(bfNow, ctx.lmBf.surplusPivot) : 1;
     // Rate basis scales with lean mass (not fat), equal to today's bodyweight at the start.
     // Women: same relative rate applied to lean mass (sex.js FEMALE_RATE_REF_LEAN_FRAC); men: unchanged.
     const wholeRate = (femaleRate ? L / FEMALE_RATE_REF_LEAN_FRAC : W0 * (L / L0)) * leanRatePctPerMonth(months) / 100 * (7 / DAYS_PER_MONTH);
@@ -919,7 +925,7 @@ function simulate(ctx, opts = {}) {
     if (raw < 0) {
       // Newer lifters and people with more fat to lose recomp better; veterans and very lean people worse.
       let rec = months < 12 ? 1.15 : months >= 36 ? 0.7 : 1;
-      rec *= bfNow >= 20 ? 1.1 : bfNow < 12 ? 0.75 : 1;
+      rec *= bfNow >= ctx.lmBf.recompHigh ? 1.1 : bfNow < ctx.lmBf.recompLow ? 0.75 : 1;
       fE = Math.min(EF_MAINT, fE * rec);
     }
     let ceiling = 0, gainTrain = 0;
@@ -940,7 +946,7 @@ function simulate(ctx, opts = {}) {
       const massLoss = (-bal * 7) / KCAL_PER_LB_FAT;
       const pForbes = 10.4 / (10.4 + F / LB_PER_KG);
       // Keeping muscle needs far less volume than building it: protection saturates at ~70% of the stimulus.
-      const protect = 0.9 * Math.min(1, respW / 0.7) * Math.min(1, bfNow / 10) * pf;
+      const protect = 0.9 * Math.min(1, respW / 0.7) * Math.min(1, bfNow / ctx.lmBf.protectFull) * pf;
       loss = massLoss * pForbes * (1 - protect) * mods.leanRetentionMult;
     }
     // Energy: lean built costs ~1,250 kcal/lb, lean lost releases ~800; the rest of the balance is fat.
@@ -1207,11 +1213,8 @@ export function project(args = {}) {
   const sb = b.bodyFatRange ? { value: bf0, source: b.bodyFatSource, method: b.bodyFatMethod ?? null, uncertainty: b.bodyFatUncertainty ?? null,
     spread: b.bodyFatSpread ?? null, range: b.bodyFatRange, note: b.bodyFatNote ?? null } : { value: bf0, source: bfAssumed ? null : b.bodyFatSource ?? null,
     method: null, uncertainty: bfAssumed ? 6 : null, spread: null, range: bfAssumed ? { low: bf0 - 6, high: bf0 + 6 } : null, note: null };
-  const bfSrcText = bfAssumed ? `No body fat available, so a typical ${DEFAULT_BF[sex]}% was ASSUMED. Add height plus neck and waist (or a body-fat reading) to fix this; every number below depends on it.`
-    : b.bodyFatSource === 'manual' ? `Starting body fat ${bf0}% is the value you entered.`
-      : b.bodyFatSource === 'navy' ? `Starting body fat ${bf0}% comes from the US Navy tape formula (neck, waist, height), which is usually within ±3-4 points.`
-        : b.bodyFatMethod === 'rfm' ? `Starting body fat ${bf0}% is estimated from your waist-to-height ratio (Relative Fat Mass formula), roughly ±4 points. A neck measurement adds the Navy formula.`
-          : `Starting body fat ${bf0}% is a rough BMI-based estimate (Deurenberg formula). For a muscular or ex-endurance athlete it can be off by 5+ points; tape measurements will improve it.`;
+  const bfSrcText = bfAssumed ? `No body fat available, so a typical ${DEFAULT_BF[sex]}% (DXA-equivalent) was ASSUMED. Add height plus neck and waist (or a body-fat reading) to fix this; every number below depends on it.`
+    : `Starting body fat ${bf0}% is DXA-equivalent: ${b.bodyFatNote ? b.bodyFatNote.replace(/^Body fat [\d.]+% \(DXA-equivalent\) from /, 'from ') : 'from your measurements.'} Every body-fat number in Forge (milestones, goals, the defended floor, the 3D model) uses this one DXA scale.`;
   const spreadText = sb.spread != null && sb.spread > 3 ? ` Your different body-fat estimates disagree by ${sb.spread} points, so the true start could be anywhere in ${sb.range.low}-${sb.range.high}%.` : '';
   assumptions.push(`These are estimates, not predictions. People respond very differently (genetics, sleep, stress, how accurately food is tracked), so treat the shaded low-high band as the realistic range and re-check against real weigh-ins and tape measurements every 2-4 weeks.`);
   assumptions.push(`Start: ${r1(W0)} lb${b.weightDate ? ` (weigh-in ${b.weightDate})` : ' (profile weight)'}. ${bfSrcText}${spreadText} That makes ${r1(L0)} lb lean and ${r1(F0)} lb fat. Fat and lean are tracked separately every week; body fat % is simply fat ÷ (fat + lean).`);
@@ -1265,8 +1268,8 @@ export function project(args = {}) {
         : `How the stack combines with training: it can raise the training-driven ceiling (×${r2(partition.stackFactor)} on average) and add lean mass that does not need training (${r2(stack.direct.lean)} lb total here), as in Bhasin 1996 (10 weeks: exercise alone +1.9 kg fat-free mass, testosterone alone +3.2 kg, both +6.1 kg). Those effects are treated as roughly additive. No study has varied testosterone level and set volume at the same time, so additivity is an assumption. Bhasin's subjects were 19-35; ${stack.ageNote || 'age effects come from your metabolic profile.'} Lean built this way still costs ~${KCAL_PER_LB_LEAN} kcal/lb, so at a fixed intake it comes out of fat.`);
     }
   } else if (!ctx.stackUsed) assumptions.push('Supplements, therapies and metabolic values are switched off for this projection (neutral defaults), for comparison.');
-  if (sex === 'female') assumptions.push(`Genetic ceiling: muscle gain slows as you approach a natural limit of about FFMI ${r1(ctx.ffmiCeil)} (fat-free mass index normalized to 1.8 m, ±1.5). No study defines a natural limit for women the way Kouri 1995 does for men (~25), so Forge takes the ~3.5-point sex gap in typical FFMI (15.4 vs 18.9, Schutz 2002; 17.9 vs 21.5 in athletes, Magee 2024) off the male limit, which fits the female athlete data (college athletes average 18.8 and their 97.5th percentile is 23.9, Harty 2019). Gains start easing ~4 points below it and stop at it. You start at FFMI ${r1(ctx.ffmiOf(L0))}${heightIn ? '' : ' (height missing, so an average height is assumed)'}, so the ceiling is about ${r1(ctx.leanAtFfmi(ctx.ffmiCeil))} lb of lean mass.${ceilInfo.tShift > 0.05 ? ` Testosterone therapy raises the reachable ceiling by about ${r1(ceilInfo.tShift)} FFMI: exactly the lean mass the female and trans-men studies show it adds, so that gain isn't cut off at the natural limit.` : ''}`);
-  else assumptions.push(`Genetic ceiling: muscle gain slows as you approach a natural limit of about FFMI ${r1(ctx.ffmiCeil)} (fat-free mass index normalized to 1.8 m; Kouri et al. 1995 found drug-free athletes rarely exceed ~25, and individual limits vary by about ±1.5). Gains start easing ~4 points below it and stop at it. You start at FFMI ${r1(ctx.ffmiOf(L0))}${heightIn ? '' : ' (height missing, so an average height is assumed)'}, so the ceiling is about ${r1(ctx.leanAtFfmi(ctx.ffmiCeil))} lb of lean mass.${ceilInfo.tShift > 0.05 ? ` Your testosterone level raises the reachable ceiling by about ${r1(ceilInfo.tShift)} FFMI (Kouri's steroid users averaged ~3 points above non-users; Forge maps 1,000 → 2,400 ng/dL to +0 → +2.0 and does not extrapolate; this mapping is an estimate, not a measured dose-response).` : ''}`);
+  if (sex === 'female') assumptions.push(`Genetic ceiling: muscle gain slows as you approach a natural limit of about FFMI ${r1(ctx.ffmiCeil)} (fat-free mass index normalized to 1.8 m, ±1.5). No study defines a natural limit for women the way Kouri 1995 does for men, so Forge uses female athlete DXA data: college athletes average 18.8 ± 2.1 and their 97.5th percentile is 23.9 (Harty 2019), so mean + ~1.5 SD ≈ 22, which is also the male DXA-scale limit (≈24.2) minus the ~3.5-point sex gap in typical FFMI (15.4 vs 18.9, Schutz 2002; 17.9 vs 21.5 in athletes, Magee 2024). Gains start easing ~4 points below it and stop at it. You start at FFMI ${r1(ctx.ffmiOf(L0))}${heightIn ? '' : ' (height missing, so an average height is assumed)'}, so the ceiling is about ${r1(ctx.leanAtFfmi(ctx.ffmiCeil))} lb of lean mass.${ceilInfo.tShift > 0.05 ? ` Testosterone therapy raises the reachable ceiling by about ${r1(ceilInfo.tShift)} FFMI: exactly the lean mass the female and trans-men studies show it adds, so that gain isn't cut off at the natural limit.` : ''}`);
+  else assumptions.push(`Genetic ceiling: muscle gain slows as you approach a natural limit of about FFMI ${r1(ctx.ffmiCeil)} (fat-free mass index normalized to 1.8 m; Kouri et al. 1995 found drug-free athletes rarely exceed ~25 using skinfold body fat, which reads ~3 points below DXA, so ≈${r1(FFMI_NATURAL_CEILING)} on Forge's DXA-equivalent scale; individual limits vary by about ±1.5). Gains start easing ~4 points below it and stop at it. You start at FFMI ${r1(ctx.ffmiOf(L0))}${heightIn ? '' : ' (height missing, so an average height is assumed)'}, so the ceiling is about ${r1(ctx.leanAtFfmi(ctx.ffmiCeil))} lb of lean mass.${ceilInfo.tShift > 0.05 ? ` Your testosterone level raises the reachable ceiling by about ${r1(ceilInfo.tShift)} FFMI (Kouri's steroid users averaged ~3 points above non-users; Forge maps 1,000 → 2,400 ng/dL to +0 → +2.0 and does not extrapolate; this mapping is an estimate, not a measured dose-response).` : ''}`);
   if (age != null && sex === 'female') assumptions.push(`Age: you are ${Math.round(age)} now and ${r1(age + W / 52.18)} at the end; age is recomputed every week. Muscle-building potential eases ~0.4%/yr past 35 (gentle: postmenopausal women still gain lean mass with training, regardless of age, Thomas 2021). Across the menopause transition fat gain tends to speed up and lean mass to slip until ~2 years after the final period (SWAN, Greendale 2019); Forge doesn't add a separate drift, so intake, training and age drive the projection. Natural testosterone in the female range isn't modelled to limit muscle gain.`);
   else if (age != null) assumptions.push(`Age: you are ${Math.round(age)} now and ${r1(age + W / 52.18)} at the end; age is recomputed every week. Muscle-building potential eases ~0.4%/yr past 35 (gentle; older lifters still gain well, Peterson 2011)${ctx.stackUsed ? ', and testosterone follows your metabolic profile (an assumed average declines ~1%/yr with age; a lab value is aged ~1%/yr past 40 per the Massachusetts Male Aging Study, which only matters if it falls into the low range)' : ''}.`);
   if (ctx.realism) assumptions.push(`Long-term realism is on: weeks after the planned days fade toward ${Math.round((1 - ctx.realism) * 100)}% of the planned training over ~1.5 years (missed weeks, travel, life).`);
@@ -1326,15 +1329,19 @@ function buildMilestones({ series, W, goalBf, L0, body, sex, m0, heightIn = null
         : hit ? `${when(hit)} ${note}`
           : `Not reached within ${span} at this pace (projected ${endPt.bodyFatPct}% at the end). ${note}` }, hit);
   };
-  const absNote = 'Where abs show depends on where you store fat; most men see them somewhere between 10 and 14%.';
-  bfMilestone('abs_upper', 'Upper abs visible (~12% BF)', 12, absNote);
-  bfMilestone('six_pack', 'Full six-pack (~10% BF)', 10, absNote);
+  // DXA scale (§20b): the colloquial "abs at 10-14 %" comes from calipers and smart scales, which read ~3 points below DXA.
+  const absNote = 'No study has measured where abs show; it depends on where you store fat. The usual "10-14%" rule of thumb comes from calipers and smart scales, which read about 3 points below DXA, so on Forge\'s DXA-equivalent scale most men see them around 13-17%.';
+  bfMilestone('abs_upper', 'Upper abs visible (~15% BF, DXA-equivalent)', 15, absNote);
+  bfMilestone('six_pack', 'Full six-pack (~13% BF, DXA-equivalent)', 13, absNote);
   {
     const already = series[0].bodyFatPct <= goalBf;
     const hit = series.find(p => p.bodyFatPct <= goalBf);
     const atGoal = endPt.leanLb / (1 - goalBf / 100);
+    const saved = pos(body.goalBodyFat);
     add({ id: 'goal_bf', label: `Goal body fat (${goalBf}%)`, target: goalBf, value: endPt.bodyFatPct, already,
       note: `With your projected lean mass (${r1(endPt.leanLb)} lb), ${goalBf}% body fat is about ${r1(atGoal)} lb on the scale.` +
+        (saved ? (goalBf <= 13 ? ` Body fat in Forge is DXA-equivalent now. If you picked ${goalBf}% from a caliper or smart-scale number or an "abs at 12%" rule of thumb, the DXA-equivalent is about ${r1(goalBf + 3)}%; change your goal in Targets if so.` : '')
+          : ` (Default 15% on the DXA-equivalent scale ≈ the colloquial "12%".)`) +
         (hit ? '' : ` Not reached within ${span} at this pace.`) }, hit);
   }
   if (pos(m0.shoulders) && pos(m0.waist)) {
@@ -1357,9 +1364,10 @@ function buildMilestones({ series, W, goalBf, L0, body, sex, m0, heightIn = null
   if (heightIn) {
     const near = r1(ffmiCeil - 1);
     for (const [id, thr, label, note] of [
-      ['ffmi_22', 22, 'FFMI 22 (clearly muscular)', 'FFMI = lean kg ÷ height² (normalized to 1.8 m). Untrained men average ~18-19.'],
-      ['ffmi_23', 23, 'FFMI 23 (very muscular, still natural)', 'Above ~23 takes years of consistent training and good genetics.'],
-      ['near_ceiling', near, `Within 1 FFMI of your natural ceiling (~${r1(ffmiCeil)})`, `Kouri 1995: drug-free athletes rarely exceed ~25; individual ceilings vary by ±1.5. Gains slow a lot in this zone.`]]) {
+      // ids kept from the Kouri-scale thresholds 22/23; values are on the DXA scale (× 0.967).
+      ['ffmi_22', 21.3, 'FFMI 21.3 (clearly muscular)', 'FFMI = lean kg ÷ height² (normalized to 1.8 m), with DXA-equivalent body fat. Untrained men average ~18-19 (Schutz 2002).'],
+      ['ffmi_23', 22.2, 'FFMI 22.2 (very muscular, still natural)', 'Takes years of consistent training and good genetics.'],
+      ['near_ceiling', near, `Within 1 FFMI of your natural ceiling (~${r1(ffmiCeil)})`, `Kouri 1995: drug-free athletes rarely exceeded ~25 with skinfold body fat, about ${r1(FFMI_NATURAL_CEILING)} on the DXA scale; individual ceilings vary by ±1.5. Gains slow a lot in this zone.`]]) {
       if (id !== 'near_ceiling' && thr >= ffmiCeil) continue;
       const already = series[0].ffmi >= thr;
       const hit = series.find(p => p.ffmi >= thr);
@@ -1367,8 +1375,9 @@ function buildMilestones({ series, W, goalBf, L0, body, sex, m0, heightIn = null
         note: already ? `Already there (FFMI ${series[0].ffmi}). ${note}` : hit ? `${when(hit)} ${note}` : `Not within ${span} (projected FFMI ${endPt.ffmi} at the end). ${note}` }, hit);
     }
   }
+  // Default = Bob's marathon race weight; the remembered ~6.5 % (caliper-scale) is ~9.5 % on the DXA scale (§20b).
   const raceW = pos(body.raceWeightLb) ?? (sex === 'male' ? 137 : null);
-  const raceBf = pos(body.raceBodyFat) ?? 6.5;
+  const raceBf = pos(body.raceBodyFat) ?? 9.5;
   if (raceW) {
     const raceLean = r1(raceW * (1 - raceBf / 100));
     const already = series[0].leanLb >= raceLean + 1;
@@ -1394,9 +1403,9 @@ function buildFemaleMilestones({ series, W, goalBf, L0, body, m0, heightIn = nul
     add({ id, label, target: thr, value: vN, already,
       note: already ? `Already there (${v0}). ${note}` : hit ? `${when(hit)} ${note}` : `Not reached within ${span} at this pace (projected ${vN} at the end). ${note}` }, hit);
   };
-  const absNote = 'No study has measured where abs show (for either sex), so this is a rough rule of thumb; it depends a lot on where you store fat. Female physique competitors average ~13% on stage (DXA, Hulmi 2017), and getting that lean usually costs regular periods and needs a long recovery.';
-  down('abs_upper', 'Ab outline visible (~20% BF, rough)', 20, p => p.bodyFatPct, absNote);
-  down('six_pack', 'Defined abs (~16% BF, rough)', 16, p => p.bodyFatPct, absNote);
+  const absNote = 'No study has measured where abs show (for either sex), so this is a rough rule of thumb on the DXA-equivalent scale (the usual caliper and smart-scale numbers read 3-4 points lower); it depends a lot on where you store fat. Female physique competitors average ~13% DXA on stage (Hulmi 2017), and getting that lean usually costs regular periods and needs a long recovery.';
+  down('abs_upper', 'Ab outline visible (~22% BF, rough)', 22, p => p.bodyFatPct, absNote);
+  down('six_pack', 'Defined abs (~18% BF, rough)', 18, p => p.bodyFatPct, absNote);
   {
     const already = series[0].bodyFatPct <= goalBf;
     const hit = series.find(p => p.bodyFatPct <= goalBf);
