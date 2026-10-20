@@ -11,7 +11,7 @@
 //   cardio at the same intake shows its real effect. "vs maintenance" uses result.energy.tdeeStart.
 // CONTRACT-NOTE: engine features are feature-detected; with the Phase-2 engine the lab is computed
 //   by calling project() per calorie level and extra cardio is simulated with synthetic planned sessions.
-// CONTRACT-NOTE (long horizon): horizon slider 4 wk → 5 yr (o.weeks), nutrition phases preview in o.ph
+// CONTRACT-NOTE (long horizon): horizon slider 4 wk → 8 yr (o.weeks), nutrition phases preview in o.ph
 //   (null = follow the saved plan, 'single' = one constant intake, or { preset, repeat, blocks }). Defaults for
 //   adherence, macros, cardio modality and phases come from targets.resolveTargets (CONTRACT §18) when loaded.
 //   Apply writes through targets.setTargets (nutrition incl. the dated phases list; cardio target with re-plan;
@@ -255,10 +255,10 @@ function weeksOf(o) {
   if (o.until) { const n = Math.ceil(daysBetween(ds(), o.until) / 7); if (n >= 1) return Math.min(MAXW, n); }
   return clampN(Math.round(o.weeks || 12), 1, MAXW);
 }
-// Horizon slider: positions 0..48 = 4..52 weeks (weekly), 49..64 = quarterly steps to 260 weeks.
+// Horizon slider: positions 0..48 = 4..52 weeks (weekly), then quarterly (13-week) steps up to MAXW (8 years).
 const H_FINE = 48;
-const hMax = () => (MAXW >= 260 ? H_FINE + 16 : Math.max(0, Math.min(H_FINE, MAXW - 4)));
-const weeksAtPos = p => (p <= H_FINE ? 4 + p : 52 + 13 * (p - H_FINE));
+const hMax = () => (MAXW > 52 ? H_FINE + Math.ceil((MAXW - 52) / 13) : Math.max(0, Math.min(H_FINE, MAXW - 4)));
+const weeksAtPos = p => (p <= H_FINE ? 4 + p : Math.min(MAXW, 52 + 13 * (p - H_FINE)));
 const posOfWeeks = w => (w <= 52 ? clampN(w - 4, 0, H_FINE) : clampN(H_FINE + Math.round((w - 52) / 13), 0, hMax()));
 export function horizonText(w) {
   w = Math.round(w);
@@ -267,7 +267,7 @@ export function horizonText(w) {
   const y = Math.round(w / 52.18 * 4) / 4;
   return `${Number.isInteger(y) ? y : y.toFixed(2).replace(/0$/, '')} years`;
 }
-const H_CHIPS = [[12, '12 wk'], [26, '6 mo'], [52, '1 yr'], [104, '2 yr'], [260, '5 yr']];
+const H_CHIPS = [[12, '12 wk'], [26, '6 mo'], [52, '1 yr'], [104, '2 yr'], [260, '5 yr'], [418, '8 yr']];
 // "Week 9" early on, "Month 14" / "Year 3.5" later (for the scrubber and the end card).
 const whenText = wk => (wk < 26 ? `Week ${wk}` : wk < 104 ? `Month ${Math.round(wk / 4.345)}` : `Year ${Math.round(wk / 52.18 * 10) / 10}`);
 export function whatIfDefaults(profile) {
@@ -471,7 +471,7 @@ function horizonGroup(D, o) {
   return `<div class="bd-grp bd-hgrp">
       <div class="row between"><div class="label">How far ahead</div><div class="num bold" id="pjHV">${esc(horizonText(w))}</div></div>
       <input type="range" class="bd-range" id="pjH" min="0" max="${mx}" step="1" value="${p}" style="--pct:${(p / (mx || 1)) * 100}%" aria-label="Projection horizon" aria-valuetext="${esc(horizonText(w))}">
-      <div class="bd-hscale tiny muted"><span>4 wk</span><span style="left:${(48 / mx) * 100}%">1 yr</span><span>${MAXW >= 260 ? '5 yr' : horizonText(MAXW)}</span></div>
+      <div class="bd-hscale tiny muted"><span>4 wk</span><span style="left:${(48 / mx) * 100}%">1 yr</span><span>${MAXW >= 418 ? '8 yr' : horizonText(MAXW)}</span></div>
       <div class="chips bd-hchips">${H_CHIPS.filter(([v]) => v <= MAXW).map(([v, l]) => `<button class="chip sm ${w === v ? 'active' : ''}" data-hw="${v}">${l}</button>`).join('')}</div>
     </div>`;
 }
@@ -563,7 +563,7 @@ function phasesCard(D, o) {
   const editor = sel !== 'single' && sel !== 'saved' && blocks ? `<div class="bd-blocks" id="pjBlocks">${blocks.map((b, i) => `
       <div class="bd-block" data-bi="${i}"><span class="bd-bdot" style="background:${PHASE_COL[b.goal] || 'var(--muted)'}"></span>
         <select data-bf="goal" aria-label="Phase ${i + 1} goal">${GOAL_OPTS.map(([v, l]) => `<option value="${v}" ${b.goal === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
-        <label class="bd-bnum"><input type="number" inputmode="numeric" min="1" max="260" data-bf="weeks" value="${b.weeks}" aria-label="Weeks"><span>wk</span></label>
+        <label class="bd-bnum"><input type="number" inputmode="numeric" min="1" max="${MAXW}" data-bf="weeks" value="${b.weeks}" aria-label="Weeks"><span>wk</span></label>
         ${b.goal === 'maintain' ? '<span class="bd-bnum muted tiny">±0</span>' : b.goal === 'custom'
           ? `<label class="bd-bnum"><input type="number" inputmode="numeric" step="50" min="1000" max="6000" data-bf="calories" value="${b.calories ?? Math.round(D.maint)}" aria-label="kcal per day"><span>kcal</span></label>`
           : `<label class="bd-bnum"><input type="number" inputmode="numeric" step="25" min="-1500" max="1500" data-bf="surplus" value="${b.surplus ?? 0}" aria-label="kcal vs maintenance"><span>±kcal</span></label>`}
@@ -842,8 +842,11 @@ export function bind(root, ctx, params = {}) {
   const viewPt = () => { const S = cur.D.res.series; const i = scrubIdx(o, S); return { S, i, p: S[i] }; };
   const optsFor = () => {
     const { S, i, p } = viewPt();
-    return opts3D(p, H, { compareShape: i > 0 ? { ...shapeOf(S[0], H), bodyFatPct: S[0].bodyFatPct, muscle: S[0].muscle || estMuscle(S[0], H) } : null,
-      label: i > 0 ? `${whenText(p.week ?? i)} · ${f1(p.bodyFatPct)}% BF` : `Now · ${f1(p.bodyFatPct)}% BF`, ghostLabel: i > 0 ? 'Ghost = now' : '' });
+    // Blink-compare (Bob's choice): one solid body at a time, no ghost outline. Framing is pinned to the union of
+    // the now and end-of-horizon bodies so flipping Now ↔ Projected (or scrubbing) shows true size change.
+    const n = S.length - 1;
+    return opts3D(p, H, { compareShape: null, compareMode: 'none', frameShape: [shapeOf(S[0], H), shapeOf(S[n], H)],
+      label: i > 0 ? `${whenText(p.week ?? i)} · ${f1(p.bodyFatPct)}% BF` : `Now · ${f1(p.bodyFatPct)}% BF`, ghostLabel: '' });
   };
   let handle = null, lastUp = 0, upT = 0;
   const push3D = () => {
@@ -1011,7 +1014,7 @@ export function bind(root, ctx, params = {}) {
   // ---- phases card ----
   const readBlocks = () => [...root.querySelectorAll('#pjBlocks .bd-block')].map(el => {
     const g = el.querySelector('[data-bf="goal"]').value, num = k => { const x = el.querySelector(`[data-bf="${k}"]`); return x && x.value !== '' ? Number(x.value) : null; };
-    const b = { weeks: clampN(Math.round(num('weeks') || 8), 1, 260), goal: g };
+    const b = { weeks: clampN(Math.round(num('weeks') || 8), 1, MAXW), goal: g };
     if (g === 'custom') b.calories = clampN(num('calories') ?? Math.round(cur.D.maint), 1000, 6000);
     else if (g !== 'maintain') b.surplus = clampN(num('surplus') ?? ({ cut: -500, bulk: 500, lean_bulk: 300 }[g] || 0), -1500, 1500);
     return b;

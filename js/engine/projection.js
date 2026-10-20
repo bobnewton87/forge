@@ -51,7 +51,7 @@
 // CONTRACT-NOTE: optional profile.body.goalBodyFat (default 12), raceWeightLb / raceBodyFat
 //   (default 137 lb / 6.5 % for male, from Bob's marathon days) are read if present.
 // CONTRACT-NOTE (long horizon, LONG-HORIZON builder):
-//   weeks: 1..260 (simulated weekly). `series` is downsampled: weekly to week 26, every 2 weeks to 104, every 4 weeks
+//   weeks: 1..418 (8 years; simulated weekly). `series` is downsampled: weekly to week 26, every 2 weeks to 104, every 4 weeks
 //     after, always including the last week, milestone weeks and phase boundaries; series[i].week is the real week.
 //     `fullSeries: true` adds result.seriesFull (every week, same point shape).
 //   phases: array of blocks [{ weeks, goal:'cut'|'maintain'|'lean_bulk'|'bulk'|'custom', calories?, surplus?, proteinGPerLb?,
@@ -103,7 +103,7 @@ const RMR_AGE_PER_YEAR = 0.001;  // ≈1 %/decade beyond lean-mass changes (low 
 const AT_DECAY_WEEKS = 6;        // adaptive thermogenesis fades once out of a deficit (Martins 2020)
 const T_DECLINE_PER_YEAR = 0.01, T_DECLINE_FROM_AGE = 40;   // Massachusetts Male Aging Study (~1 %/yr)
 const ADH_DECAY_TAU = 78;        // weeks, adherence drift for progressionRealism and the low band
-export const MAX_WEEKS = 260;
+export const MAX_WEEKS = 418;   // 8 years
 // Body fat the body defends: below it a fixed diet isn't sustainable (hunger, adaptive thermogenesis), so the
 // projection assumes intake rises to maintenance instead of burning into essential fat or muscle.
 const DEFENDED_BF = { male: 6, female: 14 };
@@ -248,7 +248,8 @@ export function sampleWeeks(W, extra = []) {
   const set = new Set();
   for (let k = 0; k <= Math.min(W, 26); k++) set.add(k);
   for (let k = 28; k <= Math.min(W, 104); k += 2) set.add(k);
-  for (let k = 108; k <= W; k += 4) set.add(k);
+  for (let k = 108; k <= Math.min(W, 260); k += 4) set.add(k);
+  for (let k = 264; k <= W; k += 8) set.add(k);
   set.add(W);
   for (const k of extra) if (Number.isInteger(k) && k >= 0 && k <= W) set.add(k);
   return [...set].sort((a, b) => a - b);
