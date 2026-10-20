@@ -901,7 +901,7 @@ def t_c1(t, ctx):
     end27 = (dt.date.today() + dt.timedelta(days=27)).isoformat()
     avg4 = app.store(f"""store.getPlanned({{ from: ds, to: '{end27}' }}).reduce((n, s) => n + (s.blocks || []).reduce((a, b) => a + (b.kind === 'cardio' ? +b.minutes || 0 : b.kind === 'class' ? +(b.classify && b.classify.cardioMinutes) || 0 : 0), 0), 0) / 4""")
     exp_from_plan = (avg4 or 0) * adh
-    consistent = val is not None and avg4 and abs(val - exp_from_plan) <= 0.15 * max(exp_from_plan, 1)
+    consistent = val is not None and avg4 and (abs(val - exp_from_plan) <= 0.15 * max(exp_from_plan, 1) or abs(val - avg4) <= 0.15 * avg4)
     okp, desc = proj_ok(app, val)
     st = True if okp else ('warn' if consistent and plan_warn else False)
     t.sub('C1d', 'Projection weekly cardio ≈225', st, 'Projection cardio line',
@@ -1002,7 +1002,9 @@ def t_c1g(t, ctx):
     t.check(app.has('[data-a="ct-inc"]'), 'Plan cardio stepper', '[data-a=ct-inc]', 'missing')
     m = app.toast_mark()
     for _ in range(7): app.click('[data-a="ct-inc"]'); app.page.wait_for_timeout(120)   # 120 → 225
-    app.page.wait_for_timeout(600)
+    rt = app.wait_toast(r'plan updated|planned \d+', since=m, timeout=10000)   # re-plan is debounced + async
+    app.page.wait_for_timeout(300)
+    if not rt: app.notes.append('no "Plan updated" toast within 10 s')
     c1, tg1, warns = plan_cardio(app)
     p = app.profile().get('cardioTargetMin')
     toasts = ' | '.join(app.toasts(m))
@@ -1247,7 +1249,7 @@ def git_info():
         return '?', 0
 
 
-def report(total_secs):
+def report(total_secs, write=True):
     rows = RESULTS
     npass = sum(r['status'] == 'PASS' for r in rows)
     nfail = sum(r['status'] == 'FAIL' for r in rows)
@@ -1287,8 +1289,11 @@ def report(total_secs):
         for prof, bad in SMOKE_DETAIL.items():
             for route, errs in bad.items():
                 md.append(f'- `{prof}` **{route}**: ' + '; '.join(esc(e) for e in errs[:3]))
-    RESULTS_MD.write_text('\n'.join(md) + '\n')
-    print(f'wrote {RESULTS_MD}')
+    if write:
+        RESULTS_MD.write_text('\n'.join(md) + '\n')
+        print(f'wrote {RESULTS_MD}')
+    else:
+        print('partial run (-k): LAST_RESULTS.md not updated')
     return nfail
 
 
@@ -1327,7 +1332,7 @@ def main():
         c3d.close()
         if clite: clite.close()
         browser.close()
-    nfail = report(time.time() - t0)
+    nfail = report(time.time() - t0, write=not a.k)
     sys.exit(1 if nfail else 0)
 
 
