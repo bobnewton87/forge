@@ -51,7 +51,7 @@ import { BUILTIN_STYLES, STYLE_LIMITS, normalizeCustomStyle, styleOptions, isSty
 export const LIMITS = {
   cardioMin: [0, 900], cardioStep: 15, hardPerWeek: [0, 4], defaultMinutes: [10, 180],
   calories: [1200, 6000], surplus: [-1500, 1500], proteinGPerLb: [0.6, 1.4], fatPct: [15, 40],
-  adherence: [0.5, 1], goalBodyFatPct: [5, 30],
+  adherence: [0.5, 1], goalBodyFatPct: [5, 30], priority: [0.5, 2],
 };
 export const CARDIO_CHIPS = [90, 150, 225, 300];
 export const STYLES = [...BUILTIN_STYLES];   // built-in style ids; custom ones live in profile.customStyles
@@ -66,7 +66,8 @@ export const MIN_SESSION_DEFAULT = { longer: 30, balanced: 20, finishers: 10 };
 export const CARDIO_STYLE_WHY = 'Separate or longer cardio sessions reduce interference with lifting (Wilson et al. 2012) and suit an endurance base.';
 export const MINIMUMS_EVIDENCE = [
   { claim: 'The minimum is the evidence floor: about 4 fractional sets/week is the minimum effective dose, gains rise steeply to about 10 and keep rising with diminishing returns to about 20. Floors here: ~10 for priority muscles, ~6 normal, 3-4 maintenance, 0 where other lifts already cover it.', source: 'Schoenfeld, Ogborn & Krieger 2017, J Sports Sci 35:1073; Pelland et al. 2025, Sports Med, doi:10.1007/s40279-025-02344-w' },
-  { claim: 'Trained lifters do best around 12-20 sets per muscle per week; more than 20 helped triceps. Your targets sit in that range and the caps are ~20 (24 for triceps and side delts).', source: 'Baz-Valle et al. 2022, J Hum Kinet 81:199' },
+  { claim: 'Trained lifters do best around 12-20 sets per muscle per week. More than 20 added nothing for biceps or quads but helped triceps. Your targets sit in that range.', source: 'Baz-Valle et al. 2022, J Hum Kinet 81:199' },
+  { claim: 'The weekly max is a ceiling on what a muscle can use, not a priority setting: 20 for most muscles, 24 for triceps and side delts, 22 for back (lats + upper back), 10 for lower back (fatigue guard). Biceps: 18 sets/week grew them as much as 27 (no better with more), and 12-20 matched over 20.', source: 'Heaselgrave et al. 2019, Int J Sports Physiol Perform 14:360; Baz-Valle et al. 2022; Pelland et al. 2025' },
   { claim: 'Indirect sets count half: presses give triceps 0.5 a set, rows and pulldowns give biceps 0.5. Each set counts once per muscle.', source: 'Pelland et al. 2025, Sports Med (fractional counting); Mannarino et al. 2021' },
   { claim: 'Keeping muscle takes about a third of the volume that built it, so your legs (maintenance) have low floors on purpose.', source: 'Bickel, Cross & Bamman 2011, Med Sci Sports Exerc; Spiering et al. 2021, J Strength Cond Res' },
   { claim: 'Per session, returns flatten past ~10-11 sets for one muscle, so sessions cap at 10 (big) / 8 (small) and spread the rest. Training a muscle 2x/week beats 1x unless volume is equal; small muscles can go on back-to-back days at moderate volume.', source: 'Remmert, Pelland et al. 2025 (preprint); Schoenfeld et al. 2016, Sports Med; Schoenfeld, Grgic & Krieger 2019' },
@@ -353,6 +354,23 @@ export function unitTargets(profile) {
   return v;
 }
 const unitCache = new WeakMap();
+// ★ = a muscle Forge is pushing above a normal dose. ONE rule for every screen: one of Bob's stated
+// priorities (tier 'priority', unless its slider is turned down), a slider raised above 1×, or a sculpt
+// goal adding sets. Tracked-only muscles never star. → Set of unit ids.
+export function starredUnits(profile) {
+  const U = unitTargets(profile), out = new Set();
+  for (const [id, x] of Object.entries(U)) {
+    if (x.tier === 'tracked') continue;
+    if ((x.tier === 'priority' && x.slider >= 0.95) || x.slider > 1.05 || x.extra > 0) out.add(id);
+  }
+  return out;
+}
+// Group ★ (Body tab cards): any counted unit of the group is starred.
+export function starredGroups(profile) {
+  const s = starredUnits(profile);
+  return new Set([...s].map(id => VOLUME_UNITS[id]?.group).filter(Boolean));
+}
+export const STAR_LEGEND = '★ = priority: one of your priorities, a raised slider or a sculpt goal';
 
 // Ways to fit the weekly minimums when the cap/availability can't: raise the cap, add a lift day
 // (flex/rest → lift), lengthen short lift days. → [{ id, label, patch }] (patch for setTargets).
@@ -519,7 +537,7 @@ export function applyTargetChange(profile, patch = {}) {
   }
   if (t.groupPriority && typeof t.groupPriority === 'object') {
     const gp = {};
-    for (const [g, v] of Object.entries(t.groupPriority)) { const x = vNum(v, [0.5, 1.5], { round: 2 }); if (x !== undefined) gp[g] = x; }
+    for (const [g, v] of Object.entries(t.groupPriority)) { const x = vNum(v, LIMITS.priority, { round: 2 }); if (x !== undefined) gp[g] = x; }
     p.groupPriority = gp;
   }
   const n = patch.nutrition;

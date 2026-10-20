@@ -9,13 +9,14 @@
 //   ("Why these numbers?"), openVolumeRoomSheet(ctx, short), openExtendSheet(ctx, { extended, onApply }),
 //   extendedToast(list), REPLAN_DAYS, ensureTargetStyles(). Styles are injected
 //   at runtime (a <style id="tg-css">) because INTEGRATOR owns no CSS file.
-import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, volumeRoomOptions, unitTargets, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
+import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, volumeRoomOptions, unitTargets, starredUnits, STAR_LEGEND, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
 import { planRange } from '../engine/planner.js';
 import { resolveStyle } from '../engine/generator.js';
 import { explainWeek } from '../engine/planner.js';
 import { CARDIO } from '../data/cardio.js';
 import { ds, addDays, weekStart } from '../util.js';
 import { esc } from './components.js';
+import { MAX_WHY } from '../data/muscles.js';
 
 export const REPLAN_DAYS = 28;
 const styleShort = (id, p) => { const d = resolveStyle(id, p); return d.short || d.name; };
@@ -248,6 +249,8 @@ export function openMinimumsInfo(ctx) {
   const t = resolveTargets(p);
   const U = unitTargets(p);
   const rows = Object.entries(U).filter(([, x]) => x.min > 0 || x.target > 0);
+  const stars = starredUnits(p);
+  const starWhy = x => [x.tier === 'priority' && x.slider >= 0.95 && 'one of your priorities', x.slider > 1.05 && `slider ×${x.slider}`, x.extra > 0 && `sculpt goals +${x.extra}`].filter(Boolean).join(', ');
   // This week's sliders → targets → plan chain (planner.explainWeek), so Bob can check it himself.
   const ex = safe(() => explainWeek(ctx.store.getSessions(), { weekStart: weekStart(new Date()), profile: p, now: new Date() }), null);
   const f = v => (Math.round(v * 10) / 10).toString();
@@ -258,11 +261,11 @@ export function openMinimumsInfo(ctx) {
   const tracked = Object.entries(U).filter(([, x]) => !(x.min > 0 || x.target > 0)).map(([, x]) => x.name).join(', ');
   const deriv = x => `${x.base}${x.slider !== 1 ? ` × ${x.slider} (slider)` : ''}${x.extra ? ` + ${x.extra} (sculpt goals)` : ''}${x.base * x.slider + x.extra > x.max + 0.05 ? `, capped at ${x.max}` : ''}`;
   ctx.openSheet(`<div class="tg-sheet"><h2>Why these numbers?</h2>
-    <p class="muted small">Weekly sets are compared with your <b>target</b>. Each muscle also has a <b>minimum</b> (the evidence floor, always planned) and a <b>max</b> Forge never plans past: returns flatten beyond ~20 sets a week while recovery cost keeps rising (Pelland et al. 2025, Sports Med; Baz-Valle et al. 2022), so the max is ~20 (24 for triceps and side delts, which recover fast; lower for maintenance muscles). Sliders and sculpt goals move only the target.</p>
+    <p class="muted small">Weekly sets are compared with your <b>target</b>. Each muscle also has a <b>minimum</b> (the evidence floor, always planned) and a <b>max</b> Forge never plans past. The max is a ceiling on what the body can use and is the same whatever your priorities: 20 sets a week for most muscles (the top of the 12-20 range; more than 20 added nothing for biceps or quads, Baz-Valle et al. 2022), 24 for triceps (more than 20 helped them) and side delts, 22 for back (two muscles), 10 for lower back (fatigue guard). Priorities, sliders and sculpt goals move only the target. ${esc(STAR_LEGEND)}.</p>
     ${table}
     <div class="label mt">Each muscle</div>
-    <div class="tg-units">${rows.map(([, x]) => `<div class="tg-unit"><div class="row between"><b>${esc(x.name)}</b><span class="num small">target <b>${x.target}</b> · min ${x.min} · max ${x.max}</span></div>
-      <div class="tiny muted">Floor ${x.min}: ${esc(FLOOR_WHY[x.tier] || FLOOR_WHY.normal)}. Target = ${esc(deriv(x))}.</div></div>`).join('')}</div>
+    <div class="tg-units">${rows.map(([id, x]) => `<div class="tg-unit"><div class="row between"><b>${stars.has(id) ? '<span class="star">★</span> ' : ''}${esc(x.name)}</b><span class="num small">target <b>${x.target}</b> · min ${x.min} · max ${x.max}</span></div>
+      <div class="tiny muted">Floor ${x.min}: ${esc(FLOOR_WHY[x.tier] || FLOOR_WHY.normal)}. Target = ${esc(deriv(x))}. Max ${esc(MAX_WHY[id] || String(x.max))}.${stars.has(id) ? ` ★ ${esc(starWhy(x))}.` : ''}</div></div>`).join('')}</div>
     ${tracked ? `<p class="tiny muted">${esc(tracked)}: tracked, not counted (pressing covers front delts; traps and lower back don't count toward back).</p>` : ''}
     <div class="label mt">The evidence</div>
     <ul class="tip-list mt">${MINIMUMS_EVIDENCE.map(e => `<li>${esc(e.claim)} <span class="tiny muted">(${esc(e.source)})</span></li>`).join('')}</ul>

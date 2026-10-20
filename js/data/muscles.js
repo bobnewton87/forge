@@ -5,7 +5,8 @@
 //   upper back only (traps and lower back are tracked, not counted), side delts and rear delts as
 //   separate units (front delts tracked), triceps, biceps, forearms, core, quads, hamstrings, glutes,
 //   calves. Each has min (evidence floor: ~10 priority / 6 normal / 3-4 maintenance, 0 where incidental
-//   work covers it), target (above the floor) and max (~20; 24 for triceps and side delts). A set
+//   work covers it), target (above the floor) and max (a physiological ceiling independent of priority:
+//   20, 24 for triceps and side delts, 22 for back = two muscles, 10 lower-back fatigue guard; see MAX_WHY). A set
 //   credits a unit once: the max weight over the unit's regions (fractional credit, Pelland 2025).
 //   Priority is ONE mechanism: groupPriority sliders and sculpt extras move the TARGET (clamped to
 //   [min, max]); the min stays the floor. REGIONS[r].priority is kept for scoring/need only.
@@ -139,21 +140,43 @@ const GROUP_DEFS = [
 const U = (id, name, group, regions, min, target, max, tier, extra = {}) => ({ id, name, group, regions, min, target, max, tier, big: false, sub: false, ...extra });
 export const VOLUME_UNITS = {
   chest: U('chest', 'Chest', 'chest', ['chest_upper', 'chest_mid', 'chest_lower'], 8, 12, 20, 'priority', { big: true }),
-  chest_upper: U('chest_upper', 'Upper chest (incline)', 'chest', ['chest_upper'], 4, 6, 12, 'priority', { big: true, sub: true }),
+  chest_upper: U('chest_upper', 'Upper chest (incline)', 'chest', ['chest_upper'], 4, 6, 20, 'priority', { big: true, sub: true }),
   back: U('back', 'Back (lats + upper back)', 'back', ['lats', 'upper_back'], 10, 15, 22, 'priority', { big: true }),
   delt_side: U('delt_side', 'Side delts', 'shoulders', ['delt_side'], 10, 14, 24, 'priority'),
-  delt_rear: U('delt_rear', 'Rear delts', 'shoulders', ['delt_rear'], 4, 7, 12, 'normal'),
+  delt_rear: U('delt_rear', 'Rear delts', 'shoulders', ['delt_rear'], 4, 7, 20, 'normal'),
   triceps: U('triceps', 'Triceps', 'triceps', ['triceps_long', 'triceps_lateral', 'triceps_medial'], 10, 15, 24, 'priority'),
-  biceps: U('biceps', 'Biceps', 'biceps', ['biceps_long', 'biceps_short', 'brachialis'], 6, 10, 16, 'normal'),
-  core: U('core', 'Abs & core', 'core', ['abs', 'obliques'], 8, 11, 16, 'priority'),
-  quads: U('quads', 'Quads', 'quads', ['quads', 'adductors'], 4, 6, 10, 'maintenance', { big: true }),
-  hamstrings: U('hamstrings', 'Hamstrings', 'hamstrings', ['hamstrings'], 3, 4, 8, 'maintenance', { big: true }),
-  glutes: U('glutes', 'Glutes', 'glutes', ['glutes', 'glute_med'], 0, 4, 10, 'maintenance', { big: true }),
-  calves: U('calves', 'Calves', 'calves', ['calves'], 0, 3, 6, 'maintenance'),
-  forearms: U('forearms', 'Forearms', 'forearms', ['forearms'], 0, 4, 8, 'none'),
-  delt_front: U('delt_front', 'Front delts', 'shoulders', ['delt_front'], 0, 0, 12, 'tracked'),
-  traps: U('traps', 'Upper traps', 'back', ['traps'], 0, 0, 12, 'tracked'),
+  biceps: U('biceps', 'Biceps', 'biceps', ['biceps_long', 'biceps_short', 'brachialis'], 6, 10, 20, 'normal'),
+  core: U('core', 'Abs & core', 'core', ['abs', 'obliques'], 8, 11, 20, 'priority'),
+  quads: U('quads', 'Quads', 'quads', ['quads', 'adductors'], 4, 6, 20, 'maintenance', { big: true }),
+  hamstrings: U('hamstrings', 'Hamstrings', 'hamstrings', ['hamstrings'], 3, 4, 20, 'maintenance', { big: true }),
+  glutes: U('glutes', 'Glutes', 'glutes', ['glutes', 'glute_med'], 0, 4, 20, 'maintenance', { big: true }),
+  calves: U('calves', 'Calves', 'calves', ['calves'], 0, 3, 20, 'maintenance'),
+  forearms: U('forearms', 'Forearms', 'forearms', ['forearms'], 0, 4, 20, 'none'),
+  delt_front: U('delt_front', 'Front delts', 'shoulders', ['delt_front'], 0, 0, 20, 'tracked'),
+  traps: U('traps', 'Upper traps', 'back', ['traps'], 0, 0, 20, 'tracked'),
   lower_back: U('lower_back', 'Lower back', 'back', ['lower_back'], 0, 0, 10, 'tracked'),
+};
+// Why each weekly max (fractional sets) is what it is. The max is a PHYSIOLOGICAL ceiling and does not
+// depend on priority: priority (tier, sliders, sculpt goals) moves only the target (max audit 2026-10-20,
+// docs/research/weekly-volume-audit.md §7).
+const MAX_DEFAULT_WHY = '20: top of the 12-20 sets/week range for trained lifters; going past 20 added no measurable growth for biceps or quads (Baz-Valle 2022), and returns keep shrinking past ~19 sets (Pelland 2025)';
+export const MAX_WHY = {
+  chest: MAX_DEFAULT_WHY,
+  chest_upper: '20: same muscle as chest (its upper fibres), so the same ceiling; the chest max still caps the total',
+  back: '22: two muscles (lats + upper back) in one count; each set is counted once, so slightly above the one-muscle 20',
+  delt_side: '24: small, fast-recovering muscle with little systemic fatigue (convention, no direct study), same as triceps',
+  delt_rear: MAX_DEFAULT_WHY,
+  triceps: '24: over 20 sets/week grew triceps more than 12-20 did (Baz-Valle 2022)',
+  biceps: '20: 12-20 sets/week is optimal and more than 20 added nothing for biceps (Baz-Valle 2022); 27 sets grew biceps no more than 18 did (Heaselgrave 2019)',
+  core: MAX_DEFAULT_WHY,
+  quads: '20: going past 20 added nothing for quads (Baz-Valle 2022); your maintenance choice lives in the target, not the max',
+  hamstrings: MAX_DEFAULT_WHY + '; your maintenance choice lives in the target',
+  glutes: MAX_DEFAULT_WHY + '; your maintenance choice lives in the target',
+  calves: MAX_DEFAULT_WHY + '; your maintenance choice lives in the target',
+  forearms: MAX_DEFAULT_WHY + '; curls and hammer curls credit forearms, so a low cap would block arm work',
+  delt_front: MAX_DEFAULT_WHY + '; every press adds 0.5, so a low cap would block chest pressing',
+  traps: MAX_DEFAULT_WHY,
+  lower_back: '10: fatigue guard, not a growth limit. Every hinge, row and carry loads the spinal erectors, and you have no growth goal for them (heuristic)',
 };
 export const UNIT_ORDER = ['chest', 'chest_upper', 'back', 'delt_side', 'delt_rear', 'triceps', 'biceps', 'core', 'quads', 'hamstrings', 'glutes', 'calves', 'forearms', 'delt_front', 'traps', 'lower_back'];
 // Credit of one set of an exercise for a unit: the max weight over the unit's regions.

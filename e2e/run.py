@@ -447,7 +447,7 @@ def plan_cardio(app):
 def run_plan(app, which='plan-4'):
     m = app.toast_mark()
     app.click(f'[data-a="{which}"]')
-    msg = app.wait_toast(r'Planned \d+|Nothing new|nothing to plan', since=m, timeout=15000)
+    msg = app.wait_toast(r'Planned \d+|Extended .* weekly set targets|Nothing new|nothing to plan', since=m, timeout=15000)
     app.page.wait_for_timeout(200)
     return msg
 
@@ -619,12 +619,13 @@ def t_plan(t, ctx):
     app = t.app
     app.load(bobir(app), 'plan')
     msg = run_plan(app, 'plan-week')
-    t.check(msg and 'Planned' in msg, 'Plan my week', 'toast "Planned N sessions"', msg or app.toasts())
+    # lengthened weeks announce the extension instead (targets.extendedToast, since c82697a)
+    t.check(msg and ('Planned' in msg or re.search(r'Extended .* weekly set targets', msg)), 'Plan my week', 'toast "Planned N sessions" or "Extended … weekly set targets"', msg or app.toasts())
     n = app.count('.pl-line.planned')
     t.check(n >= 3, 'planned day cards this week', '≥3 planned cards', n)
     t.check(app.has('.pl-sum .pl-bar-row'), 'week coverage card', 'coverage bars', short(app.text('.pl-sum'), 100))
     msg = run_plan(app, 'plan-4')
-    t.check(msg and re.search(r'Planned \d+', msg), 'Plan next 4 weeks', 'toast "Planned N sessions"', msg)
+    t.check(msg and (re.search(r'Planned \d+', msg) or re.search(r'Extended .* weekly set targets', msg)), 'Plan next 4 weeks', 'toast "Planned N sessions" or "Extended …"', msg)
     end = (dt.date.today() + dt.timedelta(days=21)).isoformat()
     n4 = app.store(f"store.getPlanned({{ from: ds, to: '{end}' }}).length")
     t.check(n4 >= 12, 'sessions planned over 3+ weeks', '≥12 planned', n4)

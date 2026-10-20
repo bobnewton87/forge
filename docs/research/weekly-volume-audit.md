@@ -197,3 +197,59 @@ inflated shoulder and back minimums, the under-credited arms and the stacked pri
    pulldowns (currently 0.25 each). Cap trap credit from lateral and Lu raises at 0.25. Add a pull ≥ push guard. Also
    update `MINIMUMS_EVIDENCE` in `targets.js`, which cites Pelland as a SportRxiv preprint: it is now published in
    Sports Med 2025 (doi:10.1007/s40279-025-02344-w).
+
+## 7. Addendum (2026-10-20): weekly maxes and stars
+
+Bob asked where the stars and weekly maxes come from, and whether the biceps max of 16 was too low.
+
+**Where the maxes came from.** The §4 table set the max by priority tier: about 20 for priority muscles, **16 for
+"normal" muscles** (biceps, and core even though it is a priority), 12 for rear delts, upper chest, front delts and
+traps, and 6–10 for the maintenance legs and forearms. That mixes two different things. The max is meant to be the
+point past which more sets stop paying off, which is a property of the muscle, not of Bob's priorities. Priority
+already moves the target. §6 item 2 above already said "a hard max of about 20 (24 for triceps and side delts)"; the
+table did not follow it.
+
+**What the studies say for biceps** (all counts are weekly sets):
+- Baz-Valle et al. 2022, J Hum Kinet 81:199 (doi:10.2478/hukin-2022-0017): in trained men, 12–20 sets is the
+  recommended range. Going above 20 gave **no extra biceps growth** (p = 0.59) and no extra quad growth (p = 0.19),
+  but did give extra triceps growth (p = 0.01).
+- Heaselgrave et al. 2019, Int J Sports Physiol Perform 14:360 (doi:10.1123/ijspp.2018-0427): 9, 18 or 27 sets of
+  biceps work in trained men gave muscle-thickness gains of 4.3%, **9.5%** and 5.4%. The differences were not
+  significant, and 27 sets were no better than 18.
+- Schoenfeld et al. 2019, Med Sci Sports Exerc 51:94 (doi:10.1249/MSS.0000000000001764): elbow flexors grew more with
+  higher volume, using only pulldowns and rows. That is about 15 sets in fractional terms.
+- Pelland et al. 2025, Sports Med 56:481 (doi:10.1007/s40279-025-02344-w): growth keeps rising with volume, but
+  each extra set adds less, and the "lower efficiency" tier starts at about 19 fractional sets.
+
+So 20 is the supported ceiling for biceps, and 16 cut off part of the optimal range.
+
+**New maxes** (fractional sets; `VOLUME_UNITS[*].max`, with reasons in `MAX_WHY`, shown in "Why these numbers?"):
+
+| muscle | old max | new max | why |
+|---|---|---|---|
+| Biceps | 16 | **20** | Top of the 12–20 range; more than 20 added nothing (Baz-Valle 2022), and 27 was no better than 18 (Heaselgrave 2019). |
+| Core | 16 | **20** | Default ceiling. Core is a priority, so the old 16 was inconsistent even under the tier rule. |
+| Rear delts | 12 | **20** | Default ceiling. |
+| Upper chest (sub) | 12 | **20** | Same muscle as chest; the chest max of 20 still caps the total. |
+| Quads / hamstrings / glutes / calves | 10 / 8 / 10 / 6 | **20** | Default ceiling (quads: more than 20 added nothing, Baz-Valle 2022). Maintenance is set by the target (6 / 4 / 4 / 3), and the planner keeps planned sets at most 1 above target. |
+| Forearms | 8 | **20** | Curls and hammer curls credit forearms, so a cap of 8 blocked arm work. |
+| Front delts (tracked) | 12 | **20** | Every press adds 0.5, so a cap of 12 blocked chest pressing (a recurring reason chest fell short). |
+| Traps (tracked) | 12 | **20** | Default ceiling. |
+| Triceps / side delts / back / chest | 24 / 24 / 22 / 20 | unchanged | Triceps: more than 20 sets helped (Baz-Valle 2022). Side delts: small, fast-recovering muscle (convention). Back: lats and upper back are two muscles in one count. |
+| Lower back (tracked) | 10 | unchanged | Fatigue guard, not a growth limit (heuristic). |
+
+The priority sliders now run from 0.5× to **2×**, so a normal muscle can reach its max (biceps 10 × 2 = 20). Each
+slider shows the resulting target and max.
+
+**Stars.** The screens used different rules. Plan starred the hard-coded tier `priority`. Body starred any group
+touched by a sculpt goal or a slider above 1×. Biceps with a raised slider was starred on Body but not on Plan. Now
+there is one rule, `targets.starredUnits` / `starredGroups`, used by Plan, Body, Settings and "Why these numbers?".
+A muscle is starred when it is one of Bob's stated priorities (triceps, side delts, abs, lats/back, upper
+chest/chest) and its slider hasn't been turned down, OR its slider is above 1×, OR a sculpt goal adds sets to it.
+Tracked-only muscles never star.
+
+**Effect on plans** (default profile, 18 test weeks): the default week is unchanged (same targets, +64–67 min).
+Biceps ×2 now plans 20/20 (was held at 16). Legs ×2 plans quads 12/12 (was held at 10), and core ×1.5 plans 20/19.5
+(was held at 16). Nothing goes past its max. Small overshoots above target (≤ 2.5 sets, each with a named reason) went
+from 5 to 8 of 18 weeks, because rows, face pulls and presses are no longer held back by the old rear-delt and
+front-delt caps.

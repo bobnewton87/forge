@@ -1,14 +1,14 @@
 // "More" hub (route 'more') and Settings (route 'settings') (UI-SHELL).
 // CONTRACT-NOTE: params.section on 'settings' (e.g. 'locations') scrolls to that section.
 import { SCULPT_GOALS } from '../data/sculpt.js';
-import { GROUPS, GROUP_ORDER } from '../data/muscles.js';
+import { GROUPS, GROUP_ORDER, VOLUME_UNITS, UNIT_ORDER } from '../data/muscles.js';
 import { EQUIPMENT } from '../data/equipment.js';
 import { esc } from './components.js';
 import { ds } from '../util.js';
 import { setTargets } from './targets.js';
 import { styleChipsHTML, customStylesListHTML, openStyleEditor, openStyleInfo, deleteStyle } from './styles.js';
 import { buildWorkout } from '../engine/generator.js';
-import { resolveTargets, LIMITS, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
+import { resolveTargets, unitTargets, starredGroups, STAR_LEGEND, LIMITS, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
 // CONTRACT-NOTE (INTEGRATOR §18): goal, sculpt focus, muscle priority, default length/style, the
 //   weekly cardio target and adherence all read resolveTargets and write through setTargets (planning
 //   changes re-plan upcoming auto days). The cardio slider spans 0–600 (the API allows up to 900).
@@ -23,6 +23,18 @@ const NUTRI = [['off', 'Off'], ['simple', 'Simple'], ['cycling', 'Carb cycling']
 export function title(ctx, params) { return ctx.route === 'more' ? '' : 'Settings'; }
 
 // ---------------- More hub ----------------
+
+const PR = LIMITS.priority;
+const prioPct = v => ((Number(v) - PR[0]) / (PR[1] - PR[0])) * 100;
+// "→ 15 sets/wk (max 20)" for a group's counted muscles at the profile's slider.
+function prioLine(p, g) {
+  const U = unitTargets(p);
+  const us = UNIT_ORDER.filter(id => VOLUME_UNITS[id].group === g && VOLUME_UNITS[id].tier !== 'tracked' && !VOLUME_UNITS[id].sub && U[id]);
+  const f = x => Math.round(x * 10) / 10;
+  if (us.length === 1) { const x = U[us[0]]; return `→ ${f(x.target)} sets/wk (max ${x.max})${x.target >= x.max - 0.05 ? ' · at max' : ''}`; }
+  return '→ ' + us.map(id => `${VOLUME_UNITS[id].name.replace(/ \(.*\)$/, '').toLowerCase()} ${f(U[id].target)}/${U[id].max}`).join(' · ') + ' (target/max)';
+}
+
 function renderMore(ctx) {
   const p = ctx.store.getProfile();
   const n = (() => { try { return ctx.store.getSessions().length; } catch (e) { return 0; } })();
@@ -94,6 +106,7 @@ function renderSettings(ctx) {
   const gp = p.groupPriority || {};
   const rt = p.restTimer || {};
   const T = resolveTargets(p);
+  const starG = starredGroups(p);
   const cmax = Math.max(600, T.cardio.minPerWeek);
   return `<div class="section-title" id="sec-goal">Goal</div>
   <div class="card">${seg('goal', GOALS.map(([v, l]) => [v, l]), T.goals.goal)}
@@ -105,9 +118,10 @@ function renderSettings(ctx) {
   </div>
 
   <div class="section-title" id="sec-priority">Muscle priority</div>
-  <div class="card"><p class="small muted mb">Scales each group's weekly set target. 1.0 = standard, lower = maintenance.</p>
-    ${GROUP_ORDER.filter(g => GROUPS[g]).map(g => { const v = gp[g] ?? 1; return `<div class="row" style="gap:12px;min-height:44px"><span style="width:96px;font-weight:650;font-size:15px">${esc(GROUPS[g].name)}</span>
-      <input type="range" min="0.5" max="1.5" step="0.05" value="${v}" data-prio="${g}" style="--pct:${(v - 0.5) * 100}%" class="grow"><span class="num bold" style="width:44px;text-align:right" data-prio-v="${g}">×${Number(v).toFixed(2)}</span></div>`; }).join('')}
+  <div class="card"><p class="small muted mb">Scales each group's weekly set target. 1.0 = standard, lower = maintenance. Targets never go past each muscle's max (Body → Why these numbers?). ${esc(STAR_LEGEND)}.</p>
+    ${GROUP_ORDER.filter(g => GROUPS[g]).map(g => { const v = gp[g] ?? 1; return `<div style="min-height:44px"><div class="row" style="gap:12px"><span style="width:96px;font-weight:650;font-size:15px">${esc(GROUPS[g].name)}${starG.has(g) ? ' <span class="star">★</span>' : ''}</span>
+      <input type="range" min="${PR[0]}" max="${PR[1]}" step="0.05" value="${v}" data-prio="${g}" style="--pct:${prioPct(v)}%" class="grow" aria-label="${esc(GROUPS[g].name)} priority"><span class="num bold" style="width:44px;text-align:right" data-prio-v="${g}">×${Number(v).toFixed(2)}</span></div>
+      <div class="tiny muted" style="margin:-2px 0 4px 108px" data-prio-t="${g}">${esc(prioLine(p, g))}</div></div>`; }).join('')}
     <button class="btn btn-sm btn-ghost mt" data-prio-reset>Reset to Forge defaults</button></div>
 
   <div class="section-title" id="sec-locations">Locations</div>
@@ -230,7 +244,11 @@ function bindSettings(root, ctx, params) {
   root.querySelectorAll('[data-ginfo]').forEach(b => b.onclick = () => goalInfoSheet(ctx, b.dataset.ginfo));
   root.querySelectorAll('[data-prio]').forEach(r => {
     const g = r.dataset.prio; const lab = root.querySelector(`[data-prio-v="${g}"]`);
-    r.addEventListener('input', () => { lab.textContent = '×' + Number(r.value).toFixed(2); r.style.setProperty('--pct', (r.value - 0.5) * 100 + '%'); });
+    const tl = root.querySelector(`[data-prio-t="${g}"]`);
+    r.addEventListener('input', () => {
+      lab.textContent = '×' + Number(r.value).toFixed(2); r.style.setProperty('--pct', prioPct(r.value) + '%');
+      const p = ctx.store.getProfile(); if (tl) tl.textContent = prioLine({ ...p, groupPriority: { ...(p.groupPriority || {}), [g]: Number(r.value) } }, g);
+    });
     r.addEventListener('change', () => { const p = ctx.store.getProfile(); setTargets(ctx, { training: { groupPriority: { ...(p.groupPriority || {}), [g]: Number(r.value) } } }); });
   });
   root.querySelector('[data-prio-reset]').onclick = async () => {

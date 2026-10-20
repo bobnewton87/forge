@@ -719,6 +719,13 @@ Rules: projection what-if sliders are PREVIEWS (clearly labelled "what-if") unti
 Plan's cardio stepper, Body's cardio card, Nutrition's targets, and Settings all call setTargets. No screen keeps
 its own copy of a target value.
 
+Amendment (2026-10-20, maxes + stars): `VOLUME_UNITS[u].max` is a physiological ceiling independent of priority
+(20 default; triceps/side delts 24; back 22; lower back 10 fatigue guard), with the reason per unit in
+`muscles.MAX_WHY`. Priority (tier, `groupPriority` slider 0.5–2 = `LIMITS.priority`, sculpt extras) moves only the
+target. ★ on every screen comes from `targets.starredUnits(profile)` / `starredGroups(profile)` (tier priority with
+slider ≥ 0.95, OR slider > 1.05, OR sculpt extra > 0; never tracked units); legend text `targets.STAR_LEGEND`.
+See docs/research/weekly-volume-audit.md §7.
+
 ## 16c. Segment lengths per side (2026-10-20)
 Bob: "add various elbow-to-shoulder lengths for both sides, knee-to-ankle and knee-to-hip, to capture asymmetries and make
 the 3D model more accurate, smooth and accurate in rendering, specifically head to neck but everywhere."

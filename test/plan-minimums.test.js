@@ -184,24 +184,26 @@ test('extendedToast summarizes extensions', () => {
 });
 
 // Bob: "not sure the weekly plan follows the sliders". Planned sets must move with each slider.
-test('slider sweep: planned sets follow each slider 0.5 → 1 → 1.5 (monotonic; target reached or a named reason)', async () => {
+const SWEEP = [0.5, 1, 1.5, 2];
+test('slider sweep: planned sets follow each slider 0.5 → 1 → 1.5 → 2 (monotonic; target reached or a named reason)', async () => {
   const { explainWeek } = await import('../js/engine/planner.js');
   for (const g of GROUP_ORDER) {
     const units = Object.values(VOLUME_UNITS).filter(u => u.group === g && u.target > 0 && !u.sub).map(u => u.id);
-    const runs = [0.5, 1, 1.5].map(v => { const p = prof({ groupPriority: { [g]: v } }); const out = week(p); return { sum: summary(out, p), ex: explainWeek(out, { weekStart: parseDs(MON), profile: p, now: NOW }) }; });
+    const runs = SWEEP.map(v => { const p = prof({ groupPriority: { [g]: v } }); const out = week(p); return { sum: summary(out, p), ex: explainWeek(out, { weekStart: parseDs(MON), profile: p, now: NOW }) }; });
     for (const u of units) {
       const t = runs.map(r => r.sum.units[u].total);
       // monotonic, except when the lower setting sat above its target for a recorded reason (e.g. back
       // kept up by pull ≥ push at slider 0.5) and the higher setting reaches its own target
-      for (let i = 0; i < 2; i++) {
+      for (let i = 0; i < SWEEP.length - 1; i++) {
         if (t[i + 1] >= t[i] - 0.25) continue;
         const lo = runs[i].sum.units[u], hi = runs[i + 1].sum.units[u];
+        if (hi.target <= lo.target + 0.05) continue;   // both capped at the max: same target, order is noise
         assert.ok(lo.overWhy && hi.total >= hi.target - 0.25, `${g}/${u}: planned ${t.join(' → ')} is not monotonic`);
       }
-      assert.ok(runs[2].sum.units[u].target >= runs[0].sum.units[u].target);
+      assert.ok(runs[SWEEP.length - 1].sum.units[u].target >= runs[0].sum.units[u].target);
       runs.forEach((r, i) => {
         const x = r.sum.units[u];
-        if (x.total < x.target - 0.25) assert.ok(r.sum.targets.short.find(y => y.unit === u)?.why, `${g} ×${[0.5, 1, 1.5][i]}: ${u} ${x.total}/${x.target} with no reason`);
+        if (x.total < x.target - 0.25) assert.ok(r.sum.targets.short.find(y => y.unit === u)?.why, `${g} ×${SWEEP[i]}: ${u} ${x.total}/${x.target} with no reason`);
         const e = r.ex[u];
         assert.equal(e.target, x.target); assert.equal(e.planned, x.total);
         assert.ok(Math.abs(e.target - Math.min(e.max, Math.max(e.min, e.base * e.slider + e.extra))) < 0.06, `${u}: target = base × slider + extra (capped)`);

@@ -2,7 +2,7 @@
 import * as rec from '../engine/recovery.js';
 import * as prog from '../engine/progression.js';
 import { REGIONS, GROUPS, GROUP_ORDER, VOLUME_UNITS, UNIT_ORDER, unitCredits } from '../data/muscles.js';
-import { unitTargets } from '../engine/targets.js';
+import { unitTargets, starredGroups, STAR_LEGEND } from '../engine/targets.js';
 import { SCULPT_GOALS } from '../data/sculpt.js';
 import { getEx } from '../data/exercises.js';
 import { esc, readinessColor, muscleBar } from './components.js';
@@ -143,7 +143,7 @@ export function render(ctx) {
   const cardio = safe(() => rec.cardioStatus(sessions, { now, profile }), { minutes7d: 0, target: profile.cardioTargetMin || 120, daysSince: null, sessions7d: 0, suggestion: '' });
   const week = safe(() => rec.weekSummary(sessions, { now }), { sessions: 0, liftSets: 0, cardioMinutes: 0, byGroup: {} });
   const stk = safe(() => rec.streak(sessions, { now }), { days: 0, weeksActive: 0 });
-  const { gs: goalG, rs: goalR } = goalGroups(profile);
+  const { rs: goalR } = goalGroups(profile);
 
   const groups = GROUP_ORDER.filter(g => GROUPS[g] && gsAll[g]).map(g => ({ id: g, ...gsAll[g] }));
   const next = groups.filter(g => (g.readiness ?? 1) >= 0.8 && (g.need ?? 0) >= 0.35).sort((a, b) => b.need - a.need).slice(0, 3);
@@ -166,6 +166,7 @@ export function render(ctx) {
 
   const UT = (() => { try { return unitTargets(profile) || {}; } catch (e) { return {}; } })();
   const uSets = unitSets7d(sessions, now);
+  const starG = (() => { try { return starredGroups(profile); } catch (e) { return new Set(); } })();
   const gcards = groups.map(g0 => {
     // Use the enforcement units for this group's numbers so sets and target count the same muscles.
     const uv = groupUnitView(g0.id, uSets, UT);
@@ -176,9 +177,9 @@ export function render(ctx) {
     const band = setsBand(g.sets7d || 0, t);
     const bcol = { under: 'var(--bad)', toward: 'var(--warn)', ok: 'var(--good)', over: 'var(--accent2)' }[band];
     const max = Math.max(t.max || tgt || 1, g.sets7d || 0, 1);
-    const isGoal = goalG.has(g.id); const prio = (profile.groupPriority?.[g.id] || 1) > 1.05;
-    return `<button class="card tap gcard ${isGoal ? 'goal' : ''}" data-group="${g.id}">
-      <div class="row"><span style="font-size:20px">${esc(G.emoji || '')}</span><div class="grow"><div class="gname">${esc(G.name)} ${isGoal || prio ? '<span class="star">★</span>' : ''}</div>
+    const starred = starG.has(g.id);
+    return `<button class="card tap gcard ${starred ? 'goal' : ''}" data-group="${g.id}">
+      <div class="row"><span style="font-size:20px">${esc(G.emoji || '')}</span><div class="grow"><div class="gname">${esc(G.name)} ${starred ? '<span class="star">★</span>' : ''}</div>
         <div class="gmeta"><span style="color:${col};font-weight:700">${statusLabel(g.readiness, g.need)}</span> · ${ago(g.daysSince)}</div></div>
         <div class="gsets" title="min ${f1(t.min)} · target ${f1(tgt)} · max ${f1(t.max || 0)}">${f1(g.sets7d || 0)}<span class="muted" style="font-weight:600">/${Math.round(tgt)} target</span></div></div>
       <div class="bar"><i style="width:${Math.min(100, ((g.sets7d || 0) / max) * 100)}%;background:${bcol}"></i>${t.min > 0 ? `<span class="tick" style="left:${(t.min / max) * 100}%"></span>` : ''}<span class="tick" style="left:${(tgt / max) * 100}%;border-left:2px dashed var(--accent2);background:none"></span></div>
@@ -218,7 +219,7 @@ export function render(ctx) {
     ${yourBodyCard(store, profile, log)}
     ${hero}
     <div class="section-title">Muscle map</div>${map}
-    <div class="section-title">Weekly sets vs target <span class="tiny muted" style="text-transform:none;letter-spacing:0">★ = goal / priority</span></div>${gcards}
+    <div class="section-title">Weekly sets vs target <span class="tiny muted" style="text-transform:none;letter-spacing:0">${esc(STAR_LEGEND)}</span></div>${gcards}
     <div class="section-title">Cardio</div>${cardioCard}
     <div class="section-title">Strength trends</div>${trends}
     <div class="section-title">Bodyweight</div>${bw}`;
