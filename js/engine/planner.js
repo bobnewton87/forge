@@ -906,7 +906,7 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
     for (const [g, w] of Object.entries(v.groups)) { gT[g] = (gT[g] || 0) + w; (byDay[s.date] ||= {})[g] = (byDay[s.date]?.[g] || 0) + w; }
     for (const r of PRIORITY_REGIONS) if (v.regions[r]) rT[r] = (rT[r] || 0) + v.regions[r];
   }
-  const status = (tot, t) => (tot < t.min - 0.05 ? 'under' : tot > t.max + 0.05 ? 'over' : 'ok');
+  const status = (tot, t) => (tot < t.min - 0.25 ? 'under' : tot > t.max + 0.05 ? 'over' : 'ok');
   const groups = {};
   for (const [g, t] of Object.entries(T.groups)) {
     const d = r1(done[g] || 0), p = r1(planned[g] || 0), tot = r1(d + p);
