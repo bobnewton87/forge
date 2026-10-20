@@ -1,0 +1,76 @@
+# Forge E2E results
+
+- Run: 2026-10-19 21:16:03 · 58s · **52 pass / 2 fail / 0 warn**
+- Git: `f3147ee Phase 3: nutrition lab, per-muscle growth model, supplements & metabolism, planning fixes` + 37 uncommitted file(s)
+- Command: `python3 e2e/run.py` (screenshots: `/tmp/claude-1000/forge-shots/qa-*.png`)
+
+| ID | Check | Result | Failing step | Expected | Actual | Screenshot |
+|---|---|---|---|---|---|---|
+| F1 | Fixture: Bob profile + measurements via Measure UI | ✅ PASS |  |  |  |  |
+| F2 | Fixture: Iron Runner import via More → Import | ✅ PASS |  |  |  |  |
+| S1 | Smoke: every route, fresh profile | ✅ PASS |  |  |  |  |
+| S2 | Smoke: every route, Bob + Iron Runner data | ✅ PASS |  |  |  |  |
+| S3 | Perf: every screen renders (sync JS) in < 1.5 s with Bob data | ✅ PASS |  |  |  |  |
+| W1 | Workout @home: build → start → log → finish → summary | ✅ PASS |  |  |  |  |
+| W2 | Workout @crunch: build → start → log → finish → summary | ✅ PASS |  |  |  |  |
+| W3 | Workout @travel: build → start → log → finish → summary | ✅ PASS |  |  |  |  |
+| W4 | Workout @office: build → start → log → finish → summary | ✅ PASS |  |  |  |  |
+| P1 | Plan my week + next 4 weeks | ✅ PASS |  |  |  |  |
+| P2 | Customize a day via the date builder → saved as Custom | ✅ PASS |  |  |  |  |
+| K1 | Class picker opens (Today @Crunch + Plan day sheet) | ✅ PASS |  |  |  |  |
+| K2 | Cardio quick log (Today → Just cardio → Log as done) | ✅ PASS |  |  |  |  |
+| J1 | Projection controls respond (kcal preset, cardio step, horizon) | ✅ PASS |  |  |  |  |
+| N1 | Nutrition targets save (2,650 kcal, simple mode) | ✅ PASS |  |  |  |  |
+| U1 | Supplements: add creatine, then remove | ✅ PASS |  |  |  |  |
+| C1a | Body: edit weekly cardio target → 225 | ✅ PASS |  |  |  |  |
+| C1b | Body cardio card shows 225 target | ✅ PASS |  |  |  |  |
+| C1c | Plan coverage: target 225, auto-replanned within ±15% (or shortfall explained) | ✅ PASS |  |  |  |  |
+| C1d | Projection weekly cardio ≈225 | ❌ FAIL | Projection cardio line | 180–270 min/wk raw or ÷ adherence (WARN = matches a plan that explains its shortfall) | 135 min/wk shown (÷ 85% adherence = 159); stat 119; 4-wk plan avg 135 × 85% = 115 | `/tmp/claude-1000/forge-shots/qa-C1d.png` |
+| C1e | Settings shows 225 | ✅ PASS |  |  |  |  |
+| C1f | Today reflects the 225 cardio need | ✅ PASS |  |  |  |  |
+| C1i | Roomy week: auto re-plan puts ≈225 min cardio in the plan (±15%) | ✅ PASS |  |  |  |  |
+| C1j | Roomy week: projection weekly cardio ≈225 | ✅ PASS |  |  |  |  |
+| C1k | Make room → apply: this week ≈225 min cardio (±15%) | ✅ PASS |  |  |  |  |
+| C1l | Make room clears the shortfall prompt | ✅ PASS |  |  |  |  |
+| C1m | After Make room: projection weekly cardio ≈225 | ✅ PASS |  |  |  |  |
+| C1g | Plan stepper → profile 225 + auto days re-planned | ❌ FAIL | click + ×7 on Plan coverage stepper | target 225 and planned cardio increases without manual re-plan | profile 225, coverage 111/225 (was 111/120); toast: Saved: 135 min/wk cardio. Updating your plan… \| Saved: 150 min/wk cardio. Updat… | `/tmp/claude-1000/forge-shots/qa-C1g.png` |
+| C1h | Body shows the target set on Plan | ✅ PASS |  |  |  |  |
+| C2a | Nutrition 'Today's target' = saved 2,650 | ✅ PASS |  |  |  |  |
+| C2b | Projection default intake = 2,650 | ✅ PASS |  |  |  |  |
+| C2c | Projection names current targets | ✅ PASS |  |  |  |  |
+| C3a | Supplements impact shows water weight | ✅ PASS |  |  |  |  |
+| C3b | Projection lists the stack (creatine) | ✅ PASS |  |  |  |  |
+| C3c | Projection shows creatine water weight | ✅ PASS |  |  |  |  |
+| C3d | With/without stack toggle changes the projection | ✅ PASS |  |  |  |  |
+| C4a | Re-plan leaves Wednesdays as rest | ✅ PASS |  |  |  |  |
+| C4b | Sundays planned: lift @No equipment | ✅ PASS |  |  |  |  |
+| C4c | Tuesdays planned as cardio | ✅ PASS |  |  |  |  |
+| C5a | Today: recommendations at every location | ✅ PASS |  |  |  |  |
+| C5b | Header location pill → Today follows | ✅ PASS |  |  |  |  |
+| C5c | Plan day sheet: a suggestion at every location | ✅ PASS |  |  |  |  |
+| C5d | Date builder: recommendations at every location | ✅ PASS |  |  |  |  |
+| C6a | Body "Lift sets" increases | ✅ PASS |  |  |  |  |
+| C6b | History lists the new session | ✅ PASS |  |  |  |  |
+| C6c | Recovery tiles mark trained groups "Today" | ✅ PASS |  |  |  |  |
+| C6d | Plan shows today's done workout | ✅ PASS |  |  |  |  |
+| C7a | Settings writes the shared target (150) | ✅ PASS |  |  |  |  |
+| C7b | Body shows 150 | ✅ PASS |  |  |  |  |
+| C7c | Plan coverage target 150 | ✅ PASS |  |  |  |  |
+| C7d | Today shows 150 | ✅ PASS |  |  |  |  |
+| C8a | What-if slider does not change saved targets | ✅ PASS |  |  |  |  |
+| C8b | Apply → Nutrition shows the applied intake | ✅ PASS |  |  |  |  |
+| E1 | No console/page errors during flows | ✅ PASS |  |  |  |  |
+
+## Failure context (what the page showed)
+
+- **C1d**: route #/projection ¦ sheet: none ¦ last toasts: ['Planned 24 sessions', 'Saved: 225 min/wk cardio. Updating your plan…', 'Plan updated for 225 min/wk cardio. This week fits ~121 cardio min; tap "Make room" for the rest'] ¦ content: Your body in 12 weeks if the plan happens. Change the inputs and watch it move. Now Projected 12 weeks Now → Week 12 Now Drag through time Week 12 Week 12 · Jan 11 2027 vs now 12 weeks 159.7lb weight −4.3 16.1% body fat −2.8 134.1lb lean +1.1 25.6lb fat −5.4 33.9″ waist −0.6 1.36 V-taper +0.03 YOUR TARGETS Edit 🏃 225′ cardio/wk 0 done · 121 planned 🏋️ 6 days · 4h 45′ default · Hypertrophy 🍽️ Nutrition off tap to set targets 🎯 85% adherence Recomp → 12% BF ⚠︎ This week fits ~121 cardio min alongside lifting, 104 short of 225. Make room What if… preview Reset to my targets Sliders only change t…
+- **C1g**: route #/plan ¦ sheet: none ¦ last toasts: ['Saved: 210 min/wk cardio. Updating your plan…', 'Saved: 225 min/wk cardio. Updating your plan…', 'Plan updated for 225 min/wk cardio. This week fits ~121 cardio min; tap "Make room" for the rest'] ¦ content: Plan Suggestions for each day. Customize any of them. 🗓 Availability ‹ This week Oct 19 – Oct 25 › ✦ Plan my week Plan next 4 weeks YOUR TARGETS Edit 🏃 225′ cardio/wk 0 done · 121 planned 🏋️ 6 days · 4h 45′ default · Hypertrophy 🍽️ Nutrition off tap to set targets 🎯 85% adherence Recomp → 12% BF ⚠︎ This week fits ~121 cardio min alongside lifting, 104 short of 225. Make room TODAY 19 Shoulders & Arms + Back · Lat Width AUTO 45 min · 🏋️ Crunch Allen Shoulders Triceps Back Biceps +15 min cardio › 🏃 Cardio +10′ +20′ TUE 20 Shoulders & Abs + Chest · Upper Chest AUTO 30 min · 🏠 Home Shoulders Ches…
+
+## Notes
+
+- **S1**: 3D canvas mounted on: none (SVG fallback)
+- **S2**: 3D canvas mounted on: body, projection
+- **S3**: slowest: projection 52ms, measure 28ms, nutrition 26ms, body 18ms
+- **C1a**: resolveTargets cardio = 225
+- **C1f**: replan toast: Plan updated for 225 min/wk cardio. This week fits ~121 cardio min; t…
+- **C1k**: proposal: Make room for 225 min of cardio A typical week of your availability holds ~115 cardio min alongside lifting (this week: ~121). These changes take it to ~220. Wed cardio 30→60′ Cardio 30′ → Cardio 60′…

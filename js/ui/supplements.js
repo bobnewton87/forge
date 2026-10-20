@@ -20,7 +20,7 @@ const safe = (fn, fb) => { try { const v = fn(); return v == null ? fb : v; } ca
 const f1 = n => { n = Number(n); if (!isFinite(n)) return '—'; const r = Math.round(n * 10) / 10; return Math.abs(r - Math.round(r)) < 0.05 ? String(Math.round(r)) : r.toFixed(1); };
 const sgn = (n, dp = 1) => { n = Number(n) || 0; const a = Math.abs(n); const s = dp === 0 ? String(Math.round(a)) : (Math.round(a * 10 ** dp) / 10 ** dp).toString(); return (n > 0.0049 ? '+' : n < -0.0049 ? '−' : '±') + s; };
 const mult = n => '×' + (Math.round(Number(n) * 100) / 100).toFixed(2);
-const EV_CLS = { strong: 'good', moderate: 'cardio', weak: 'warn', none: 'bad' };
+const EV_CLS = { strong: 'good', moderate: 'cardio', weak: 'warn', refuted: 'bad', preclinical: 'warn', none: 'bad' };
 const CAT_ICON = Object.fromEntries(CATEGORIES.map(c => [c.id, c.icon]));
 const evBadge = s => `<span class="badge ${EV_CLS[s.evidence] || ''}" title="${esc(EVIDENCE[s.evidence]?.text || '')}">${esc(EVIDENCE[s.evidence]?.short || s.evidence)}</span>`;
 function statusKind(s) {
@@ -81,7 +81,7 @@ export function render(ctx) {
   <div class="section-title" id="sp-add">Add to stack</div>
   <div class="hscroll sp-cats">${CATEGORIES.map(c => `<button type="button" class="chip sm ${ui.cat === c.id ? 'active' : ''}" data-cat="${c.id}">${esc(c.icon)} ${esc(c.short || c.label)}</button>`).join('')}</div>
   <div class="list mt">${Object.values(SUPPLEMENTS).filter(s => s.category === ui.cat).map(s => browseRow(s, activeIds.has(s.id))).join('')}</div>
-  <div class="sp-legend">${['strong', 'moderate', 'weak', 'none'].map(k => `<div><span class="badge ${EV_CLS[k]}">${esc(EVIDENCE[k].short)}</span><span class="tiny muted">${esc({ strong: 'meta-analyses agree', moderate: 'trials support it', weak: 'small or inconsistent', none: 'no human data' }[k])}</span></div>`).join('')}</div>
+  <div class="sp-legend">${['strong', 'moderate', 'weak', 'refuted', 'preclinical', 'none'].map(k => `<div><span class="badge ${EV_CLS[k]}">${esc(EVIDENCE[k].short)}</span><span class="tiny muted">${esc({ strong: 'meta-analyses agree', moderate: 'trials support it', weak: 'small or inconsistent', refuted: 'trials found nothing', preclinical: 'animals only', none: 'no human data' }[k])}</span></div>`).join('')}</div>
 
   <div class="section-title">Not modeled</div>
   <div class="card sp-nm">
@@ -164,6 +164,12 @@ function impactCard(I, mods, off, activeIds) {
   if (mods.waterLb >= 0.05) tiles.push(['Water weight', `+${f1(mods.waterLb)} lb`, 'on the scale, not muscle or fat']);
   if (mods.intakeDelta) tiles.push(['Appetite', `${sgn(mods.intakeDelta, 0)} kcal/day`, 'applied when calories aren\'t set']);
   if (mods.tdeeDelta) tiles.push(['Calorie burn', `${sgn(mods.tdeeDelta, 0)} kcal/day`, 'added to maintenance']);
+  const tt = mods.testosterone;
+  if (tt && (tt.source === 'endogenous' || tt.source === 'measured') && Math.abs(tt.level - tt.natural) >= 5) {
+    tiles.push([tt.level > tt.natural ? 'Your own testosterone' : 'Testosterone cost',
+      `≈${Math.round(tt.level).toLocaleString()} ng/dL`,
+      `${tt.source === 'measured' ? 'your measured lab' : 'modeled'}, from ${Math.round(tt.natural).toLocaleString()}${tt.naturalSource === 'assumed' ? ' (assumed)' : ''}${tt.leanLevel != null && Math.abs(tt.leanLevel - tt.level) > 5 ? ` · muscle credited to ≈${Math.round(tt.leanLevel).toLocaleString()}` : ''}`]);
+  }
 
   const pair = activeIds.size ? projectionPair(I) : null;
   let cmp = '';
@@ -177,10 +183,12 @@ function impactCard(I, mods, off, activeIds) {
          ${same ? '<p class="tiny muted">At your current settings the stack doesn\'t change the 12-week outcome (e.g. appetite effects only apply when calories aren\'t set).</p>' : ''}`;
   } else if (pair?.reason === 'weight') cmp = '<p class="small muted mt">Log your bodyweight to see a 12-week with/without comparison.</p>';
 
-  const tShow = activeIds.has('trt') || (I.profile.metabolic?.totalT != null);
   const t = mods.testosterone;
+  const tMoved = t && t.source !== 'natural' && Math.abs(t.level - t.natural) >= 5;
+  const tShow = activeIds.has('trt') || tMoved || (I.profile.metabolic?.totalT != null);
+  const tLevel = activeIds.has('trt') || tMoved ? t?.level : null;
   const tBlock = tShow && t ? `<div class="sp-sub">Testosterone dose–response (Bhasin 1996/2001 fit)</div>
-    <div class="sp-chart" data-tchart='${esc(JSON.stringify({ natural: t.natural, level: activeIds.has('trt') ? t.level : null, age: mods.levels?.age }))}'>${tChart({ natural: t.natural, level: activeIds.has('trt') ? t.level : null, age: mods.levels?.age })}<div class="sp-readout small muted">Drag across the chart to read values.</div></div>
+    <div class="sp-chart" data-tchart='${esc(JSON.stringify({ natural: t.natural, level: tLevel, age: mods.levels?.age }))}'>${tChart({ natural: t.natural, level: tLevel, age: mods.levels?.age })}<div class="sp-readout small muted">Drag across the chart to read values.</div></div>
     <p class="tiny muted">Lean change over 20 weeks without training, vs serum total T, relative to your natural ${Math.round(t.natural)} ng/dL${t.naturalSource === 'assumed' ? ' (assumed average)' : ''}. Flat past ~${T_MODEL.studiedMax.toLocaleString()}: beyond the studied range Forge doesn't extrapolate. </p>` : '';
 
   return `<div class="card sp-impact">
@@ -270,7 +278,7 @@ const LABS = [
     status: v => v < 300 ? ['Low', 'bad'] : v < 400 ? ['Low-normal', 'warn'] : v <= 916 ? ['Normal', 'good'] : ['High', 'warn'] },
   { k: 'freeT', label: 'Free testosterone', unit: 'pg/mL', step: '0.1', ref: 'Roughly 50–210 (calculated or dialysis). Assays vary a lot.',
     status: v => v < 50 ? ['Low', 'warn'] : v <= 210 ? ['Normal', 'good'] : ['High', 'warn'] },
-  { k: 'onTrtT', label: 'Total T on therapy (trough)', unit: 'ng/dL', step: '1', ref: 'Only if you\'re on testosterone. Modeled up to ~2,400 (highest studied).',
+  { k: 'onTrtT', label: 'Total T measured on therapy', unit: 'ng/dL', step: '1', ref: 'If you\'re on testosterone (trough draw) or on anything that raises your own T. A measured lab always beats the model.',
     status: v => v > T_MODEL.studiedMax ? ['Beyond studied', 'warn'] : v > 1100 ? ['Above normal', 'warn'] : v >= 400 ? ['Normal range', 'good'] : ['Low', 'warn'] },
   { k: 'vitD', label: 'Vitamin D, 25(OH)D', unit: 'ng/mL', step: '0.1', ref: '<20 deficient · 20–30 adequate · 30–100 sufficient.',
     status: v => v < 20 ? ['Deficient', 'bad'] : v < 30 ? ['Adequate', ''] : v <= 100 ? ['Sufficient', 'good'] : ['High', 'warn'] },
@@ -279,6 +287,28 @@ const LABS = [
   { k: 'tsh', label: 'TSH', unit: 'mIU/L', step: '0.01', ref: 'Typical ≈0.4–4.5. High = underactive thyroid (lower calorie burn).',
     status: v => v < 0.4 ? ['Low', 'warn'] : v <= 4.5 ? ['Normal', 'good'] : ['High', 'warn'] },
 ];
+// Optional panel: these don't change the projection on their own, but they decide whether the
+// endogenous-testosterone therapies apply to you at all (see docs/research/endogenous-testosterone.md).
+const PANEL = [
+  { k: 'lh', label: 'LH', unit: 'IU/L', step: '0.1', ref: 'Typical ≈1.7–8.6. Low T with normal/low LH = secondary (the kind clomiphene and hCG treat). Low T with high LH = testicular.',
+    status: v => v > 9.4 ? ['High', 'warn'] : v < 1.5 ? ['Low', 'warn'] : ['Normal', 'good'] },
+  { k: 'fsh', label: 'FSH', unit: 'IU/L', step: '0.1', ref: 'Typical ≈1.5–12.4. Drawn with LH; both are suppressed by testosterone therapy.',
+    status: v => v > 12.4 ? ['High', 'warn'] : v < 1.5 ? ['Low', 'warn'] : ['Normal', 'good'] },
+  { k: 'shbg', label: 'SHBG', unit: 'nmol/L', step: '0.1', ref: 'Typical ≈10–57. High SHBG binds testosterone, so free T can be low with a normal total.',
+    status: v => v > 57 ? ['High', 'warn'] : v < 10 ? ['Low', 'warn'] : ['Normal', 'good'] },
+  { k: 'estradiol', label: 'Estradiol (sensitive assay)', unit: 'pg/mL', step: '0.1', ref: 'Typical ≈10–40. Men need some: too low costs bone and libido, too high causes breast tenderness.',
+    status: v => v < 10 ? ['Low', 'warn'] : v <= 40 ? ['Normal', 'good'] : ['High', 'warn'] },
+  { k: 'prolactin', label: 'Prolactin', unit: 'ng/mL', step: '0.1', ref: 'Typical under ~20. High prolactin suppresses LH and is a treatable cause of low T.',
+    status: v => v > 20 ? ['High', 'bad'] : ['Normal', 'good'] },
+  { k: 'zinc', label: 'Serum zinc', unit: 'µg/dL', step: '1', ref: 'Under ~70 is deficient (morning, fasting). Only a real deficiency moves testosterone.',
+    status: v => v < 70 ? ['Low', 'warn'] : ['Normal', 'good'] },
+  { k: 'ferritin', label: 'Ferritin', unit: 'ng/mL', step: '1', ref: 'Typical ≈30–300. Low is common in endurance athletes; very high can mean iron overload, a cause of low T.',
+    status: v => v < 30 ? ['Low', 'warn'] : v <= 300 ? ['Normal', 'good'] : ['High', 'warn'] },
+];
+function labRow(L, v, placeholder) {
+  return `<div class="sp-lab"><div class="grow"><div class="t">${esc(L.label)} <span data-badge="${L.k}">${labBadge(L, v)}</span></div><div class="s">${esc(L.ref)}</div></div>
+    <label class="sp-inwrap"><input type="number" inputmode="decimal" step="${L.step}" min="0" data-met="${L.k}" value="${v ?? ''}" placeholder="${esc(placeholder || '—')}" class="sp-in"><span class="sp-unit">${esc(L.unit)}</span></label></div>`;
+}
 function labBadge(L, v) {
   const st = v != null && v !== '' && isFinite(Number(v)) ? L.status(Number(v)) : null;
   return st ? `<span class="badge ${st[1]}">${esc(st[0])}</span>` : '';
@@ -295,11 +325,11 @@ function metabolicForm(p, I) {
     <p class="small muted">Blank values use population averages for your age (flagged as "assumed average"). Testosterone and vitamin D are modeled by level.</p>
     <div class="sp-lab"><div class="grow"><div class="t">Lab date</div><div class="s">When these were drawn</div></div>
       <input type="date" data-met="labDate" value="${esc(m.labDate || '')}" class="sp-in sp-date"></div>
-    ${LABS.map(L => {
-      const v = m[L.k];
-      return `<div class="sp-lab"><div class="grow"><div class="t">${esc(L.label)} <span data-badge="${L.k}">${labBadge(L, v)}</span></div><div class="s">${esc(L.ref)}</div></div>
-        <label class="sp-inwrap"><input type="number" inputmode="decimal" step="${L.step}" min="0" data-met="${L.k}" value="${v ?? ''}" placeholder="${esc(placeholders[L.k] || '—')}" class="sp-in"><span class="sp-unit">${esc(L.unit)}</span></label></div>`;
-    }).join('')}
+    ${LABS.map(L => labRow(L, m[L.k], placeholders[L.k])).join('')}
+    <details class="sp-panel"><summary class="small">Hormone panel (optional) — decides which therapies could even apply to you</summary>
+      <p class="tiny muted">Morning, fasted, and repeated before anyone acts on them. These don't change the projection by themselves; they tell Forge whether the endogenous-testosterone items apply.</p>
+      ${PANEL.map(L => labRow(L, m[L.k])).join('')}
+    </details>
     <div class="sp-lab sp-col"><div class="row between"><div class="t">Typical sleep</div><div class="num bold"><span data-sleepv>${f1(sleep)}</span> h</div></div>
       <input type="range" min="4" max="10" step="0.25" value="${sleep}" data-met="sleepHours" style="--pct:${(sleep - 4) / 6 * 100}%">
       <div class="s" data-sleepn>${esc(sleepNote)}</div></div>
@@ -388,7 +418,7 @@ export function bind(root, ctx) {
     const wrap = root.querySelector('#sp-impact-wrap');
     if (wrap) { wrap.innerHTML = impactCard(I, mods, off, activeIds); wrap.querySelectorAll('[data-tchart]').forEach(bindTChart); }
     const m = I.profile.metabolic || {};
-    for (const L of LABS) { const el = root.querySelector(`[data-badge="${L.k}"]`); if (el) el.innerHTML = labBadge(L, m[L.k]); }
+    for (const L of [...LABS, ...PANEL]) { const el = root.querySelector(`[data-badge="${L.k}"]`); if (el) el.innerHTML = labBadge(L, m[L.k]); }
     const sn = root.querySelector('[data-sleepn]'); if (sn) sn.textContent = sleepNoteFor(m.sleepHours ?? 7);
     const tn = root.querySelector('[data-stressn]'); if (tn) tn.textContent = stressNoteFor(m.stress ?? 3);
     root.querySelectorAll('[data-stress] button').forEach(b => b.classList.toggle('active', Number(b.dataset.v) === Number(m.stress ?? 3)));

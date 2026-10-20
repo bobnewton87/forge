@@ -5,6 +5,11 @@ import { GROUPS, GROUP_ORDER } from '../data/muscles.js';
 import { EQUIPMENT } from '../data/equipment.js';
 import { esc } from './components.js';
 import { ds } from '../util.js';
+import { setTargets } from './targets.js';
+import { resolveTargets, LIMITS } from '../engine/targets.js';
+// CONTRACT-NOTE (INTEGRATOR §18): goal, sculpt focus, muscle priority, default length/style, the
+//   weekly cardio target and adherence all read resolveTargets and write through setTargets (planning
+//   changes re-plan upcoming auto days). The cardio slider spans 0–600 (the API allows up to 900).
 
 const CAT_ORDER = [['free', 'Free weights & benches'], ['cable', 'Cables'], ['machine', 'Machines'], ['bodyweight', 'Bodyweight stations'], ['cardio', 'Cardio'], ['other', 'Other']];
 const GOALS = [['recomp', 'Recomp', 'Lose fat, build muscle'], ['lean_bulk', 'Lean bulk', 'Small surplus, max growth'], ['cut', 'Cut', 'Get lean, keep muscle']];
@@ -84,9 +89,11 @@ function renderSettings(ctx) {
   const groupsWithGoals = GROUP_ORDER.filter(g => byGroup[g]).concat(Object.keys(byGroup).filter(g => !GROUP_ORDER.includes(g)));
   const gp = p.groupPriority || {};
   const rt = p.restTimer || {};
+  const T = resolveTargets(p);
+  const cmax = Math.max(600, T.cardio.minPerWeek);
   return `<div class="section-title" id="sec-goal">Goal</div>
-  <div class="card">${seg('goal', GOALS.map(([v, l]) => [v, l]), p.goal)}
-    <p class="small muted mt">${esc(GOALS.find(g => g[0] === p.goal)?.[2] || '')}</p></div>
+  <div class="card">${seg('goal', GOALS.map(([v, l]) => [v, l]), T.goals.goal)}
+    <p class="small muted mt">${esc(GOALS.find(g => g[0] === T.goals.goal)?.[2] || '')}</p></div>
 
   <div class="section-title" id="sec-sculpt">Sculpt focus <span class="tiny muted" style="text-transform:none;letter-spacing:0">${goals.size} on</span></div>
   <div class="card"><p class="small muted mb">Tap to toggle. ⓘ explains what's trainable and what's genetic.</p>
@@ -106,10 +113,14 @@ function renderSettings(ctx) {
   <div class="section-title" id="sec-training">Training defaults</div>
   <div class="card">
     <div class="label mb">Default session length</div>
-    <div class="chips">${[15, 20, 30, 45, 60, 75, 90].map(m => `<button class="chip ${p.defaultMinutes === m ? 'active' : ''}" data-min="${m}">${m}</button>`).join('')}</div>
-    <div class="label mb mt2">Default style</div>${seg('defaultStyle', STYLES, p.defaultStyle)}
+    <div class="chips">${[15, 20, 30, 45, 60, 75, 90].map(m => `<button class="chip ${T.training.defaultMinutes === m ? 'active' : ''}" data-min="${m}">${m}</button>`).join('')}</div>
+    <div class="label mb mt2">Default style</div>${seg('defaultStyle', STYLES, T.training.style)}
     <div class="label mt2">Weekly cardio target</div>
-    <div class="row mt"><input type="range" min="0" max="300" step="15" value="${p.cardioTargetMin ?? 120}" data-cardio style="--pct:${((p.cardioTargetMin ?? 120) / 300) * 100}%" class="grow"><span class="num bold" style="width:72px;text-align:right" data-cardio-v>${p.cardioTargetMin ?? 120} min</span></div>
+    <div class="row mt"><input type="range" min="0" max="${cmax}" step="15" value="${T.cardio.minPerWeek}" data-cardio data-max="${cmax}" style="--pct:${(T.cardio.minPerWeek / cmax) * 100}%" class="grow" aria-label="Weekly cardio target"><span class="num bold" style="width:72px;text-align:right" data-cardio-v>${T.cardio.minPerWeek} min</span></div>
+    ${T.warnings.length ? `<p class="tiny" style="color:var(--warn);margin-top:6px">${esc(T.warnings[0])}</p>` : `<p class="tiny muted" style="margin-top:6px">Your availability fits ~${T.capacity.cardio} cardio min/week. Same target as Body and Plan.</p>`}
+    <div class="label mt2">Adherence <span class="tiny muted" style="text-transform:none;letter-spacing:0">share of planned sessions you actually do (used by the projection)</span></div>
+    <div class="row mt"><input type="range" min="${LIMITS.adherence[0]}" max="${LIMITS.adherence[1]}" step="0.05" value="${T.adherence}" data-adh style="--pct:${((T.adherence - LIMITS.adherence[0]) / (LIMITS.adherence[1] - LIMITS.adherence[0])) * 100}%" class="grow" aria-label="Adherence"><span class="num bold" style="width:72px;text-align:right" data-adh-v>${Math.round(T.adherence * 100)}%</span></div>
+    <button class="btn btn-sm btn-ghost mt" data-tg-all>All targets in one place ›</button>
   </div>
 
   <div class="section-title" id="sec-timer">Rest timer</div>
@@ -147,7 +158,7 @@ function goalInfoSheet(ctx, id) {
 function toggleGoal(ctx, id) {
   const p = ctx.store.getProfile(); const s = new Set(p.sculptGoals || []);
   if (s.has(id)) s.delete(id); else s.add(id);
-  ctx.store.updateProfile({ sculptGoals: [...s] });
+  setTargets(ctx, { goals: { sculptGoals: [...s] } });
 }
 
 function locationSheet(ctx, id) {
@@ -193,7 +204,9 @@ function bindSettings(root, ctx, params) {
   root.querySelectorAll('[data-seg]').forEach(s => s.addEventListener('click', e => {
     const b = e.target.closest('[data-v]'); if (!b) return;
     const v = b.dataset.v, k = s.dataset.seg;
-    if (k === 'nutrition') { const p = ctx.store.getProfile(); up({ nutrition: { ...(p.nutrition || {}), mode: v } }); }
+    if (k === 'nutrition') setTargets(ctx, { nutrition: { mode: v } }, { replan: false });
+    else if (k === 'goal') setTargets(ctx, { goals: { goal: v } }, { replan: false });
+    else if (k === 'defaultStyle') setTargets(ctx, { training: { style: v } });
     else up({ [k]: v });
   }));
   root.querySelectorAll('[data-goal]').forEach(b => b.onclick = () => toggleGoal(ctx, b.dataset.goal));
@@ -201,18 +214,22 @@ function bindSettings(root, ctx, params) {
   root.querySelectorAll('[data-prio]').forEach(r => {
     const g = r.dataset.prio; const lab = root.querySelector(`[data-prio-v="${g}"]`);
     r.addEventListener('input', () => { lab.textContent = '×' + Number(r.value).toFixed(2); r.style.setProperty('--pct', (r.value - 0.5) * 100 + '%'); });
-    r.addEventListener('change', () => { const p = ctx.store.getProfile(); up({ groupPriority: { ...(p.groupPriority || {}), [g]: Number(r.value) } }); });
+    r.addEventListener('change', () => { const p = ctx.store.getProfile(); setTargets(ctx, { training: { groupPriority: { ...(p.groupPriority || {}), [g]: Number(r.value) } } }); });
   });
   root.querySelector('[data-prio-reset]').onclick = async () => {
     const { defaultProfile } = await import('../store.js');
-    up({ groupPriority: { ...defaultProfile().groupPriority } }); ctx.toast('Priorities reset');
+    setTargets(ctx, { training: { groupPriority: { ...defaultProfile().groupPriority } } }, { reason: 'default muscle priorities' });
   };
   root.querySelectorAll('[data-loc]').forEach(b => b.onclick = () => locationSheet(ctx, b.dataset.loc));
   root.querySelector('[data-addloc]').onclick = () => locationSheet(ctx, null);
-  root.querySelectorAll('[data-min]').forEach(b => b.onclick = () => up({ defaultMinutes: Number(b.dataset.min) }));
+  root.querySelectorAll('[data-min]').forEach(b => b.onclick = () => setTargets(ctx, { training: { defaultMinutes: Number(b.dataset.min) } }, { replan: false }));
   const cr = root.querySelector('[data-cardio]'), crv = root.querySelector('[data-cardio-v]');
-  cr.addEventListener('input', () => { crv.textContent = cr.value + ' min'; cr.style.setProperty('--pct', (cr.value / 300) * 100 + '%'); });
-  cr.addEventListener('change', () => up({ cardioTargetMin: Number(cr.value) }));
+  cr.addEventListener('input', () => { crv.textContent = cr.value + ' min'; cr.style.setProperty('--pct', (cr.value / Number(cr.dataset.max || 600)) * 100 + '%'); });
+  cr.addEventListener('change', () => { cr.blur(); setTargets(ctx, { cardio: { minPerWeek: Number(cr.value) } }); });
+  const ad = root.querySelector('[data-adh]'), adv = root.querySelector('[data-adh-v]');
+  ad.addEventListener('input', () => { adv.textContent = Math.round(ad.value * 100) + '%'; ad.style.setProperty('--pct', ((ad.value - LIMITS.adherence[0]) / (LIMITS.adherence[1] - LIMITS.adherence[0])) * 100 + '%'); });
+  ad.addEventListener('change', () => { ad.blur(); setTargets(ctx, { adherence: Number(ad.value) }, { replan: false }); });
+  root.querySelector('[data-tg-all]')?.addEventListener('click', () => import('./targets.js').then(m => m.openTargetsSheet(ctx, { focus: 'cardio' })));
   root.querySelectorAll('[data-sw]').forEach(i => i.addEventListener('change', () => {
     const p = ctx.store.getProfile(); const rt = { ...(p.restTimer || {}) };
     if (i.dataset.sw === 'rtEnabled') rt.enabled = i.checked; else rt.sound = i.checked;

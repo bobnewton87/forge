@@ -31,6 +31,13 @@ import { recommend, groupStatus, weekSummary, cardioStatus, streak } from '../en
 import { buildWorkout, estimateMinutes, swapBlock, addExercise } from '../engine/generator.js';
 import { contextFor, suggestForDay } from '../engine/planner.js';
 import { renderClassPicker, bindClassPicker } from './classes.js';
+import { resolveTargets, suggestFinisher } from '../engine/targets.js';
+import { targetsSummaryHTML, bindTargetsSummary } from './targets.js';
+// CONTRACT-NOTE (INTEGRATOR §18): when this week's cardio (done + planned on later days) is under
+//   the weekly target, recommendations show a cardio nudge sized to the remaining deficit
+//   (targets.suggestFinisher) with a one-tap "Add N′ finisher", and turning the finisher on defaults
+//   to that size (easy). The header's cardio stat reads resolveTargets. A "Your targets" strip sits
+//   at the bottom of plain Today.
 import {
   esc, chip, readinessColor, fmtNum, exName, targetName, unitLabel, safe, openSheet, closeSheet, toast,
   addExerciseSheet, swapSheet, cardioFormHtml, bindCardioForm, readCardioForm, cardioName, intensityName, exerciseInfoHtml,
@@ -198,6 +205,7 @@ export function render(ctx, params = {}) {
     h += builderSection(sessions, profile, loc);
     h += othersSection(loc);
     h += plannedSection(sessions);
+    h += safe(() => targetsSummaryHTML(ctx), '');
   }
   return h + '</div>';
 }
@@ -210,7 +218,7 @@ function header(profile, sessions, compact = false) {
   const st = safe(() => streak(sessions, { now }), null);
   const stats = [];
   if (wk) stats.push(`<div><b>${wk.sessions ?? 0}</b><span>workouts</span></div>`, `<div><b>${fmtNum(wk.liftSets ?? 0, 0)}</b><span>sets</span></div>`);
-  if (cs) stats.push(`<div><b>${fmtNum(cs.minutes7d ?? wk?.cardioMinutes ?? 0, 0)}<small>/${cs.target ?? profile.cardioTargetMin}</small></b><span>cardio min</span></div>`);
+  if (cs) stats.push(`<div><b>${fmtNum(cs.minutes7d ?? wk?.cardioMinutes ?? 0, 0)}<small>/${resolveTargets(profile).cardio.minPerWeek}</small></b><span>cardio min</span></div>`);
   if (st && st.days) stats.push(`<div><b>${st.days}🔥</b><span>streak</span></div>`);
   return `<header class="tr-hello">
     <div class="tr-date">${esc(fmtDay(now))}</div>
@@ -232,11 +240,23 @@ function resumeCard(s) {
   </button>`;
 }
 
+// Weekly cardio target nudge: sized to what's still missing after the later planned days.
+function cardioNudge(sessions, profile, loc) {
+  if (B.cardio.on) return '';
+  const sug = safe(() => suggestFinisher(profile, sessions, { now: refNow(), minutes: B.minutes }), null);
+  if (!sug || !cardioAt(loc) || sug.week.plannedToday >= sug.minutes) return '';   // today's plan already has it
+  return `<div class="card tr-cnudge" style="display:flex;gap:10px;align-items:center;padding:12px 14px">
+    <span style="font-size:22px">🫀</span><div class="grow"><b class="small">Cardio is behind your ${sug.week.target}-min weekly target</b>
+    <div class="tiny muted">${esc(sug.text)}</div></div>
+    <button type="button" class="btn btn-sm" data-t="c-nudge" data-m="${sug.minutes}">Add ${sug.minutes}′</button></div>`;
+}
+
 function recsSection(sessions, profile, loc) {
   const ec = engineCtx(sessions);
   const recs = safe(() => recommend(ec.history, { now: refNow(), profile, minutes: B.minutes, location: loc, upcoming: ec.upcoming }), []).slice(0, 3);
-  if (!recs.length) return '';
-  return `<section class="tr-sec">
+  const nudge = cardioNudge(sessions, profile, loc);
+  if (!recs.length) return nudge;
+  return `${nudge}<section class="tr-sec">
     <div class="section-title">What should I train?${ec.upcoming ? ' <span class="tr-ctx muted">around your plan</span>' : ''}</div>
     <div class="tr-recs">${recs.map((r, i) => `<button type="button" class="tr-rec ${i === 0 && !r.recovering ? 'top' : ''} ${r.recovering ? 'recovering' : ''}" data-t="rec" data-i="${i}">
       <div class="tr-rec-head"><span class="tr-rec-label">${esc(r.label || targetName(r.targetId))}</span>${r.recovering ? '<span class="badge warn">Recovering</span>' : i === 0 ? '<span class="badge tr-best">Best pick</span>' : ''}</div>
@@ -599,6 +619,7 @@ function openManualSheet(ctx, loc) {
 // ---------- bind ----------
 export function bind(root, ctx, params = {}) {
   const store = ctx.store;
+  safe(() => { bindTargetsSummary(root, ctx); return true; }, null);
   if (showBuilderOverride && store.kv('draft')) { /* keep draft until a new build replaces it */ }
 
   root.onclick = e => {
@@ -651,7 +672,17 @@ export function bind(root, ctx, params = {}) {
       }
       case 'clear': B.targets = []; saveB(ctx); ctx.rerender(); break;
       case 'style': B.style = el.dataset.id; saveB(ctx); ctx.rerender(); break;
-      case 'cardio-on': B.cardio.on = !B.cardio.on; saveB(ctx); ctx.rerender(); break;
+      case 'cardio-on': {
+        B.cardio.on = !B.cardio.on;
+        if (B.cardio.on) { const sug = safe(() => suggestFinisher(profile, store.getSessions(), { now: refNow(), minutes: B.minutes }), null); if (sug) { B.cardio.minutes = sug.minutes; B.cardio.intensity = 'easy'; } }
+        saveB(ctx); ctx.rerender(); break;
+      }
+      case 'c-nudge': {
+        const m = Number(el.dataset.m) || 10;
+        B.cardio = { ...B.cardio, on: true, minutes: m, intensity: 'easy', modality: cardioAt(loc, B.cardio.modality) || B.cardio.modality };
+        if (m > B.minutes - 10) { B.minutes = Math.min(180, m + 20); if (!TIMES.includes(B.minutes)) customTime = true; }
+        saveB(ctx); ctx.rerender(); toast(ctx, `${m}′ easy cardio finisher added to your build`); break;
+      }
       case 'c-mod': B.cardio.modality = el.dataset.id; saveB(ctx); ctx.rerender(); break;
       case 'c-inc': case 'c-dec': {
         const c = B.cardio;

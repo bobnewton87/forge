@@ -50,10 +50,23 @@
 // CONTRACT-NOTE: milestone entries also carry { value, target, reached:boolean, already:boolean }.
 // CONTRACT-NOTE: optional profile.body.goalBodyFat (default 12), raceWeightLb / raceBodyFat
 //   (default 137 lb / 6.5 % for male, from Bob's marathon days) are read if present.
+// CONTRACT-NOTE (long horizon, LONG-HORIZON builder):
+//   weeks: 1..260 (simulated weekly). `series` is downsampled: weekly to week 26, every 2 weeks to 104, every 4 weeks
+//     after, always including the last week, milestone weeks and phase boundaries; series[i].week is the real week.
+//     `fullSeries: true` adds result.seriesFull (every week, same point shape).
+//   phases: array of blocks [{ weeks, goal:'cut'|'maintain'|'lean_bulk'|'bulk'|'custom', calories?, surplus?, proteinGPerLb?,
+//     fatPct?, label?, stopAtGoal? }] (+ phasesRepeat, default true), or { blocks, repeat, start:'YYYY-MM-DD' }, or a
+//     PHASE_PRESETS id. Default: profile.nutrition.phases when no explicit intake calories/surplus is passed; `phases: null`
+//     disables. Surplus is vs the maintenance estimate at each phase start, held for the phase; 'maintain' tracks
+//     maintenance weekly; deficit blocks stop at goal body fat (→ maintenance) unless stopAtGoal === false. Sequential
+//     plans continue at maintenance after the last block. nutritionLab() ignores phases (it sweeps constant intakes).
+//   progressionRealism: false (default) | true (= 0.1) | 0..0.5 → training beyond the planned days fades by that fraction
+//     over ~1.5 years (life happens). Result extras: phases (timeline), ceiling, horizon, series[i].phase.
+//   Exported helpers: PHASE_PRESETS, ceilingFactor, testosteroneCeilingShift, FFMI_NATURAL_CEILING, MAX_WEEKS, sampleWeeks.
 import { sessionVolume } from './recovery.js';
 import { dailyTargets, macrosFor, adaptiveTdee } from './nutrition.js';
 import { _sessionDetail, NEAT_FACTORS, tdee as formulaTdee } from './bodycomp.js';
-import { modifiersAt, metabolicBaseline } from './metabolic.js';
+import * as MET from './metabolic.js';
 import { GROUPS, GROUP_ORDER } from '../data/muscles.js';
 import { estimateCalories, CARDIO } from '../data/cardio.js';
 import { ds, parseDs, addDays, daysBetween, clamp } from '../util.js';
@@ -67,9 +80,35 @@ const KCAL_LEAN_RELEASED = 800;   // energy released when lean tissue is lost
 const DAYS_PER_MONTH = 30.44;
 const DEFAULT_BF = { male: 20, female: 28 };
 const ESSENTIAL_BF = { male: 5, female: 13 };
-// Max lean gain, % bodyweight per month, by months of consistent training (Aragon-style guideline,
-// conservative end). Interpolated linearly between anchors.
-const LEAN_RATE_ANCHORS = [[0, 1.2], [12, 0.9], [24, 0.6], [36, 0.4], [60, 0.25]];
+// Max lean gain, % bodyweight per month, by months of consistent training. Anchors sit at the conservative end of
+// the Aragon guideline (year 1 ≈ 1-1.5 %, year 2 ≈ 0.5-1 %, year 3+ ≈ 0.25-0.5 %) and the McDonald model (≈ 20-25,
+// 10-12, 5-6, then 2-3 lb of muscle per year), averaging ≈ 1.07 / 0.69 / 0.44 / 0.27 / 0.18 % in years 1-5.
+// Interpolated linearly; past 10 years it keeps decaying exponentially. These are guideline models, not measured
+// curves: individual rates differ by ±30-50 % (the band carries that).
+const LEAN_RATE_ANCHORS = [[0, 1.25], [6, 1.1], [12, 0.85], [18, 0.68], [24, 0.55], [36, 0.33], [48, 0.21], [60, 0.15], [84, 0.1], [120, 0.065]];
+const LEAN_RATE_TAIL_TAU = 72;   // months, decay beyond the last anchor
+const TA_FULL_RESP = 0.5;        // weekly whole-body set response that counts as a full month of "training age"
+// Genetic ceiling (normalized FFMI). Kouri et al. 1995 (Clin J Sport Med): drug-free athletes rarely exceeded ≈25;
+// individual ceilings vary (±≈1.5 here). Gains slow smoothly over the last 4 FFMI points and stop at the ceiling.
+export const FFMI_NATURAL_CEILING = 25;
+const FFMI_CEIL_SD = 1.5, FFMI_SOFT_SPAN = 4;
+// Supraphysiologic testosterone raises the reachable FFMI (Kouri: users averaged ≈3 points higher, up to ≈32).
+// Conservative mapping: +0 at the top of the normal range (1,000 ng/dL), +2.0 at the highest studied level (2,400,
+// Bhasin 2001), log-linear between, no extrapolation beyond.
+const T_CEIL_REF = 1000, T_CEIL_MAX = 2400, T_CEIL_AT_MAX = 2.0;
+// Energy balance at long horizons (Hall et al. 2011 Lancet): fat tissue costs ≈3.2 kcal/kg/day, daily movement
+// scales with body weight, so maintenance rises as weight is gained and a fixed intake converges.
+const GAMMA_FAT_KG = 3.2;
+const RMR_AGE_PER_YEAR = 0.001;  // ≈1 %/decade beyond lean-mass changes (low end; Pontzer 2021 finds ≈0 before 60)
+const AT_DECAY_WEEKS = 6;        // adaptive thermogenesis fades once out of a deficit (Martins 2020)
+const T_DECLINE_PER_YEAR = 0.01, T_DECLINE_FROM_AGE = 40;   // Massachusetts Male Aging Study (~1 %/yr)
+const ADH_DECAY_TAU = 78;        // weeks, adherence drift for progressionRealism and the low band
+export const MAX_WEEKS = 260;
+// Body fat the body defends: below it a fixed diet isn't sustainable (hunger, adaptive thermogenesis), so the
+// projection assumes intake rises to maintenance instead of burning into essential fat or muscle.
+const DEFENDED_BF = { male: 6, female: 14 };
+// Band: maintenance-estimate error fades as weigh-ins re-calibrate it (~6 months), leaving a residual 35 %.
+const ENERGY_ERR_TAU = 26, ENERGY_ERR_RESID = 0.35;
 // Energy availability → fraction of the ceiling realised. Maintenance ≈ 70 %; a surplus saturates
 // it quickly (≈ 93 % at +250, ≈ 98 % at +500); a deficit decays it (≈ 43 % at −300, ≈ 13 % at −1000).
 const EF_MAINT = 0.7, EF_TAU_SURPLUS = 180, EF_TAU_DEFICIT = 600;
@@ -140,7 +179,20 @@ const REF_BODY = {
   female: { h: 64, w: 140, bf: 28, neck: 13, shoulders: 40, chest: 35, waist: 29, hips: 39, arm: 11.5, forearm: 9.5, thigh: 22, calf: 14 },
 };
 const NEUTRAL_MODS = Object.freeze({ leanCeilingMult: 1, leanRetentionMult: 1, partitionShift: 0, tdeeDelta: 0, intakeDelta: 0, waterLb: 0,
-  leanDirectLbPerWeek: 0, fatDirectLbPerWeek: 0, contributions: [], warnings: [] });
+  leanDirectLbPerWeek: 0, fatDirectLbPerWeek: 0, contributions: [], warnings: [], ffmiShift: 0, hasAgeFactor: false, tLabNatural: null, tLevel: null });
+// Phase defaults (kcal/day vs maintenance at the phase start).
+const PHASE_OFFSET = { cut: -500, maintain: 0, lean_bulk: 250, bulk: 500, custom: 0 };
+const PHASE_LABEL = { cut: 'Cut', maintain: 'Maintain', lean_bulk: 'Lean bulk', bulk: 'Bulk', custom: 'Custom' };
+export const PHASE_PRESETS = [
+  { id: 'cycles', label: 'Lean-bulk / mini-cut cycles', desc: '16 weeks at +300 kcal, then a 6-week mini-cut at −500, repeated.', repeat: true,
+    blocks: [{ weeks: 16, goal: 'lean_bulk', surplus: 300 }, { weeks: 6, goal: 'cut', surplus: -500 }] },
+  { id: 'recomp', label: 'Slow recomp', desc: '−250 kcal (re-set every 12 weeks) until goal body fat, then maintenance.', repeat: true,
+    blocks: [{ weeks: 12, goal: 'cut', surplus: -250, label: 'Recomp' }] },
+  { id: 'bulk_cut', label: 'Bulk then cut', desc: '26 weeks at +400, a 12-week cut at −500, then maintenance.', repeat: false,
+    blocks: [{ weeks: 26, goal: 'bulk', surplus: 400 }, { weeks: 12, goal: 'cut', surplus: -500 }] },
+  { id: 'maintain', label: 'Maintain', desc: 'Eat at maintenance the whole time (weight steady, slow recomp).', repeat: true,
+    blocks: [{ weeks: 52, goal: 'maintain' }] },
+];
 
 // ---------------------------------------------------------------- helpers
 const fin = x => (typeof x === 'number' && Number.isFinite(x));
@@ -160,7 +212,47 @@ function interp(anchors, x) {
 }
 
 // ---------------------------------------------------------------- model curves (exported for tests/UI)
-export function leanRatePctPerMonth(months) { return interp(LEAN_RATE_ANCHORS, Math.max(0, Number(months) || 0)); }
+export function leanRatePctPerMonth(months) {
+  const m = Math.max(0, Number(months) || 0);
+  const [mx, rx] = LEAN_RATE_ANCHORS[LEAN_RATE_ANCHORS.length - 1];
+  return m <= mx ? interp(LEAN_RATE_ANCHORS, m) : rx * Math.exp(-(m - mx) / LEAN_RATE_TAIL_TAU);
+}
+// Fraction of the lean-gain rate left at `gap` normalized-FFMI points below the ceiling: 1 when ≥ 4 points away,
+// easing smoothly (zero slope at 4) to 0 at the ceiling, so lean mass approaches it asymptotically.
+export function ceilingFactor(gap) {
+  const g = Number(gap);
+  if (!(g > 0)) return 0;
+  if (g >= FFMI_SOFT_SPAN) return 1;
+  const x = 1 - g / FFMI_SOFT_SPAN;
+  return 1 - x * x;
+}
+// FFMI points added to the reachable ceiling by a serum testosterone level (ng/dL). 0 within the normal range.
+export function testosteroneCeilingShift(level) {
+  const T = Number(level);
+  if (!(T > T_CEIL_REF)) return 0;
+  return T_CEIL_AT_MAX * Math.log(Math.min(T, T_CEIL_MAX) / T_CEIL_REF) / Math.log(T_CEIL_MAX / T_CEIL_REF);
+}
+// Gentle age factor on muscle-building potential (same curve as metabolic.ageCeiling: −0.4 %/yr past 35, floor 0.8).
+function ageCeil(age) { return age == null || age <= 35 ? 1 : Math.max(0.8, 1 - 0.004 * (age - 35)); }
+// "12 weeks", "6 months", "18 months", "3.5 years".
+export function horizonLabel(weeks) {
+  const w = Math.round(Number(weeks) || 0);
+  if (w < 26) return `${w} week${w === 1 ? '' : 's'}`;
+  const mo = w / 4.345;
+  if (w < 104) return `${Math.round(mo)} months`;
+  const y = Math.round(w / 52.18 * 2) / 2;
+  return `${y % 1 ? y.toFixed(1) : y} years`;
+}
+// Weeks kept in the downsampled series: weekly to 26, every 2 weeks to 104, every 4 after, plus the last week and extras.
+export function sampleWeeks(W, extra = []) {
+  const set = new Set();
+  for (let k = 0; k <= Math.min(W, 26); k++) set.add(k);
+  for (let k = 28; k <= Math.min(W, 104); k += 2) set.add(k);
+  for (let k = 108; k <= W; k += 4) set.add(k);
+  set.add(W);
+  for (const k of extra) if (Number.isInteger(k) && k >= 0 && k <= W) set.add(k);
+  return [...set].sort((a, b) => a - b);
+}
 // Fraction of the lean ceiling realised at a daily energy balance (kcal/day, intake − maintenance).
 export function energyFactor(balance) {
   const b = numOr(balance, 0);
@@ -187,8 +279,6 @@ export function adaptation(rawBalance, week = 99, lbLost = 0) {
 }
 // Leaner people put more of a surplus into muscle (Forbes); mild.
 function bfSurplusFactor(bf) { return clamp(1 + 0.01 * (18 - bf), 0.88, 1.06); }
-// Close to the natural FFMI limit, gains slow regardless of training age.
-function ffmiFactor(ffmiN) { return ffmiN == null ? 1 : clamp(1 - (ffmiN - 20) * 0.14, 0.3, 1); }
 function carbFactor(carbs) { return !(carbs >= 0) ? 1 : carbs < 100 ? 0.95 : carbs < 150 ? 0.98 : 1; }
 
 const emptyDay = () => ({ sets: 0, groupSets: 0, groups: {}, cardioMin: 0, cardioKcal: 0, eqMin: 0, kcal: 0, minutes: 0, lift: 0, cardio: 0 });
@@ -268,7 +358,16 @@ function scheduleDay(entry, weightLb) {
 const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 function sanitizeMods(m) {
   if (!m || typeof m !== 'object') return NEUTRAL_MODS;
+  const t = m.testosterone && typeof m.testosterone === 'object' ? m.testosterone : null;
+  const tLevel = t && t.source && t.source !== 'natural' && pos(t.level) ? Number(t.level) : null;
+  const labT = m.levels && m.levels.totalTSource === 'lab' && pos(m.levels.totalT) ? Number(m.levels.totalT) : null;
   return {
+    // FFMI ceiling shift: metabolic may provide it directly; otherwise derived from an on-therapy testosterone level.
+    ffmiShift: fin(Number(m.ffmiCeilingDelta)) && m.ffmiCeilingDelta !== null ? clamp(Number(m.ffmiCeilingDelta), -3, 6) : tLevel ? testosteroneCeilingShift(tLevel) : 0,
+    tLevel,
+    // Natural lab testosterone (not on therapy): metabolic keeps it fixed, so projection ages it (no double count).
+    tLabNatural: labT && (!t || !t.source || t.source === 'natural') ? labT : null,
+    hasAgeFactor: Array.isArray(m.factors) && m.factors.some(f => f && f.id === 'age'),
     // NaN/sanity guards only: study-bounded curves live in metabolic.js and must not be flattened here.
     leanCeilingMult: clamp(numOr(m.leanCeilingMult, 1), 0, 10),
     leanRetentionMult: clamp(numOr(m.leanRetentionMult, 1), 0, 5),
@@ -293,13 +392,14 @@ function emptyResult(missing, missingInfo) {
 // ---------------------------------------------------------------- preparation (shared by project + lab)
 function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = new Date(), intake = null,
   adherence = 0.85, repeatPlan = true, cardioDeltaMin = 0, cardioModality = 'bike', cardioIntensity = 'easy',
-  bodyLog = null, foodLog = null, adaptive = undefined, useStack = true, modifiersFn = null } = {}) {
+  bodyLog = null, foodLog = null, adaptive = undefined, useStack = true, modifiersFn = null,
+  phases = undefined, phasesRepeat = true, progressionRealism = false, stopAtGoal = false } = {}) {
   profile = profile && typeof profile === 'object' ? profile : {};
   const body = profile.body || {};
   const sex = (b?.sex || body.sex) === 'female' ? 'female' : 'male';
   const nowD = toDate(now);
   const today = ds(nowD);
-  const W = clamp(Math.round(Number(weeks) || 12), 1, 104);
+  const W = clamp(Math.round(Number(weeks) || 12), 1, MAX_WEEKS);
   const adh = fin(Number(adherence)) && adherence !== null ? clamp(Number(adherence), 0, 1) : 0.85;
   const missing = [...(b?.missing || [])];
   const missingInfo = [...(b?.missingInfo || [])];
@@ -345,7 +445,7 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   const cdInt = INTENSITY_W[cardioIntensity] ? cardioIntensity : 'easy';
 
   // ---------------- training drivers, per day
-  const endDate = ds(addDays(parseDs(today), 7 * W - 1));
+  const endDate = ds(addDays(parseDs(today), 7 * Math.max(W, 12) - 1));
   const daily = new Map();                       // date → expected contribution (planned × adherence + done)
   const dailyRaw = new Map();                    // date → unscaled (for nutrition day types)
   let lastPlanned = null, plannedCount = 0;
@@ -413,12 +513,22 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   // Weekly drivers (+ the cardio delta).
   const cdKcalPerMin = estimateCalories(cdMod, 60, cdInt, W0) / 60;
   const cdEqPerMin = (IMPACT_W[CARDIO[cdMod]?.impact] ?? 1) * INTENSITY_W[cdInt];
+  let maxDaily = null;
+  for (const d of daily.keys()) if (!maxDaily || d > maxDaily) maxDaily = d;
+  const realism = progressionRealism === true ? 0.1 : clamp(numOr(progressionRealism, 0), 0, 0.5);
   const weekDrivers = [];
-  for (let k = 0; k < W; k++) {
+  const start0 = parseDs(today);
+  const Wd = Math.max(W, 12);   // ≥ 12 weeks so maintenance (averaged over the first 12) doesn't depend on the horizon
+  for (let k = 0; k < Wd; k++) {
     const wk = emptyDay();
     let lD = 0, cD = 0, bD = 0, planD = 0, tplD = 0;
-    for (let i = 0; i < 7; i++) {
-      const d = ds(addDays(parseDs(today), 7 * k + i));
+    const wkStart = ds(addDays(start0, 7 * k));
+    if ((!lastPlanned || wkStart > lastPlanned) && useTemplateBeyond && (!maxDaily || wkStart > maxDaily)) {
+      // Fast path for long horizons: a whole template week (nothing logged or planned).
+      addInto(wk, noKinds(tpl), 7);
+      lD = 7 * tplLiftFrac; cD = 7 * tplCardioFrac; bD = 7 * tplBothFrac; tplD = 7;
+    } else for (let i = 0; i < 7; i++) {
+      const d = i ? ds(addDays(start0, 7 * k + i)) : wkStart;
       const beyond = !lastPlanned || d > lastPlanned;
       if (beyond && useTemplateBeyond) {
         addInto(wk, noKinds(tpl));
@@ -430,6 +540,12 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
         if (raw) { lD += raw.lift; cD += raw.cardio; bD += raw.lift && raw.cardio ? 1 : 0; }
         if (!beyond) planD++;
       }
+    }
+    if (realism && tplD === 7) {
+      // progressionRealism: repeated template weeks fade slowly (missed weeks, travel, life), ~63 % of the way by 1.5 years.
+      const f = 1 - realism * (1 - Math.exp(-k / ADH_DECAY_TAU));
+      for (const key of ['sets', 'groupSets', 'cardioMin', 'cardioKcal', 'eqMin', 'kcal', 'minutes']) wk[key] *= f;
+      for (const g of Object.keys(wk.groups)) wk.groups[g] *= f;
     }
     if (cdMin) {
       const delta = Math.max(cdMin, -wk.cardioMin);
@@ -447,14 +563,14 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   // Volume share by group across the horizon (for measurement and muscle-score distribution).
   const horizonGroups = {};
   let horizonGroupSets = 0;
-  for (const wk of weekDrivers) for (const [g, v] of Object.entries(wk.groups)) { horizonGroups[g] = (horizonGroups[g] || 0) + v; horizonGroupSets += v; }
+  for (const wk of weekDrivers.slice(0, W)) for (const [g, v] of Object.entries(wk.groups)) { horizonGroups[g] = (horizonGroups[g] || 0) + v; horizonGroupSets += v; }
   const smm0 = L0 * SMM_FRAC_OF_LEAN;    // starting skeletal muscle (lb), for relative per-group growth
 
   // ---------------- energy helpers
   const bmrOf = L => 370 + 21.6 * (L / LB_PER_KG);                     // Katch-McArdle on current lean mass
   const restPerMinOf = L => bmrOf(L) * (1 + neatFactor) / 1440;
   const exNetPerDay = (wk, Wt, L) => Math.max(0, wk.kcal * (Wt / W0) - restPerMinOf(L) * wk.minutes) / 7;
-  const avgEx = weekDrivers.reduce((a, wk) => a + exNetPerDay(wk, W0, L0), 0) / W;
+  const avgEx = weekDrivers.slice(0, 12).reduce((a, wk) => a + exNetPerDay(wk, W0, L0), 0) / 12;
   const tdeeFormula = bmrOf(L0) * (1 + neatFactor) + avgEx;
 
   // ---------------- TDEE calibration from logged food + weight trend
@@ -481,17 +597,60 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   // ---------------- stack (supplements/therapies + metabolic values)
   const stackUsed = useStack !== false;
   const modCache = new Map();
+  // Age is recomputed for every simulated date and handed to modifiersAt (it ages T, the age factor, …).
+  const ageOn = dateStr => (age == null ? undefined : age + daysBetween(today, dateStr) / 365.25);
   const modsAt = (dateStr, inDeficit) => {
     if (!stackUsed) return NEUTRAL_MODS;
     const key = dateStr + (inDeficit ? 'd' : 's');
     if (!modCache.has(key)) {
       let m;
-      try { m = (typeof modifiersFn === 'function' ? modifiersFn : modifiersAt)(profile, dateStr, { age, inDeficit: !!inDeficit }); } catch (e) { m = null; }
+      const fn = typeof modifiersFn === 'function' ? modifiersFn : MET.modifiersAt;
+      try { m = fn(profile, dateStr, { age: ageOn(dateStr), inDeficit: !!inDeficit }); } catch (e) { m = null; }
       modCache.set(key, sanitizeMods(m));
     }
     return modCache.get(key);
   };
   const water0 = modsAt(today, false).waterLb;
+  // Long horizons: modifiers move slowly after the first months, so weeks past 26 reuse one evaluation per 4 weeks.
+  const repWeek = k => (k < 26 ? k : Math.min(W - 1, 26 + 4 * Math.floor((k - 26) / 4) + 2));
+  const modsWeek = (k, inDeficit) => modsAt(midDates[repWeek(k)], inDeficit);
+  const waterWeek = (k, inDeficit) => modsAt(k < 26 ? endDates[k] : endDates[repWeek(k)], inDeficit).waterLb;
+  // Per-week calendar: mid-week date (modifiers), end date (water), age at mid-week, extra RMR decline with age.
+  const midDates = [], endDates = [], ageMid = [], rmrAge = [];
+  for (let k = 0; k < W; k++) {
+    midDates.push(ds(addDays(start0, 7 * k + 3))); endDates.push(ds(addDays(start0, 7 * (k + 1))));
+    const yrs = (7 * k + 3.5) / 365.25;
+    ageMid.push(age == null ? null : age + yrs);
+    rmrAge.push(age == null ? 0 : bmrOf(L0) * RMR_AGE_PER_YEAR * yrs);
+  }
+  // Lean-potential multiplier from aging over the horizon: metabolic's age factor already moves with the per-week age
+  // when present; otherwise the same gentle curve is applied relative to today. A natural testosterone LAB stays fixed
+  // in metabolic, so it is aged here (~1 %/yr past 40); assumed-average T already declines with age in metabolic.
+  const ageCache = new Map();
+  const teFn = typeof MET.testosteroneEffect === 'function' ? MET.testosteroneEffect : null;
+  const leanAgeFactor = (k, mods) => {
+    if (age == null) return 1;
+    const key = k + '|' + (mods.hasAgeFactor ? 1 : 0) + '|' + (mods.tLabNatural || 0);
+    if (ageCache.has(key)) return ageCache.get(key);
+    const a = ageMid[k];
+    let f = mods.hasAgeFactor ? 1 : ageCeil(a) / ageCeil(age);
+    if (mods.tLabNatural && teFn) {
+      const yrs = Math.max(0, a - Math.max(T_DECLINE_FROM_AGE, age));
+      if (yrs > 0) {
+        try {
+          const t0 = teFn(mods.tLabNatural, { age: a }).leanCeilingMult, t1 = teFn(mods.tLabNatural * Math.pow(1 - T_DECLINE_PER_YEAR, yrs), { age: a }).leanCeilingMult;
+          if (fin(t0) && fin(t1) && t0 > 0) f *= clamp(t1 / t0, 0.5, 1);
+        } catch (e) { /* metabolic mid-edit: skip */ }
+      }
+    }
+    ageCache.set(key, f);
+    return f;
+  };
+  // Genetic ceiling (normalized FFMI) and the lean mass it corresponds to at this height.
+  const ffmiCeil = pos(body.ffmiCeiling) && Number(body.ffmiCeiling) >= 18 && Number(body.ffmiCeiling) <= 30 ? Number(body.ffmiCeiling) : FFMI_NATURAL_CEILING;
+  const leanAtFfmi = C => (C - 6.1 * (1.8 - hM)) * hM * hM * LB_PER_KG;
+  const PA0 = neatFactor * bmrOf(L0);                        // daily-movement burn, scales with body weight (Hall 2011)
+  const gammaFatLb = GAMMA_FAT_KG / LB_PER_KG;
 
   // ---------------- intake
   const intakeMode = specCal ? 'calories' : specSurplus != null ? 'surplus' : nutritionOn ? 'nutrition' : 'goal';
@@ -500,13 +659,103 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   const goalIntake = tdeeStart + GOAL_OFFSET[goal];
   const fixedIntake = intakeMode === 'calories' ? specCal : intakeMode === 'surplus' ? Math.max(800, tdeeStart + specSurplus) : null;
 
+  // ---------------- nutrition phases (explicit arg, else the saved plan unless an explicit intake was passed)
+  let phaseSrc = phases;
+  // Saved plan: nutrition.phasePlan ({ preset, repeat, blocks, start }) or the shared dated list nutrition.phases (targets.js).
+  if (phaseSrc === undefined) phaseSrc = !specCal && specSurplus == null ? (nut.phasePlan || (Array.isArray(nut.phases) && nut.phases.length ? nut.phases : null)) : null;
+  const phasePlan = buildPhasePlan(phaseSrc, phasesRepeat, W, today);
+  // Set responses per week (the expensive part of the lean model), reused by every simulation of this context.
+  const weekResp = weekDrivers.slice(0, W).map(wk => {
+    const R = GROUP_ORDER.map(g => setResponse(wk.groups[g] || 0));
+    return { R, respW: GROUP_ORDER.reduce((a, g, i) => a + MUSCLE_SHARE[g] * R[i], 0) };
+  });
+
   return {
     empty: false, b, profile, body, sex, today, nowD, W, adh, W0, bfAssumed, bf0, L0, F0, heightIn, hM, ffmiOf, months0, neatFactor, goal,
     nut, nutritionOn, goalBf, age, missing, missingInfo, proteinGPerLb, proteinAssumed, fatPct, macroProfile, cdMin, cdMod, cdInt,
     all, hist, histDays, plannedCount, lastPlanned, driverSource, useTemplateBeyond, weekDrivers, horizonGroups, horizonGroupSets,
     smm0, bmrOf, exNetPerDay, avgEx, tdeeFormula, calib, tdeeStart, stackUsed, modsAt, water0,
     intakeMode, intakeSource, userSet, goalIntake, fixedIntake, specSurplus,
+    midDates, endDates, ageMid, rmrAge, leanAgeFactor, ffmiCeil, leanAtFfmi, PA0, gammaFatLb, phasePlan, realism, modsWeek, waterWeek,
+    weekResp, stopAtGoal: !!stopAtGoal,
   };
+}
+
+// targets.js format: [{ label, start, end|null, surplus|null, calories|null }] → per-week plan (gaps = maintenance).
+function datedPhasePlan(list, W, today) {
+  const goalOf = x => (pos(x.calories) ? 'custom' : !fin(Number(x.surplus)) || x.surplus === null || Number(x.surplus) === 0 ? 'maintain' : Number(x.surplus) < 0 ? 'cut' : Number(x.surplus) >= 400 ? 'bulk' : 'lean_bulk');
+  const items = list.filter(x => /^\d{4}-\d{2}-\d{2}$/.test(x.start)).slice(0, 24).sort((a, b) => a.start.localeCompare(b.start)).map(x => {
+    const goal = goalOf(x);
+    const s0 = Math.floor(daysBetween(today, x.start) / 7);
+    const e0 = typeof x.end === 'string' && x.end > x.start ? Math.ceil(daysBetween(today, x.end) / 7) : MAX_WEEKS + 1;
+    const calories = pos(x.calories) ? clamp(Number(x.calories), 800, 6000) : null;
+    const surplus = goal === 'maintain' || calories ? 0 : clamp(Number(x.surplus), -2000, 2500);
+    return { weeks: Math.max(1, e0 - s0), goal, calories, surplus, mode: goal === 'maintain' ? 'track' : 'fixed', proteinGPerLb: null, fatPct: null,
+      label: typeof x.label === 'string' && x.label.trim() ? x.label.trim().slice(0, 40) : PHASE_LABEL[goal], stopAtGoal: true, s0, e0 };
+  });
+  if (!items.length) return null;
+  const blocks = [...items, { weeks: MAX_WEEKS, goal: 'maintain', calories: null, surplus: 0, mode: 'track', proteinGPerLb: null, fatPct: null, label: 'Maintain', stopAtGoal: false, after: true }];
+  const gap = blocks.length - 1;
+  const at = [], instances = [];
+  for (let k = 0; k < W; k++) {
+    let bi = gap, st = null;
+    for (let i = items.length - 1; i >= 0; i--) if (items[i].s0 <= k && k < items[i].e0) { bi = i; st = items[i].s0; break; }
+    if (st == null) { const prev = at[k - 1]; st = prev && prev.bi === gap ? prev.start : k; }
+    at.push({ bi, start: st });
+    const last = instances[instances.length - 1];
+    if (!last || last.start !== st || last.bi !== bi) instances.push({ bi, start: st, startWeek: Math.max(0, st), endWeek: k + 1 });
+    else last.endWeek = k + 1;
+  }
+  return { blocks, repeat: false, offset: 0, cycle: null, at, instances, preset: null, start: items[0].start, dated: true };
+}
+
+// Normalizes a phase spec into a per-week schedule. Returns null when there are no usable blocks.
+export function buildPhasePlan(src, repeatDefault = true, W = 52, today = ds()) {
+  if (src == null || src === false) return null;
+  let blocksIn = null, repeat = repeatDefault !== false, start = null, preset = null;
+  if (typeof src === 'string') { const p = PHASE_PRESETS.find(x => x.id === src); if (!p) return null; blocksIn = p.blocks; repeat = p.repeat; preset = p.id; }
+  else if (Array.isArray(src) && src.length && src.every(x => x && typeof x.start === 'string' && x.weeks == null)) return datedPhasePlan(src, W, today);
+  else if (Array.isArray(src)) blocksIn = src;
+  else if (typeof src === 'object') {
+    const p = src.preset ? PHASE_PRESETS.find(x => x.id === src.preset) : null;
+    blocksIn = Array.isArray(src.blocks) && src.blocks.length ? src.blocks : p ? p.blocks : null;
+    repeat = src.repeat != null ? src.repeat !== false : p ? p.repeat : repeat;
+    start = typeof src.start === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(src.start) ? src.start : null;
+    preset = p ? p.id : null;
+  }
+  if (!Array.isArray(blocksIn)) return null;
+  const blocks = blocksIn.filter(x => x && typeof x === 'object').slice(0, 12).map(x => {
+    const goal = PHASE_OFFSET[x.goal] != null ? x.goal : 'custom';
+    const calories = pos(x.calories) ? clamp(Number(x.calories), 800, 6000) : null;
+    const hasSur = x.surplus != null && x.surplus !== '' && fin(Number(x.surplus));
+    const surplus = hasSur ? clamp(Number(x.surplus), -2000, 2500) : PHASE_OFFSET[goal];
+    const mode = calories == null && (goal === 'maintain' ? !hasSur || surplus === 0 : goal === 'custom' && !hasSur) ? 'track' : 'fixed';
+    return { weeks: clamp(Math.round(numOr(x.weeks, 12)), 1, MAX_WEEKS), goal, calories, surplus: mode === 'track' ? 0 : surplus, mode,
+      proteinGPerLb: pos(x.proteinGPerLb) ? clamp(Number(x.proteinGPerLb), 0.3, 2) : null, fatPct: pos(x.fatPct) ? clamp(Number(x.fatPct), 10, 60) : null,
+      label: typeof x.label === 'string' && x.label.trim() ? x.label.trim().slice(0, 40) : PHASE_LABEL[goal],
+      stopAtGoal: x.stopAtGoal !== false };
+  });
+  if (!blocks.length) return null;
+  const cycle = blocks.reduce((a, x) => a + x.weeks, 0);
+  const offset = start && start < today ? Math.max(0, Math.floor(daysBetween(start, today) / 7)) : 0;
+  const all = repeat ? blocks : [...blocks, { weeks: MAX_WEEKS, goal: 'maintain', calories: null, surplus: 0, mode: 'track', proteinGPerLb: null, fatPct: null, label: 'Maintain (after plan)', stopAtGoal: false, after: true }];
+  const at = [], instances = [];
+  for (let k = 0; k < W; k++) {
+    const t = k + offset;
+    let bi, s0;
+    if (!repeat && t >= cycle) { bi = blocks.length; s0 = cycle - offset; }
+    else {
+      const tc = repeat ? t % cycle : t;
+      let acc = 0; bi = 0;
+      while (bi < blocks.length - 1 && tc >= acc + blocks[bi].weeks) { acc += blocks[bi].weeks; bi++; }
+      s0 = k - (tc - acc);
+    }
+    at.push({ bi, start: s0 });
+    const last = instances[instances.length - 1];
+    if (!last || last.start !== s0) instances.push({ bi, start: s0, startWeek: Math.max(0, s0), endWeek: k + 1 });
+    else last.endWeek = k + 1;
+  }
+  return { blocks: all, repeat, offset, cycle, at, instances, preset, start };
 }
 
 // Average daily intake for a week from nutrition targets (cycling day types).
@@ -524,49 +773,123 @@ function nutritionIntake(ctx, wk, Wt, maint) {
 }
 
 // ---------------------------------------------------------------- simulation
-// opts: { fixedIntake?, proteinGPerLb?, fatPct?, energyShift, leanMult }
-function simulate(ctx, { fixedIntake = ctx.fixedIntake, proteinGPerLb = ctx.proteinGPerLb, fatPct = ctx.fatPct, energyShift = 0, leanMult = 1 } = {}) {
-  const { W, W0, L0, F0, sex, goal, goalBf, months0, weekDrivers, bmrOf, exNetPerDay, neatFactor, calib, ffmiOf, today } = ctx;
-  const userSet = fixedIntake != null ? true : ctx.userSet;
-  const mProfile = proteinGPerLb === ctx.proteinGPerLb && fatPct === ctx.fatPct ? ctx.macroProfile
-    : { ...ctx.macroProfile, nutrition: { ...ctx.macroProfile.nutrition, proteinGPerLb, fatPct } };
-  const pf = proteinFactor(proteinGPerLb);
-  const start = parseDs(today);
+// opts: { fixedIntake? (constant intake: the lab; disables phases), proteinGPerLb?, fatPct?, energyShift (kcal/day the
+//   true maintenance is below the estimate), leanMult (lean-rate multiplier), ceilShift (FFMI points vs the ceiling),
+//   adhDecay (fraction of training lost asymptotically, τ = 78 weeks) }
+function simulate(ctx, opts = {}) {
+  const { W, W0, L0, F0, sex, goal, goalBf, months0, weekDrivers, bmrOf, exNetPerDay, calib, ffmiOf, today, PA0, gammaFatLb } = ctx;
+  const labFixed = opts.fixedIntake != null;
+  const fixedIntake = labFixed ? opts.fixedIntake : ctx.fixedIntake;
+  const proteinBase = opts.proteinGPerLb ?? ctx.proteinGPerLb, fatBase = opts.fatPct ?? ctx.fatPct;
+  const energyShift = opts.energyShift || 0, leanMult = opts.leanMult ?? 1, ceilShift = opts.ceilShift || 0, adhDecay = opts.adhDecay || 0;
+  const lite = !!opts.lite;   // lab runs: only lean/fat/water per week (less garbage)
+  const plan = !labFixed && ctx.phasePlan ? ctx.phasePlan : null;
+  const userSet = plan || fixedIntake != null ? true : ctx.userSet;
+  const profCache = new Map();
+  const profFor = (p, f) => {
+    if (p === ctx.proteinGPerLb && f === ctx.fatPct) return ctx.macroProfile;
+    const key = p + '|' + f;
+    if (!profCache.has(key)) profCache.set(key, { ...ctx.macroProfile, nutrition: { ...ctx.macroProfile.nutrition, proteinGPerLb: p, fatPct: f } });
+    return profCache.get(key);
+  };
+  const essential = ESSENTIAL_BF[sex] / 100;
+  const atDecay = Math.exp(-1 / AT_DECAY_WEEKS);
   let L = L0, F = F0, prevBal = (fixedIntake ?? ctx.goalIntake) - ctx.tdeeStart;
+  let tAge = months0, AT = 0, EIref = null, Wref = W0, phaseIntake = null, inst = null;
   const G = Object.fromEntries(GROUP_ORDER.map(g => [g, 0]));   // cumulative lean gained per group
-  const pts = [{ L, F, water: 0, G: { ...G } }];
+  const pts = [{ L, F, water: 0, G: { ...G }, ph: plan ? plan.at[0].bi : -1, Ceff: ctx.ffmiCeil + ceilShift }];
   const wkOut = [];
+  const R = {}, gG = {};
   for (let k = 0; k < W; k++) {
     const wk = weekDrivers[k];
+    const sAdh = adhDecay ? 1 - adhDecay * (1 - Math.exp(-k / ADH_DECAY_TAU)) : 1;
     const Wt = L + F;
-    const mods = ctx.modsAt(ds(addDays(start, 7 * k + 3)), prevBal < 0);
-    const maint = bmrOf(L) * (1 + neatFactor) + exNetPerDay(wk, Wt, L) + calib.offset + mods.tdeeDelta;
+    const mods = ctx.modsWeek(k, prevBal < 0);
+    const eShift = energyShift ? energyShift * (ENERGY_ERR_RESID + (1 - ENERGY_ERR_RESID) * Math.exp(-k / ENERGY_ERR_TAU)) : 0;
+    // Maintenance at today's body: Katch-McArdle on lean + fat tissue's own cost + daily movement scaled by weight
+    // + exercise (scaled by weight) + calibration + stack − age drift. Equals the old BMR × (1 + NEAT) at week 0.
+    const M = bmrOf(L) + gammaFatLb * (F - F0) + PA0 * (Wt / W0) + exNetPerDay(wk, Wt, L) * sAdh + calib.offset + mods.tdeeDelta - ctx.rmrAge[k];
     const bfNow = 100 * F / Wt;
-    // Once at the goal body fat, a goal-driven diet (not a user-set intake) moves to maintenance.
-    const atGoal = !userSet && goal !== 'lean_bulk' && bfNow <= goalBf;
-    let inK;
-    if (atGoal) inK = maint;
-    else if (fixedIntake != null) inK = fixedIntake;
-    else if (ctx.intakeMode === 'nutrition') inK = (nutritionIntake(ctx, wk, Wt, maint - mods.tdeeDelta) ?? ctx.goalIntake) + (userSet ? 0 : mods.intakeDelta);
-    else inK = ctx.goalIntake + mods.intakeDelta;
-    inK = Math.max(800, inK);
-    const raw = inK - maint + energyShift;                           // energy availability signal
-    const adapt = adaptation(raw, k, W0 - Wt);
-    const out = maint + adapt - energyShift;
-    const bal = inK - out;                                           // = raw − adapt (kcal/day actually stored/lost)
-    const months = months0 + (7 * k + 3.5) / DAYS_PER_MONTH;
 
-    // Per-muscle-group lean model: potential (training age × the group's share of muscle) × set
-    // response, scaled by protein, carbs, cardio interference (mostly legs), FFMI proximity, body fat,
-    // the stack's training multiplier, and energy availability.
-    const macros = macrosFor(mProfile, { calories: inK, bodyweight: Wt });
-    const cf = carbFactor(macros.carbs);
-    const itf = interferenceFactor(wk.eqMin);
+    // ---- intake for this week
+    let track = false, defended = false, inK = 0, wIn = k, dRef = EIref, protein = proteinBase, fat = fatBase, ph = -1;
+    if (plan) {
+      const a = plan.at[k], blk = plan.blocks[a.bi];
+      ph = a.bi;
+      if (inst !== a.start) {   // a new phase: re-estimate maintenance, set this phase's intake
+        inst = a.start; EIref = M; Wref = Wt;
+        phaseIntake = blk.calories ?? (blk.mode === 'fixed' ? Math.max(800, M + blk.surplus) : null);
+      }
+      dRef = EIref; wIn = k - a.start;
+      protein = blk.proteinGPerLb ?? proteinBase; fat = blk.fatPct ?? fatBase;
+      const deficitPhase = phaseIntake != null && phaseIntake < EIref - 1;
+      if (blk.mode === 'track' || (blk.stopAtGoal && deficitPhase && bfNow <= goalBf)) track = true;
+      else inK = phaseIntake;
+    } else {
+      if (k === 0) EIref = M;
+      dRef = EIref;
+      // A goal-driven diet (or a user-set deficit with stopAtGoal) moves to maintenance once at the goal body fat.
+      const atGoal = bfNow <= goalBf && (userSet ? ctx.stopAtGoal && !labFixed && fixedIntake != null && fixedIntake < EIref : goal !== 'lean_bulk');
+      if (atGoal) track = true;
+      else if (fixedIntake != null) inK = fixedIntake;
+      else if (ctx.intakeMode === 'nutrition') {
+        inK = (nutritionIntake(ctx, wk, Wt, M - mods.tdeeDelta) ?? ctx.goalIntake) + (userSet ? 0 : mods.intakeDelta);
+        dRef = M;   // targets are recalculated weekly, so the surplus is always vs current maintenance
+      } else inK = ctx.goalIntake + mods.intakeDelta;
+    }
+
+    // Below the defended body fat a diet isn't sustained: intake rises to maintenance.
+    if (!track && bfNow <= DEFENDED_BF[sex] && inK < M) { track = true; defended = true; }
+
+    // ---- energy: the body pushes back on an imbalance
+    let raw, adapt, bal;
+    if (track) {
+      // Eating at maintenance = weight-stable by definition (you adjust to the scale), so no estimate error accrues;
+      // leftover adaptive thermogenesis fades and intake simply matches the burn.
+      AT *= atDecay;
+      inK = Math.max(800, M - AT);
+      raw = inK - M;
+      adapt = -AT;
+      bal = 0;
+    } else {
+      inK = Math.max(800, inK);
+      raw = inK - M + eShift;                                        // energy availability signal
+      const dEI = inK - dRef + eShift;                               // intake change vs (true) maintenance when this phase began
+      // Overfeeding: TEF on the imbalance + extra movement/metabolic rise of 42 % of the intake change (Levine 1999,
+      // capped). It persists while overfed, as in Hall 2011's adaptive term, so weight converges instead of drifting.
+      let N = dEI > 0 ? Math.min(SURPLUS_ADAPT_CAP, SURPLUS_ADAPT_FRAC * dEI) * Math.min(1, (wIn + 1) / SURPLUS_RAMP_WEEKS) : 0;
+      N = Math.min(N, Math.max(0, (1 - TEF_FRAC) * raw));
+      if (raw < 0) {
+        // Adaptive thermogenesis in a deficit: 10 % of it (4-week ramp) + 10 kcal/day per lb lost this phase, capped,
+        // and never more than the deficit itself.
+        const target = Math.min(AT_CAP, AT_DEFICIT_FRAC * (-raw) * Math.min(1, (wIn + 1) / AT_RAMP_WEEKS) + AT_PER_LB_LOST * Math.max(0, Wref - Wt));
+        AT = Math.min(target, -(1 - TEF_FRAC) * raw);
+      } else AT *= atDecay;
+      adapt = TEF_FRAC * raw + N - AT;
+      bal = raw - adapt;                                             // kcal/day actually stored/lost
+    }
+    const out = M + adapt - eShift;
+
+    // ---- lean model per muscle group
+    let respW = 0;
+    if (sAdh === 1) { const wr = ctx.weekResp[k]; respW = wr.respW; GROUP_ORDER.forEach((g, i) => { R[g] = wr.R[i]; }); }
+    else for (const g of GROUP_ORDER) { R[g] = setResponse((wk.groups[g] || 0) * sAdh); respW += MUSCLE_SHARE[g] * R[g]; }
+    // Training age advances with consistent training (a missed/empty week doesn't use up "newbie gains").
+    const adv = (7 / DAYS_PER_MONTH) * Math.min(1, respW / TA_FULL_RESP);
+    const months = tAge + adv / 2;
+    tAge += adv;
+    const pkcal = Wt * protein * 4, fkcal = inK * fat / 100;
+    const cf = carbFactor(Math.max(0, (inK - pkcal - fkcal) / 4));
+    const pf = proteinFactor(protein);
+    const itf = interferenceFactor(wk.eqMin * sAdh);
     const itfUpper = 1 - (1 - itf) * 0.5;
-    const ff = ffmiFactor(ctx.heightIn ? ffmiOf(L) : null);
+    const Ceff = ctx.ffmiCeil + ceilShift + mods.ffmiShift;
+    const ff = ceilingFactor(Ceff - ffmiOf(L));
     const bff = raw > 0 ? bfSurplusFactor(bfNow) : 1;
-    const wholeRate = Wt * leanRatePctPerMonth(months) / 100 * (7 / DAYS_PER_MONTH);   // lb/week at 10 sets everywhere
-    const common = pf * cf * ff * bff * mods.leanCeilingMult * leanMult;
+    // Rate basis scales with lean mass (not fat), equal to today's bodyweight at the start.
+    const wholeRate = W0 * (L / L0) * leanRatePctPerMonth(months) / 100 * (7 / DAYS_PER_MONTH);
+    const ageF = ctx.leanAgeFactor(k, mods);
+    const common = pf * cf * ff * bff * mods.leanCeilingMult * leanMult * ageF;
     let fE = energyFactor(raw);
     if (raw < 0) {
       // Newer lifters and people with more fat to lose recomp better; veterans and very lean people worse.
@@ -574,18 +897,16 @@ function simulate(ctx, { fixedIntake = ctx.fixedIntake, proteinGPerLb = ctx.prot
       rec *= bfNow >= 20 ? 1.1 : bfNow < 12 ? 0.75 : 1;
       fE = Math.min(EF_MAINT, fE * rec);
     }
-    const gG = {};
-    let ceiling = 0, gainTrain = 0, respW = 0;
+    let ceiling = 0, gainTrain = 0;
     for (const g of GROUP_ORDER) {
-      const R = setResponse(wk.groups[g] || 0);
-      respW += MUSCLE_SHARE[g] * R;
-      const cap = Math.max(0, wholeRate * MUSCLE_SHARE[g] * R * common * (LEG_GROUPS.has(g) ? itf : itfUpper));
+      const cap = Math.max(0, wholeRate * MUSCLE_SHARE[g] * R[g] * common * (LEG_GROUPS.has(g) ? itf : itfUpper));
       ceiling += cap;
       gG[g] = cap * fE;
       gainTrain += gG[g];
     }
-    // Training-independent lean accrual (e.g. supraphysiologic testosterone), spread by muscle share.
-    const leanDirect = mods.leanDirectLbPerWeek * leanMult;
+    // Training-independent lean accrual (e.g. supraphysiologic testosterone), spread by muscle share; it also
+    // slows near the (raised) ceiling.
+    const leanDirect = mods.leanDirectLbPerWeek * leanMult * (mods.leanDirectLbPerWeek > 0 ? ff : 1);
     for (const g of GROUP_ORDER) gG[g] += leanDirect * MUSCLE_SHARE[g];
     let gain = gainTrain + leanDirect;
     // Lean loss in a deficit: Forbes partition, mostly prevented by lifting + protein.
@@ -601,12 +922,20 @@ function simulate(ctx, { fixedIntake = ctx.fixedIntake, proteinGPerLb = ctx.prot
     let dF = (bal * 7 - gain * KCAL_PER_LB_LEAN + loss * KCAL_LEAN_RELEASED) / KCAL_PER_LB_FAT;
     // Stack partition shift: move part of a surplus's stored mass between fat and lean (energy-neutral).
     if (mods.partitionShift && bal > 0 && dF > 0 && gain > 0) {
-      const E = bal * 7, M = gain + dF;
-      const p2 = clamp(gain / M + mods.partitionShift, 0, 0.95);
+      const E = bal * 7, Ms = gain + dF;
+      const p2 = clamp(gain / Ms + mods.partitionShift, 0, 0.95);
       const M2 = E / (p2 * KCAL_PER_LB_LEAN + (1 - p2) * KCAL_PER_LB_FAT);
       const g2 = p2 * M2, f = gain > 0 ? g2 / gain : 1;
       for (const g of GROUP_ORDER) gG[g] *= f;
       gain = g2; dF = (1 - p2) * M2;
+    }
+    // Hard guard: never past the (effective) ceiling; energy that can't become muscle is stored as fat.
+    const Lcap = ctx.leanAtFfmi(Ceff);
+    if (gain > 0 && L + gain - loss > Lcap) {
+      const g2 = Math.max(0, Lcap - L + loss), f = g2 / gain;
+      for (const g of GROUP_ORDER) gG[g] *= f;
+      dF += (gain - g2) * KCAL_PER_LB_LEAN / KCAL_PER_LB_FAT;
+      gain = g2;
     }
     // Direct fat change from the stack (e.g. high testosterone): burned, not funding anything else.
     const fatDirect = mods.fatDirectLbPerWeek;
@@ -614,14 +943,15 @@ function simulate(ctx, { fixedIntake = ctx.fixedIntake, proteinGPerLb = ctx.prot
     for (const g of GROUP_ORDER) G[g] += gG[g] - loss * MUSCLE_SHARE[g];
     L = L + gain - loss;
     F = F + dF;
-    const minF = (L + F) * ESSENTIAL_BF[sex] / 100;
+    const minF = (L + F) * essential;
     if (F < minF) F = minF;
-    const water = ctx.modsAt(ds(addDays(start, 7 * (k + 1))), bal < 0).waterLb - ctx.water0;
-    pts.push({ L, F, water, G: { ...G } });
+    const water = ctx.waterWeek(k, bal < 0) - ctx.water0;
+    pts.push(lite ? { L, F, water } : { L, F, water, G: { ...G }, ph, track, Ceff, defended });
     prevBal = bal;
-    wkOut.push({ kcalIn: inK, kcalOut: out, balance: bal, raw: raw - energyShift, adapt, gain, loss, ceiling, fatChange: dF,
-      leanDirect, fatDirect, gainByGroup: gG,
-      f: { vf: respW, pf, cf, itf, ff, bff, fE, stack: mods.leanCeilingMult }, macros });
+    wkOut.push({ kcalIn: inK, kcalOut: out, balance: bal, raw: raw - (track ? 0 : eShift), adapt, defended, gain, loss, ceiling, fatChange: dF,
+      leanDirect, fatDirect, gainByGroup: lite ? null : { ...gG }, months, maint: M, track, ph,
+      f: { vf: respW, pf, cf, itf, ff, bff, fE, stack: mods.leanCeilingMult, age: ageF },
+      macros: k === 0 ? macrosFor(profFor(protein, fat), { calories: inK, bodyweight: Wt }) : null });
   }
   return { pts, wkOut };
 }
@@ -651,17 +981,23 @@ export function project(args = {}) {
   if (ctx.empty) return ctx.result;
   const { b, profile, body, sex, today, W, adh, W0, bfAssumed, bf0, L0, F0, heightIn, months0, neatFactor, goal, nutritionOn, goalBf,
     weekDrivers, horizonGroups, smm0, ffmiOf, calib, tdeeStart, intakeSource, intakeMode, plannedCount, lastPlanned,
-    histDays, hist, driverSource, useTemplateBeyond } = ctx;
+    histDays, hist, driverSource, useTemplateBeyond, age } = ctx;
   const missing = ctx.missing, missingInfo = ctx.missingInfo;
   const assumptions = [];
 
   // ---------------- confidence (also sets band widths)
   const confidence = confidenceFor({ b, sessions: ctx.all, today, calib });
-  const sigmaE = 150 + (confidence === 'low' ? 100 : confidence === 'medium' ? 50 : 0);
-  const [lmLo, lmHi] = confidence === 'low' ? [0.4, 1.6] : confidence === 'medium' ? [0.5, 1.5] : [0.6, 1.4];
+  // Band ingredients: maintenance-estimate error (±10/8/6 % of TDEE by data quality, shrunk by food-log calibration),
+  // lean-rate uncertainty (±50/40/30 %), the genetic ceiling (±1.5 FFMI) and adherence drifting down over the years.
+  // Each is simulated on its own and combined as a root-sum-square of the deviations (independent errors), so the band
+  // widens with the horizon without stacking every worst case at once.
+  const tdeePct = (confidence === 'low' ? 0.10 : confidence === 'medium' ? 0.08 : 0.06) * (calib.applied ? 1 - 0.5 * calib.weight : 1);
+  const sigmaE = Math.max(100, Math.round(tdeeStart * tdeePct));
+  const lmSpread = confidence === 'low' ? 0.5 : confidence === 'medium' ? 0.4 : 0.3;
+  const [lmLo, lmHi] = [1 - lmSpread, 1 + lmSpread];
   const likely = simulate(ctx);
-  const scen = [simulate(ctx, { energyShift: -sigmaE, leanMult: lmHi }), simulate(ctx, { energyShift: -sigmaE, leanMult: lmLo }),
-    simulate(ctx, { energyShift: sigmaE, leanMult: lmHi }), simulate(ctx, { energyShift: sigmaE, leanMult: lmLo })];
+  const scen = [simulate(ctx, { energyShift: sigmaE }), simulate(ctx, { energyShift: -sigmaE }),
+    simulate(ctx, { leanMult: lmHi, ceilShift: FFMI_CEIL_SD }), simulate(ctx, { leanMult: lmLo, ceilShift: -FFMI_CEIL_SD, adhDecay: 0.2 })];
 
   // ---------------- measurements
   const m0 = b.measurements || {};
@@ -707,25 +1043,34 @@ export function project(args = {}) {
     return out;
   };
 
-  // ---------------- series
+  // ---------------- series (weekly internally; downsampled for output)
   const start = parseDs(today);
-  const series = likely.pts.map((p, k) => {
+  const blocks = ctx.phasePlan ? ctx.phasePlan.blocks : null;
+  const leanHiCap = k => ctx.leanAtFfmi((likely.pts[k].Ceff ?? ctx.ffmiCeil) + FFMI_CEIL_SD);
+  const rss = (k, pick) => {
+    const v = pick(likely.pts[k]);
+    let lo = 0, hi = 0;
+    for (const sc of scen) { const d = pick(sc.pts[k]) - v; if (d < 0) lo += d * d; else hi += d * d; }
+    return [v - Math.sqrt(lo), v + Math.sqrt(hi)];
+  };
+  const pointAt = k => {
+    const p = likely.pts[k];
     const T = p.L + p.F, Wt = T + p.water;
     const shape = shapeAt(p.L, p.F, p.G);
     const measurements = {};
     for (const s of known) measurements[s] = shape[s];
-    const band = (pick) => {
-      const vals = [pick(p), ...scen.map(sc => pick(sc.pts[k]))];
-      return [Math.min(...vals), Math.max(...vals)];
-    };
-    const [wLo, wHi] = band(q => q.L + q.F + q.water);
-    const [bLo, bHi] = band(q => 100 * q.F / (q.L + q.F));
-    const [lLo, lHi] = band(q => q.L);
-    const [fLo, fHi] = band(q => q.F);
-    const low = { weightLb: r1(wLo), bodyFatPct: r1(bLo), leanLb: r1(lLo), fatLb: r1(fLo) };
-    const high = { weightLb: r1(wHi), bodyFatPct: r1(bHi), leanLb: r1(lHi), fatLb: r1(fHi) };
+    const [wLo, wHi] = rss(k, q => q.L + q.F + q.water);
+    const [bLo, bHi] = rss(k, q => 100 * q.F / (q.L + q.F));
+    const [lLo, lHi] = rss(k, q => q.L);
+    const [fLo, fHi] = rss(k, q => q.F);
+    // Plausibility: fat never below essential fat, lean never past the ceiling + its uncertainty.
+    const ess = ESSENTIAL_BF[sex];
+    const lHiC = Math.min(lHi, Math.max(p.L, leanHiCap(k)));
+    const fLoC = Math.max(fLo, Math.min(p.F, (lLo + fLo) * ess / (100 - ess)));
+    const low = { weightLb: r1(wLo), bodyFatPct: r1(Math.max(Math.min(100 * p.F / T, ess), bLo)), leanLb: r1(lLo), fatLb: r1(fLoC) };
+    const high = { weightLb: r1(wHi), bodyFatPct: r1(bHi), leanLb: r1(lHiC), fatLb: r1(fHi) };
     if (known.includes('waist')) {
-      const [wa, wb] = band(q => shapeAt(q.L, q.F, q.G).waist);
+      const [wa, wb] = rss(k, q => shapeAt(q.L, q.F, q.G).waist);
       low.waist = r1(wa); high.waist = r1(wb);
     }
     const ratio = (a, c) => (pos(m0[a]) && pos(m0[c]) ? r2(shape[a] / shape[c]) : null);
@@ -735,7 +1080,7 @@ export function project(args = {}) {
       if (v != null) limbs[s + side] = r2(v + (shape[s] - shape0[s]));
     }
     const bodyFatPct = r1(100 * p.F / T);
-    return {
+    const pt = {
       week: k, date: ds(addDays(start, 7 * k)),
       weightLb: r1(Wt), bodyFatPct, leanLb: r1(p.L), fatLb: r1(p.F), waterLb: r1(p.water),
       measurements, shape, limbs, muscle: muscleAt(p.G), muscleLb: Object.fromEntries(GROUP_ORDER.map(g => [g, r2(p.G[g])])), ffmi: heightIn ? r1(ffmiOf(p.L)) : null,
@@ -743,10 +1088,23 @@ export function project(args = {}) {
         waistToHeight: pos(m0.waist) && heightIn ? r2(shape.waist / heightIn) : null },
       low, high,
     };
+    if (blocks) { const bi = p.ph >= 0 ? p.ph : likely.pts[Math.min(k + 1, W)].ph; pt.phase = { index: bi, goal: blocks[bi]?.goal, label: blocks[bi]?.label, atMaintenance: !!likely.pts[Math.min(k + 1, W)]?.track }; }
+    return pt;
+  };
+  // Light weekly track for milestone dates (same rounding as the series).
+  const weeklyLite = likely.pts.map((p, k) => {
+    const T = p.L + p.F;
+    const sh = shapeAt(p.L, p.F, p.G);
+    return { week: k, date: ds(addDays(start, 7 * k)), bodyFatPct: r1(100 * p.F / T), leanLb: r1(p.L), ffmi: r1(ffmiOf(p.L)),
+      ratios: { shoulderToWaist: pos(m0.shoulders) && pos(m0.waist) ? r2(sh.shoulders / sh.waist) : null } };
   });
 
   // ---------------- milestones
-  const milestones = buildMilestones({ series, W, goalBf, L0, body, sex, m0 });
+  const milestones = buildMilestones({ series: weeklyLite, W, goalBf, L0, body, sex, m0, heightIn, ffmiCeil: ctx.ffmiCeil });
+  const phaseWeeks = ctx.phasePlan ? ctx.phasePlan.instances.flatMap(x => [x.startWeek, x.startWeek - 1]) : [];
+  const keep = sampleWeeks(W, [...milestones.map(m => m.week).filter(k => k != null), ...phaseWeeks]);
+  const series = keep.map(pointAt);
+  const seriesFull = args.fullSeries ? likely.pts.map((_, k) => pointAt(k)) : undefined;
 
   // ---------------- weekly + summary
   const avg = f => likely.wkOut.reduce((a, w, i) => a + f(w, weekDrivers[i]), 0) / W;
@@ -789,13 +1147,28 @@ export function project(args = {}) {
   let ageNote = null;
   if (ctx.stackUsed) {
     try {
-      const mb = metabolicBaseline(profile, { age: ctx.age });
+      const mb = typeof MET.metabolicBaseline === 'function' ? MET.metabolicBaseline(profile, { age: ctx.age }) : null;
       const af = (mb?.factors || []).find(f => f && /age/i.test(String(f.id || f.label || '')));
       if (af && fin(Number(af.mult))) ageNote = `your age factor (${ctx.age ?? 'unknown'} y) from the metabolic profile is ×${r2(Number(af.mult))}${af.note ? ` (${af.note})` : ''}.`;
     } catch (e) { ageNote = null; }
   }
   const stack = { contributions: [...stackContrib.values()], warnings: [...stackWarn], used: ctx.stackUsed,
     direct: { lean: r2(likely.wkOut.reduce((a, w) => a + w.leanDirect, 0)), fat: r2(likely.wkOut.reduce((a, w) => a + w.fatDirect, 0)) }, ageNote };
+
+  // ---------------- phases timeline + ceiling summary (for the UI)
+  const phaseInfo = ctx.phasePlan ? ctx.phasePlan.instances.map(x => {
+    const blk = ctx.phasePlan.blocks[x.bi];
+    const wks = likely.wkOut.slice(x.startWeek, x.endWeek);
+    const kcal = wks.length ? wks.reduce((a, w) => a + w.kcalIn, 0) / wks.length : null;
+    const maintWeeks = wks.filter(w => w.track).length;
+    return { index: x.bi, goal: blk.goal, label: blk.label, mode: blk.mode, startWeek: x.startWeek, endWeek: x.endWeek,
+      start: ds(addDays(start, 7 * x.startWeek)), end: ds(addDays(start, 7 * x.endWeek)), surplus: blk.mode === 'track' ? 0 : blk.calories ? null : blk.surplus,
+      calories: blk.calories, avgKcal: kcal != null ? Math.round(kcal) : null, maintenanceWeeks: maintWeeks, after: !!blk.after };
+  }) : [];
+  const endCeff = likely.pts[W].Ceff ?? ctx.ffmiCeil;
+  const ceilInfo = { ffmiNatural: r1(ctx.ffmiCeil), ffmiEffective: r1(endCeff), tShift: r2(endCeff - ctx.ffmiCeil), sd: FFMI_CEIL_SD,
+    leanAtCeilingLb: r1(ctx.leanAtFfmi(endCeff)), ffmiStart: r1(ctx.ffmiOf(L0)), ffmiEnd: r1(ctx.ffmiOf(likely.pts[W].L)),
+    potentialUsedPct: Math.round(100 * clamp((likely.pts[W].L - L0) / Math.max(0.1, ctx.leanAtFfmi(endCeff) - L0), 0, 1)), heightAssumed: !heightIn };
 
   // ---------------- assumptions (plain English)
   const sb = b.bodyFatRange ? { value: bf0, source: b.bodyFatSource, method: b.bodyFatMethod ?? null, uncertainty: b.bodyFatUncertainty ?? null,
@@ -815,10 +1188,15 @@ export function project(args = {}) {
     : intakeMode === 'surplus' ? `You set intake to maintenance ${sgn(ctx.specSurplus)}${Math.round(ctx.specSurplus)} kcal = ${Math.round(ctx.fixedIntake)} kcal/day, held constant.`
       : intakeMode === 'nutrition' ? `Intake follows your nutrition targets (${profile.nutrition.mode} mode, goal ${goal}), averaging about ${Math.round(intakeStart)} kcal/day in week 1 and recalculated as your weight changes.`
         : `Intake: nutrition tracking is off, so the ${goal} default is assumed: maintenance ${sgn(GOAL_OFFSET[goal])}${GOAL_OFFSET[goal]} kcal = about ${Math.round(ctx.goalIntake)} kcal/day, held constant (so the deficit shrinks as you get lighter, like eating the same amount in real life).`;
-  assumptions.push(`${intakeText}${!ctx.userSet && goal !== 'lean_bulk' ? ` Once you reach your ${goalBf}% goal, intake is assumed to rise to maintenance (you would stop dieting).` : ''}`);
-  assumptions.push(`The body pushes back on any imbalance. Eating more: ~10% of the extra calories is burned digesting it and up to ~42% more by extra fidgeting, movement and metabolic rate (phased in over ${SURPLUS_RAMP_WEEKS} weeks, capped at ${SURPLUS_ADAPT_CAP} kcal/day). In Levine's 1999 overfeeding study about half of a +1,000 kcal/day surplus was burned off on average, but it ranged from almost none to most of it between people. Eating less: digestion burns less, plus adaptive thermogenesis of ~10% of the deficit and ~10 kcal/day per lb lost (capped at ${AT_CAP}).`);
+  if (phaseInfo.length) {
+    const pp = ctx.phasePlan;
+    const desc = pp.blocks.filter(x => !x.after).map(x => `${x.weeks} wk ${x.label.toLowerCase()}${x.mode === 'track' ? ' (at maintenance)' : x.calories ? ` at ${Math.round(x.calories)} kcal` : ` at ${sgn(x.surplus)}${Math.round(x.surplus)} kcal`}`).join(' → ');
+    assumptions.push(`Nutrition phases: ${desc}${pp.repeat ? ', repeated' : ', then maintenance'}${pp.offset ? ` (you are ${pp.offset} weeks into the plan)` : ''}. Each phase re-estimates maintenance when it starts and eats that much above/below it, held steady for the phase (like eating the same amount every day). "Maintain" tracks maintenance week by week. Cuts stop at your ${goalBf}% goal and switch to maintenance. The nutrition lab still sweeps constant intakes.`);
+  } else assumptions.push(`${intakeText}${!ctx.userSet && goal !== 'lean_bulk' ? ` Once you reach your ${goalBf}% goal, intake is assumed to rise to maintenance (you would stop dieting).` : ''}`);
+  assumptions.push(`The body pushes back on any imbalance. Eating more: ~10% of the extra calories is burned digesting it and up to ~42% more by extra fidgeting, movement and metabolic rate (phased in over ${SURPLUS_RAMP_WEEKS} weeks, capped at ${SURPLUS_ADAPT_CAP} kcal/day). In Levine's 1999 overfeeding study about half of a +1,000 kcal/day surplus was burned off on average, but it ranged from almost none to most of it between people. Eating less: digestion burns less, plus adaptive thermogenesis of ~10% of the cut and ~10 kcal/day per lb lost (capped at ${AT_CAP} kcal/day); it fades over ~${AT_DECAY_WEEKS} weeks once you are back at maintenance (Martins 2020 found it largely disappears after weight stabilizes).`);
+  assumptions.push(`Weight levels off at a fixed intake (Hall et al. 2011, Lancet): a heavier body burns more (fat tissue ≈ ${GAMMA_FAT_KG} kcal/kg/day, lean ≈ 22, and everyday movement costs more at a higher weight), so eating the same amount every day moves you toward a new steady weight, about half-way in the first year and nearly all the way within ~3 years, instead of gaining or losing forever. Rule of thumb from Hall: each 10 kcal/day changes steady-state weight by about 1 lb.${age != null ? ` Resting burn also drifts down ~1%/decade with age beyond what lean mass explains (low end of published estimates; Pontzer 2021 finds little change before 60).` : ''}`);
   const respTxt = weekly.groupSetsPerWeek > 0 ? GROUP_ORDER.map(g => `${GROUPS[g]?.name || g} ${weekly.setsByGroup[g] ?? 0} sets → ${Math.round(100 * weekly.responseByGroup[g])}%`).join(', ') : '';
-  assumptions.push(`Muscle has a speed limit. The whole-body limit comes from training age (you start at ${r1(months0)} months: ~${LEAN_RATE_ANCHORS.map(([m, r]) => `${r}% of bodyweight/month at ${m} mo`).slice(0, 3).join(', ')}, falling later; the conservative end of Aragon-style guidelines). It is split across muscle groups by their share of your muscle (legs and glutes ≈ 45%, back ≈ 17%, arms ≈ 14%, chest ≈ 8%, shoulders ≈ 7%, core ≈ 8%), so each group can only grow as fast as its own training allows.`);
+  assumptions.push(`Muscle has a speed limit. The whole-body limit comes from training age (you start at ${r1(months0)} months): about ${LEAN_RATE_ANCHORS.filter(([m]) => [0, 12, 24, 36, 60].includes(m)).map(([m, r]) => `${r}%`).join(' → ')} of bodyweight/month at 0, 1, 2, 3 and 5 years of consistent training, still shrinking after that (the conservative end of the Aragon and McDonald guideline models, which are rules of thumb with ±30-50% individual spread). Training age only advances in weeks you actually train. It is split across muscle groups by their share of your muscle (legs and glutes ≈ 45%, back ≈ 17%, arms ≈ 14%, chest ≈ 8%, shoulders ≈ 7%, core ≈ 8%), so each group can only grow as fast as its own training allows.`);
   assumptions.push(`Sets per muscle drive growth: each group's weekly sets (indirect work counted fractionally, e.g. triceps get partial credit from pressing; Pelland 2024 found this fits the research best) go through a curve where 10 sets/week = 100%, the first few sets do the most, 20 sets ≈ 121%, 30 ≈ 130%, and it levels off around 135% (Schoenfeld, Ogborn & Krieger 2017; Pelland 2024; no drop-off at high volume is modelled). 0 sets = no training growth for that muscle. Your plan: ${respTxt || 'no lifting found'}.`);
   assumptions.push(`Each group's growth is then scaled by protein (${r2(ctx.proteinGPerLb)} g/lb${ctx.proteinAssumed ? ', ASSUMED because protein is not tracked' : ''}: ${Math.round(partition.proteinFactor * 100)}%), cardio interference (${Math.round(partition.interferenceFactor * 100)}% on legs, half that effect on the upper body), closeness to your natural limit (FFMI: ${Math.round(partition.ffmiFactor * 100)}%)${ctx.stackUsed && Math.abs(partition.stackFactor - 1) > 0.005 ? `, your supplement/therapy stack (${Math.round(partition.stackFactor * 100)}%)` : ''} and energy availability (below). Over ${W} weeks that ceiling is about ${r1(partition.leanCeilingLb)} lb of lean mass.`);
   assumptions.push(`How much of that ceiling you reach depends on food: about 70% at maintenance, ~93% at +250 kcal/day, ~98% at +500, and no more beyond that; a 300 kcal deficit gives ~45% and a 1,000 kcal deficit ~13% (newer lifters and people above 20% body fat recomp a bit better; very lean or veteran lifters worse). Leaner people put a bit more of a surplus into muscle (Forbes). This plan reaches ${partition.ceilingUsedPct}% of the ceiling. Calories beyond what muscle can use are stored as fat: that is why a huge surplus adds fat much faster than muscle (Iraki 2019; Garthe 2013 found the same in elite athletes).`);
@@ -848,7 +1226,10 @@ export function project(args = {}) {
       assumptions.push(`How the stack combines with training: it can raise the training-driven ceiling (×${r2(partition.stackFactor)} on average) and add lean mass that does not need training (${r2(stack.direct.lean)} lb total here), as in Bhasin 1996 (10 weeks: exercise alone +1.9 kg fat-free mass, testosterone alone +3.2 kg, both +6.1 kg). Those effects are treated as roughly additive. No study has varied testosterone level and set volume at the same time, so additivity is an assumption. Bhasin's subjects were 19-35; ${stack.ageNote || 'age effects come from your metabolic profile.'} Lean built this way still costs ~${KCAL_PER_LB_LEAN} kcal/lb, so at a fixed intake it comes out of fat.`);
     }
   } else if (!ctx.stackUsed) assumptions.push('Supplements, therapies and metabolic values are switched off for this projection (neutral defaults), for comparison.');
-  assumptions.push(`Band: low/high combine ±${Math.round(150 + (confidence === 'low' ? 100 : confidence === 'medium' ? 50 : 0))} kcal/day of intake/burn error with ${Math.round(lmLo * 100)}-${Math.round(lmHi * 100)}% of the expected muscle response. It is wider when there is less real data (confidence: ${confidence}).`);
+  assumptions.push(`Genetic ceiling: muscle gain slows as you approach a natural limit of about FFMI ${r1(ctx.ffmiCeil)} (fat-free mass index normalized to 1.8 m; Kouri et al. 1995 found drug-free athletes rarely exceed ~25, and individual limits vary by about ±1.5). Gains start easing ~4 points below it and stop at it. You start at FFMI ${r1(ctx.ffmiOf(L0))}${heightIn ? '' : ' (height missing, so an average height is assumed)'}, so the ceiling is about ${r1(ctx.leanAtFfmi(ctx.ffmiCeil))} lb of lean mass.${ceilInfo.tShift > 0.05 ? ` Your testosterone level raises the reachable ceiling by about ${r1(ceilInfo.tShift)} FFMI (Kouri's steroid users averaged ~3 points above non-users; Forge maps 1,000 → 2,400 ng/dL to +0 → +2.0 and does not extrapolate; this mapping is an estimate, not a measured dose-response).` : ''}`);
+  if (age != null) assumptions.push(`Age: you are ${Math.round(age)} now and ${r1(age + W / 52.18)} at the end; age is recomputed every week. Muscle-building potential eases ~0.4%/yr past 35 (gentle; older lifters still gain well, Peterson 2011)${ctx.stackUsed ? ', and testosterone follows your metabolic profile (an assumed average declines ~1%/yr with age; a lab value is aged ~1%/yr past 40 per the Massachusetts Male Aging Study, which only matters if it falls into the low range)' : ''}.`);
+  if (ctx.realism) assumptions.push(`Long-term realism is on: weeks after the planned days fade toward ${Math.round((1 - ctx.realism) * 100)}% of the planned training over ~1.5 years (missed weeks, travel, life).`);
+  assumptions.push(`Band: low/high combine, as independent errors, ±${sigmaE} kcal/day of maintenance-estimate error${calib.applied ? ' (narrowed by your food-log calibration)' : ''}, ${Math.round(lmLo * 100)}-${Math.round(lmHi * 100)}% of the expected muscle response, a genetic ceiling ±${FFMI_CEIL_SD} FFMI, and (low side) training adherence slipping ~20% over the years. It widens with the horizon and is wider when there is less real data (confidence: ${confidence}). Re-measuring narrows it: the projection re-anchors to your real numbers.`);
 
   const outMissing = [...missing], outMissingInfo = [...missingInfo];
   if (!plannedCount && !hist.length && !outMissing.includes('sessions')) {
@@ -857,7 +1238,9 @@ export function project(args = {}) {
   }
 
   return {
-    series, milestones, assumptions, weekly, confidence, summary,
+    series, ...(seriesFull ? { seriesFull } : {}), milestones, assumptions, weekly, confidence, summary,
+    phases: phaseInfo, ceiling: ceilInfo,
+    horizon: { weeks: W, years: r2(W / 52.18), label: horizonLabel(W), sampled: series.length < W + 1 },
     energy: { intakeSource, intakeMode, intakeStart: Math.round(intakeStart), tdeeStart: Math.round(tdeeStart), tdeeFormula: Math.round(ctx.tdeeFormula),
       surplusStart: Math.round(intakeStart - tdeeStart), goal, proteinGPerLb: r2(ctx.proteinGPerLb), proteinAssumed: ctx.proteinAssumed, fatPct: ctx.fatPct,
       cardioDeltaMin: ctx.cdMin, cardioModality: ctx.cdMod, cardioIntensity: ctx.cdInt },
@@ -866,16 +1249,20 @@ export function project(args = {}) {
   };
 }
 
-function buildMilestones({ series, W, goalBf, L0, body, sex, m0 }) {
+// `series` here is the full weekly track (week, date, bodyFatPct, leanLb, ffmi, ratios). Each milestone carries `week`.
+function buildMilestones({ series, W, goalBf, L0, body, sex, m0, heightIn = null, ffmiCeil = FFMI_NATURAL_CEILING }) {
   const milestones = [];
   const endPt = series[series.length - 1];
+  const span = W >= 78 ? `${r1(W / 52)} years` : `${W} weeks`;
+  const when = hit => `Projected around ${hit.date} (${hit.week >= 78 ? `year ${r1(hit.week / 52)}` : `week ${hit.week}`}).`;
+  const add = (m, hit) => milestones.push({ ...m, date: hit ? hit.date : null, week: hit ? hit.week : null, reached: !!hit });
   const bfMilestone = (id, label, thr, note) => {
     const already = series[0].bodyFatPct <= thr;
     const hit = series.find(p => p.bodyFatPct <= thr);
-    milestones.push({ id, label, date: hit ? hit.date : null, target: thr, value: endPt.bodyFatPct, reached: !!hit, already,
+    add({ id, label, target: thr, value: endPt.bodyFatPct, already,
       note: already ? `Already at or below ~${thr}% body fat (estimated ${series[0].bodyFatPct}%). ${note}`
-        : hit ? `Projected around ${hit.date} (week ${hit.week}). ${note}`
-          : `Not reached within ${W} weeks at this pace (projected ${endPt.bodyFatPct}% at the end). ${note}` });
+        : hit ? `${when(hit)} ${note}`
+          : `Not reached within ${span} at this pace (projected ${endPt.bodyFatPct}% at the end). ${note}` }, hit);
   };
   const absNote = 'Where abs show depends on where you store fat; most men see them somewhere between 10 and 14%.';
   bfMilestone('abs_upper', 'Upper abs visible (~12% BF)', 12, absNote);
@@ -884,26 +1271,39 @@ function buildMilestones({ series, W, goalBf, L0, body, sex, m0 }) {
     const already = series[0].bodyFatPct <= goalBf;
     const hit = series.find(p => p.bodyFatPct <= goalBf);
     const atGoal = endPt.leanLb / (1 - goalBf / 100);
-    milestones.push({ id: 'goal_bf', label: `Goal body fat (${goalBf}%)`, date: hit ? hit.date : null, target: goalBf, value: endPt.bodyFatPct,
-      reached: !!hit, already,
+    add({ id: 'goal_bf', label: `Goal body fat (${goalBf}%)`, target: goalBf, value: endPt.bodyFatPct, already,
       note: `With your projected lean mass (${r1(endPt.leanLb)} lb), ${goalBf}% body fat is about ${r1(atGoal)} lb on the scale.` +
-        (hit ? '' : ` Not reached within ${W} weeks at this pace.`) });
+        (hit ? '' : ` Not reached within ${span} at this pace.`) }, hit);
   }
   if (pos(m0.shoulders) && pos(m0.waist)) {
     for (const [id, thr, label] of [['sw_1_5', 1.5, 'Shoulder:waist 1.5 (clear V-taper)'], ['sw_1618', 1.618, 'Shoulder:waist 1.618 (the "golden" Adonis ratio)']]) {
       const already = series[0].ratios.shoulderToWaist >= thr;
       const hit = series.find(p => p.ratios.shoulderToWaist >= thr);
-      milestones.push({ id, label, date: hit ? hit.date : null, target: thr, value: endPt.ratios.shoulderToWaist, reached: !!hit, already,
-        note: already ? `Already there (${series[0].ratios.shoulderToWaist}).` : hit ? `Projected around ${hit.date}. Rough: it comes from a smaller waist and wider shoulders together.`
-          : `Not within ${W} weeks (projected ${endPt.ratios.shoulderToWaist} at the end). Rough estimate from tape measures.` });
+      add({ id, label, target: thr, value: endPt.ratios.shoulderToWaist, already,
+        note: already ? `Already there (${series[0].ratios.shoulderToWaist}).` : hit ? `${when(hit)} Rough: it comes from a smaller waist and wider shoulders together.`
+          : `Not within ${span} (projected ${endPt.ratios.shoulderToWaist} at the end). Rough estimate from tape measures.` }, hit);
     }
   }
-  for (const [id, gainLb] of [['lean_5', 5], ['lean_10', 10]]) {
+  const leanSteps = W >= 52 ? [5, 10, 15, 20] : [5, 10];
+  for (const gainLb of leanSteps) {
     const thr = L0 + gainLb;
     const hit = series.find(p => p.leanLb >= r1(thr));
-    milestones.push({ id, label: `Lean mass +${gainLb} lb`, date: hit ? hit.date : null, target: r1(thr), value: endPt.leanLb, reached: !!hit, already: false,
-      note: hit ? `Projected around ${hit.date}. Lean mass includes muscle plus its water; the scale will not show it cleanly.`
-        : `Not within ${W} weeks (projected ${endPt.leanLb - L0 >= 0 ? '+' : ''}${r1(endPt.leanLb - L0)} lb lean at the end).` });
+    add({ id: `lean_${gainLb}`, label: `Lean mass +${gainLb} lb`, target: r1(thr), value: endPt.leanLb, already: false,
+      note: hit ? `${when(hit)} Lean mass includes muscle plus its water; the scale will not show it cleanly.`
+        : `Not within ${span} (projected ${endPt.leanLb - L0 >= 0 ? '+' : ''}${r1(endPt.leanLb - L0)} lb lean at the end).` }, hit);
+  }
+  if (heightIn) {
+    const near = r1(ffmiCeil - 1);
+    for (const [id, thr, label, note] of [
+      ['ffmi_22', 22, 'FFMI 22 (clearly muscular)', 'FFMI = lean kg ÷ height² (normalized to 1.8 m). Untrained men average ~18-19.'],
+      ['ffmi_23', 23, 'FFMI 23 (very muscular, still natural)', 'Above ~23 takes years of consistent training and good genetics.'],
+      ['near_ceiling', near, `Within 1 FFMI of your natural ceiling (~${r1(ffmiCeil)})`, `Kouri 1995: drug-free athletes rarely exceed ~25; individual ceilings vary by ±1.5. Gains slow a lot in this zone.`]]) {
+      if (id !== 'near_ceiling' && thr >= ffmiCeil) continue;
+      const already = series[0].ffmi >= thr;
+      const hit = series.find(p => p.ffmi >= thr);
+      add({ id, label, target: thr, value: endPt.ffmi, already,
+        note: already ? `Already there (FFMI ${series[0].ffmi}). ${note}` : hit ? `${when(hit)} ${note}` : `Not within ${span} (projected FFMI ${endPt.ffmi} at the end). ${note}` }, hit);
+    }
   }
   const raceW = pos(body.raceWeightLb) ?? (sex === 'male' ? 137 : null);
   const raceBf = pos(body.raceBodyFat) ?? 6.5;
@@ -911,10 +1311,10 @@ function buildMilestones({ series, W, goalBf, L0, body, sex, m0 }) {
     const raceLean = r1(raceW * (1 - raceBf / 100));
     const already = series[0].leanLb >= raceLean + 1;
     const hit = series.find(p => p.leanLb >= raceLean + 1);
-    milestones.push({ id: 'lean_vs_race', label: `More lean mass than race weight (${raceW} lb at ~${raceBf}% = ${raceLean} lb lean)`,
-      date: hit ? hit.date : null, target: r1(raceLean + 1), value: endPt.leanLb, reached: !!hit, already,
+    add({ id: 'lean_vs_race', label: `More lean mass than race weight (${raceW} lb at ~${raceBf}% = ${raceLean} lb lean)`,
+      target: r1(raceLean + 1), value: endPt.leanLb, already,
       note: already ? `Already about ${r1(series[0].leanLb - raceLean)} lb more lean mass than at marathon race weight. At the same ${raceBf}% you would weigh about ${r1(series[0].leanLb / (1 - raceBf / 100))} lb.`
-        : `Marathon-era lean mass is a useful benchmark: beating it by 1+ lb means the lifting has added real muscle.` });
+        : `Marathon-era lean mass is a useful benchmark: beating it by 1+ lb means the lifting has added real muscle.` }, hit);
   }
   return milestones;
 }
@@ -959,9 +1359,17 @@ export function nutritionLab({ baseline, profile, sessions, weeks = 12, now = ne
   for (let s = lo; s <= hi + 1e-9; s += st) levels.push(Math.round(s));
   if (!levels.length) levels.push(0);
 
+  const runCache = new Map();
   const runAt = (surplus, extra = {}) => {
+    const key = surplus + '|' + (extra.proteinGPerLb ?? '');
+    if (runCache.has(key)) return runCache.get(key);
+    const v = runAtRaw(surplus, extra);
+    runCache.set(key, v);
+    return v;
+  };
+  const runAtRaw = (surplus, extra = {}) => {
     const fixedIntake = Math.max(800, ctx.tdeeStart + surplus);
-    const r = simulate(ctx, { fixedIntake, ...extra });
+    const r = simulate(ctx, { fixedIntake, lite: true, ...extra });
     const p0 = r.pts[0], pN = r.pts[r.pts.length - 1];
     const T = pN.L + pN.F;
     return { surplus, calories: Math.round(fixedIntake), run: r,
@@ -1012,7 +1420,7 @@ export function nutritionLab({ baseline, profile, sessions, weeks = 12, now = ne
   const range = (a, c, unit = '') => (a === c ? `${a}${unit}` : `${a}-${c}${unit}`);
   const sRange = from === to ? `maintenance ${sgn(from)}${from}` : `maintenance ${sgn(from)}${from} to ${sgn(to)}${to}`;
   const lFrom = r1(runAt(from).leanLb), lTo = from === to ? lFrom : r1(runAt(to).leanLb);
-  const sweetSpot = { from, to, note: `Eat about ${range(maint + from, maint + to)} kcal/day (${sRange}). ${from === to ? 'Here' : 'In this range'} you get ~${range(Math.min(lFrom, lTo), Math.max(lFrom, lTo), ' lb')} of lean mass over ${ctx.W} weeks; past it, nearly all the extra food becomes fat.` };
+  const sweetSpot = { from, to, note: `Eat about ${range(maint + from, maint + to)} kcal/day (${sRange}). ${from === to ? 'Here' : 'In this range'} you get ~${range(Math.min(lFrom, lTo), Math.max(lFrom, lTo), ' lb')} of lean mass over ${horizonLabel(ctx.W)}; past it, nearly all the extra food becomes fat.` };
 
   // Protein curve at the middle of the sweet spot.
   const proteinCurve = [0.5, 0.6, 0.7, 0.8, 1.0, 1.2].map(g => {
@@ -1026,7 +1434,8 @@ export function nutritionLab({ baseline, profile, sessions, weeks = 12, now = ne
   const p05 = proteinCurve[0], p10 = proteinCurve.find(p => p.gPerLb === 1.0);
   const part = buildPartition(midRow.run);
   const explanation = [];
-  explanation.push(`Muscle growth has a speed limit set by your training, not your plate. With ${r1(ctx.months0)} months of lifting and your planned volume, the most lean mass you can expect in ${ctx.W} weeks is about ${r1(part.leanCeilingLb)} lb. Food decides how much of that limit you reach, and everything beyond it is stored as fat.`);
+  explanation.push(`Muscle growth has a speed limit set by your training, not your plate. With ${r1(ctx.months0)} months of lifting and your planned volume, the most lean mass you can expect in ${horizonLabel(ctx.W)} is about ${r1(part.leanCeilingLb)} lb. Food decides how much of that limit you reach, and everything beyond it is stored as fat.`);
+  if (ctx.W >= 52) explanation.push(`Over ${horizonLabel(ctx.W)} a constant intake converges: maintenance rises as you gain (and falls as you lose), so weight levels off at a new steady state instead of changing forever (Hall 2011). A fixed +300 today ends up close to maintenance once you are heavier, so the long-run outcome of a surplus is not just the 1-year result multiplied. Each point here is today's maintenance plus that amount, eaten every day for the whole horizon; Forge's nutrition phases are the more realistic way to plan years.`);
   explanation.push(`At maintenance (~${maint} kcal/day) you would gain ~${r1(z.leanLb)} lb of lean and ${z.fatLb <= 0 ? 'lose' : 'gain'} ~${r1(Math.abs(z.fatLb))} lb of fat (a slow recomp). In the sweet spot (${from === to ? `${sgn(from)}${from}` : `${sgn(from)}${from} to ${sgn(to)}${to}`} kcal/day) you would gain ~${r1(sp.leanLb)} lb of lean and ~${r1(sp.fatLb)} lb of fat.`);
   if (hi >= 750 && s500.surplus < big.surplus) explanation.push(`Going from ${sgn(s500.surplus)}${s500.surplus} to ${sgn(big.surplus)}${big.surplus} kcal/day adds only ${r1(Math.max(0, big.leanLb - s500.leanLb))} lb more lean but ${r1(big.fatLb - s500.fatLb)} lb more fat. "Eat a lot" builds muscle only up to the speed limit; after that it is mostly fat you will later have to diet off.`);
   explanation.push(`The body burns off part of any surplus (digestion, fidgeting, more movement): roughly half of a big one on average in Levine's 1999 overfeeding study, with huge differences between people. So the scale moves less than the calories suggest, but most of what is stored past the sweet spot is fat. A practical target is gaining about 0.25-0.5% of bodyweight a week (${r1(ctx.W0 * 0.0025)}-${r1(ctx.W0 * 0.005)} lb), in line with Iraki 2019's off-season bodybuilding review.`);

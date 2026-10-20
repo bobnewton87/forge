@@ -11,6 +11,9 @@ import { getEx } from '../data/exercises.js';
 import { groupStatus, sessionVolume } from '../engine/recovery.js';
 import { sessionPRs, personalRecords } from '../engine/progression.js';
 import { swapBlock, addExercise } from '../engine/generator.js';
+import { cardioWeek } from '../engine/targets.js';
+// CONTRACT-NOTE (INTEGRATOR §18): the finish summary shows this week's cardio vs the weekly target
+//   (targets.cardioWeek) when the session had cardio or the week is behind.
 import {
   esc, fmtNum, exName, unitLabel, safe, debounce, fmtDuration, openSheet, closeSheet, toast, startRest, stopRest,
   muscleBar, addExerciseSheet, swapSheet, cardioFormHtml, bindCardioForm, readCardioForm, cardioName, exerciseInfoHtml,
@@ -458,8 +461,17 @@ export function summaryHtml(s, sessions, profile) {
     ${prs.length ? `<div class="section-title">🏆 New PRs</div><div class="tr-prs">${prs.map(r => `<div class="tr-pr"><b>${esc(exName(r.exId))}</b><span>${fmtNum(r.w)}×${r.r}${r.previous ? ` <span class="muted">(was ${fmtNum(r.previous.w)}×${r.previous.r})</span>` : ''}</span></div>`).join('')}</div>` : ''}
     ${groups.length ? `<div class="section-title">This session</div><div class="tr-sum-groups">${groups.map(([g, v]) => `<span class="badge">${esc(GROUPS[g]?.name || g)} <b>${fmtNum(v)}</b></span>`).join('')}</div>` : ''}
     ${weekGroups.length ? `<div class="section-title">Your week now</div>${weekGroups.map(g => muscleBar(GROUPS[g]?.name || g, gs[g].sets7d || 0, gs[g].target)).join('')}` : ''}
+    ${cardioWeekLine(s, sessions, profile, vol)}
     <button type="button" class="btn btn-primary tr-big" data-sum-close>Nice</button>
   </div>`;
+}
+
+function cardioWeekLine(s, sessions, profile, vol) {
+  const w = safe(() => cardioWeek(profile, sessions, { now: new Date() }), null);
+  if (!w || !w.target || !(vol.cardioMin > 0 || w.done < w.target)) return '';
+  const left = Math.max(0, w.target - w.done);
+  return `<div class="section-title">Cardio this week</div>${muscleBar('🫀 Cardio (min)', w.done, { min: w.target, max: 0 })}
+    <p class="small muted" style="margin-top:-2px">${left ? `${left} min to go for your ${w.target}-min target${w.planned ? ` (${w.planned} planned)` : ''}.` : `Weekly target of ${w.target} min done.`}</p>`;
 }
 
 function showSummary(s) {

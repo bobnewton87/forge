@@ -168,7 +168,9 @@ test('stack: leanCeilingMult is not flattened, retention, fatDirect, water, tdee
   const big = run(intake, { modifiersFn: mods({ leanCeilingMult: 2 }) });
   assert.ok(big.summary.leanLb > base.summary.leanLb * 1.7, `${base.summary.leanLb} → ${big.summary.leanLb}`);
   const fat = run(intake, { modifiersFn: mods({ fatDirectLbPerWeek: -0.2 }) });
-  assert.ok(Math.abs(fat.summary.fatLb - (base.summary.fatLb - 2.4)) <= 0.15);
+  // −0.2 lb/week × 12 = −2.4 lb, minus a little energy feedback: since the long-horizon model (Hall 2011) lets fat
+  // mass and body weight raise maintenance, less fat means slightly lower burn, so ~0.2 lb comes back.
+  assert.ok(Math.abs(fat.summary.fatLb - (base.summary.fatLb - 2.4)) <= 0.35);
   assert.ok(Math.abs(fat.summary.leanLb - base.summary.leanLb) <= 0.1);
   // water: scale only, starting after today
   const water = run(intake, { modifiersFn: mods({}), useStack: true });

@@ -25,6 +25,12 @@ import { loadSchedule } from '../classes/crunch.js';
 import { renderClassPicker, bindClassPicker } from './classes.js';
 import { startSession, sessionGroups } from './today.js';
 import { summarize, detailSheet } from './history.js';
+import { setTargets, targetsSummaryHTML, bindTargetsSummary, makeRoomHTML, bindMakeRoom } from './targets.js';
+import { resolveTargets } from '../engine/targets.js';
+// CONTRACT-NOTE (INTEGRATOR §18): the coverage card's cardio target reads resolveTargets and its
+//   stepper calls setTargets (which re-plans upcoming auto days, debounced). Saving availability goes
+//   through setTargets too (its own re-plan prompt stays). params.avail opens the availability sheet.
+//   A "Your targets" strip sits under the week navigator.
 import {
   esc, chip, fmtNum, exName, unitLabel, safe, cardioFormHtml, bindCardioForm, readCardioForm, cardioName, intensityName,
 } from './components.js';
@@ -113,8 +119,9 @@ export function render(ctx, params = {}) {
       ${canPlanWeek ? `<button type="button" class="btn btn-primary" data-a="plan-week">✦ Plan ${weekOff === 0 ? 'my week' : 'this week'}</button>` : ''}
       <button type="button" class="btn" data-a="plan-4">Plan next 4 weeks</button>
     </div>
+    ${safe(() => targetsSummaryHTML(ctx), '')}
     <div class="pl-days">${days.map(d => dayCard(d, sessions, profile, t)).join('')}</div>`;
-  h += summaryCard(sessions, profile, ws);
+  h += summaryCard(sessions, profile, ws, weekOff === 0 ? safe(() => makeRoomHTML(ctx, { cls: 'tg-warnp small' }), '') : '');
   h += `<button type="button" class="card tap pl-teaser" data-a="projection">
       <span class="pl-teaser-ic">📈</span><span class="grow"><b>See where this plan takes you →</b><small>Projected weight, body fat and measurements if you follow it</small></span></button>
     <button type="button" class="list-item pl-hist" data-a="history"><span class="ic">📅</span><span class="grow"><span class="t">Full history</span><span class="s">Every logged workout</span></span><span class="chev">›</span></button>
@@ -217,7 +224,7 @@ function addCardio(ctx, date, mins) {
   return out;
 }
 
-function summaryCard(sessions, profile, ws) {
+function summaryCard(sessions, profile, ws, roomLine = '') {
   const sum = safe(() => weekPlanSummary(sessions, { weekStart: ws, profile, now: new Date() }), null);
   const groups = sum && sum.groups && typeof sum.groups === 'object' ? sum.groups : {};
   const ids = Object.keys(groups).filter(g => GROUPS[g]);
@@ -241,8 +248,9 @@ function summaryCard(sessions, profile, ws) {
         <span class="tick" style="left:${(tmin / scale) * 100}%"></span></div>
     </div>`;
   }).join('');
-  const cm = sum.cardioMinutes && typeof sum.cardioMinutes === 'object' ? sum.cardioMinutes : { done: Number(sum.cardioMinutes) || 0, planned: 0, target: profile.cardioTargetMin || 120 };
-  const ctarget = Number(cm.target) || profile.cardioTargetMin || 120;
+  const tgt = resolveTargets(profile).cardio.minPerWeek;
+  const cm = sum.cardioMinutes && typeof sum.cardioMinutes === 'object' ? sum.cardioMinutes : { done: Number(sum.cardioMinutes) || 0, planned: 0, target: tgt };
+  const ctarget = Number.isFinite(Number(cm.target)) ? Number(cm.target) : tgt;
   const cscale = Math.max(ctarget, (cm.done || 0) + (cm.planned || 0), 1);
   const score = Math.round(Number(sum.score));
   const sc = isNaN(score) ? null : score;
@@ -265,7 +273,8 @@ function summaryCard(sessions, profile, ws) {
       <div class="pl-track"><i class="d" style="width:${((cm.done || 0) / cscale) * 100}%"></i><i class="p" style="left:${((cm.done || 0) / cscale) * 100}%;width:${((cm.planned || 0) / cscale) * 100}%"></i><span class="tick" style="left:${(ctarget / cscale) * 100}%"></span></div>
     </div>
     <div class="pl-ctarget"><span class="muted small">Weekly cardio target</span>
-      <span class="pl-step" role="group" aria-label="Weekly cardio target"><button type="button" data-a="ct-dec" aria-label="Lower cardio target" ${ctarget <= 0 ? 'disabled' : ''}>−</button><b>${ctarget}′</b><button type="button" data-a="ct-inc" aria-label="Raise cardio target" ${ctarget >= 600 ? 'disabled' : ''}>+</button></span></div>
+      <span class="pl-step" role="group" aria-label="Weekly cardio target"><button type="button" data-a="ct-dec" aria-label="Lower cardio target" ${ctarget <= 0 ? 'disabled' : ''}>−</button><b>${ctarget}′</b><button type="button" data-a="ct-inc" aria-label="Raise cardio target" ${ctarget >= 900 ? 'disabled' : ''}>+</button></span></div>
+    ${roomLine}
     ${capLine ? `<div class="pl-cap muted small">${esc(capLine)}</div>` : ''}
     ${warnings.length ? `<details class="pl-notes"><summary>Notes <span class="pl-notes-n">${warnings.length}</span></summary><ul>${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul></details>` : ''}
   </div>`;
@@ -573,7 +582,7 @@ function openAvailability(ctx) {
     el.onclick = e => {
       const day = e.target.closest('[data-k]');
       if (e.target.closest('[data-save]')) {
-        ctx.store.updateProfile({ schedule: sched });
+        setTargets(ctx, { training: { schedule: sched } }, { replan: false, quiet: true });
         el.innerHTML = `<div class="pl-sheet center"><div class="pl-big-ic">✅</div><h2>Availability saved</h2>
           <p class="muted small mt">Re-plan so upcoming auto-planned days match it? Custom days stay as they are.</p>
           <div class="sheet-actions"><button type="button" class="btn btn-primary btn-block" data-replan="week">Re-plan this week</button>
@@ -610,6 +619,8 @@ export function bind(root, ctx) {
     window.addEventListener('popstate', () => { try { ctx.closeSheet(); } catch (e) { /* ignore */ } });
   }
   const pl = root.querySelector('.pl'); if (!pl) return;
+  safe(() => { bindTargetsSummary(root, ctx); bindMakeRoom(root.querySelector('.pl-sum') || root, ctx); return true; }, null);
+  if (ctx.params && ctx.params.avail) { ctx.nav('plan', {}, { replace: true }); setTimeout(() => openAvailability(ctx), 0); }
   pl.onclick = e => {
     const qc = e.target.closest('[data-qc]');
     if (qc) { addCardio(ctx, qc.dataset.date, Number(qc.dataset.qc)); return; }
@@ -636,11 +647,8 @@ export function bind(root, ctx) {
       case 'plan-4': runPlan(ctx, t, ds(addDays(weekStart(new Date()), 27)), 'the next 4 weeks'); break;
       case 'avail': openAvailability(ctx); break;
       case 'ct-inc': case 'ct-dec': {
-        const p = ctx.store.getProfile();
-        const cur = Number(p.cardioTargetMin ?? 120) || 0;
-        const next = Math.max(0, Math.min(600, Math.round((cur + (a.dataset.a === 'ct-inc' ? CARDIO_STEP : -CARDIO_STEP)) / 5) * 5));
-        ctx.store.updateProfile({ cardioTargetMin: next });
-        toast(ctx, `Weekly cardio target ${next} min. Re-plan to rebalance auto days; your edits stay.`);
+        const cur = resolveTargets(ctx.store.getProfile()).cardio.minPerWeek;
+        setTargets(ctx, { cardio: { minPerWeek: cur + (a.dataset.a === 'ct-inc' ? CARDIO_STEP : -CARDIO_STEP) } });
         break;
       }
       case 'projection': ctx.nav('projection'); break;

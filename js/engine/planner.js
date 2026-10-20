@@ -28,6 +28,12 @@
 //   following planned day trains is avoided when today's hit would land inside its recovery window.
 //   suggestForDay now keeps done sessions on `date` as history (only planned ones there are ignored).
 //   New export contextFor(date, sessions, { now, horizon }) → { before, after, history, upcoming }.
+// CONTRACT-NOTE (INTEGRATOR, §18): cardio target/prefs come from engine/targets.js (cardioPrefs):
+//   minPerWeek, preferred modalities (tried first when available), hardSessionsPerWeek. After the
+//   greedy walk, balanceCardio() grows easy finishers on auto lift days of each week (up to
+//   targets.finisherCap(minutes)) until the week's planned cardio reaches the target; what still
+//   doesn't fit shows as a shortfall warning in weekPlanSummary (cardioMinutes.capacity/shortfall).
+//   Lift days use profile.defaultStyle as the buildWorkout style.
 import { recommend, groupStatus, muscleStatus, sessionVolume } from './recovery.js';
 import { buildWorkout } from './generator.js';
 import { CARDIO, INTENSITIES, cardioOptions } from '../data/cardio.js';
@@ -35,6 +41,7 @@ import { classify } from '../classes/classify.js';
 import { GROUPS, REGIONS } from '../data/muscles.js';
 import { DEFAULT_LOCATIONS, expandEquipment } from '../data/equipment.js';
 import { ds, parseDs, addDays, weekStart as weekStartOf, clamp, rng } from '../util.js';
+import { cardioPrefs, finisherCap, cardioCapacity, weekCardioCapacity } from './targets.js';
 
 const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const PRIORITY_GROUPS = ['triceps', 'shoulders', 'core', 'back', 'chest'];
@@ -224,7 +231,13 @@ function hasMachineCardio(loc) {
   return ['bike', 'treadmill', 'rower', 'elliptical', 'assault_bike', 'stairmaster'].some(e => eq.has(e));
 }
 
-function cardioTarget(profile) { return profile?.cardioTargetMin ?? 120; }
+function cardioTarget(profile) { return cardioPrefs(profile).minPerWeek; }
+// Preferred modalities (targets.cardio.modalities) available here come first; else the default list.
+function prefList(profile, opts, pref) {
+  const mine = cardioPrefs(profile).modalities.filter(m => opts.has(m));
+  return mine.length ? mine : pref;   // stated preferences win whenever one is available here
+}
+const styleOf = profile => (['hypertrophy', 'pump', 'strength', 'circuit'].includes(profile?.defaultStyle) ? profile.defaultStyle : 'hypertrophy');
 
 // Prio-weighted fraction of the weekly minimums still missing (0 = all met, 1 = nothing done).
 function liftDeficitFrac(ctx, st) {
@@ -317,12 +330,12 @@ function liftDay(ctx, date, slot, st, R, why = null) {
   const target = cardioTarget(ctx.profile);
   if (target > 0 && minutes >= 40 && st.cardioMin + st.futureCardio < target) {
     const opts = new Set(cardioOptions(expandEquipment(loc.equipment || [])).map(c => c.id));
-    const mod = FINISHER_PREF.find(m => opts.has(m) && (m !== 'run' && m !== 'walk' ? true : minutes >= 45));
+    const mod = prefList(ctx.profile, opts, FINISHER_PREF).find(m => opts.has(m) && (m !== 'run' && m !== 'walk' ? true : minutes >= 45));
     if (mod) cardio = { modality: mod, minutes: minutes >= 60 ? 15 : 10, intensity: 'easy' };
   }
 
   const seed = hashStr(date + '|lift|' + ctx.seed);
-  const w = buildWorkout({ targets, minutes, location: loc, profile: ctx.profile, sessions: ctx.history, now, seed, cardio, upcoming });
+  const w = buildWorkout({ targets, minutes, location: loc, profile: ctx.profile, sessions: ctx.history, now, seed, cardio, upcoming, style: styleOf(ctx.profile) });
   const label = pick.label + (nudged.length ? ' + ' + nudged.map(gName).join(' & ') : '');
   const recWhy = (pick.reasons || []).filter(x => !/^Cardio:/.test(x)).slice(0, 2);
   const reason = why || `${label}: best fit for recovery and this week's targets`;
@@ -370,9 +383,9 @@ function cardioDay(ctx, date, slot, st, R, why = null) {
   // ~1 quality session per week (tempo or intervals, alternating by week), the rest easy.
   const weekNo = Math.floor(parseDs(st.ws).getTime() / (7 * 864e5));
   let intensity = 'easy';
-  if (st.hard === 0 && minutes >= 25 && !(target > 0 && st.cardioMin >= target)) intensity = weekNo % 2 ? 'intervals' : 'hard';
+  if (st.hard < cardioPrefs(ctx.profile).hardSessionsPerWeek && minutes >= 25 && !(target > 0 && st.cardioMin >= target)) intensity = weekNo % 2 ? 'intervals' : 'hard';
   // Quality sessions stay on his best modality (running when possible); easy days rotate.
-  const mod = pickModality(opts, intensity === 'easy' ? EASY_PREF : HARD_PREF, intensity === 'easy' ? R : () => 0, intensity === 'easy' ? st.recentCardio : []);
+  const mod = pickModality(opts, prefList(ctx.profile, opts, intensity === 'easy' ? EASY_PREF : HARD_PREF), intensity === 'easy' ? R : () => 0, intensity === 'easy' ? st.recentCardio : []);
   const c = CARDIO[mod];
   const block = { kind: 'cardio', modality: mod, minutes, intensity, distance: null, calories: null, done: false, note: cardioNote(mod, intensity, R) };
   const iname = intensity === 'easy' ? 'Zone 2' : intensity === 'intervals' ? 'Intervals' : 'Tempo';
@@ -453,7 +466,7 @@ function classDay(ctx, date, slot, st, R, x, val) {
   const blocks = [{ kind: 'class', provider: 'crunch', name: c.name, time: c.time || null, duration: dur, instructor: c.instructor || null, classify: info, done: false }];
   if (val.addOn > 0) {
     const opts = new Set(cardioOptions(expandEquipment(locationFor(ctx.profile, locId).equipment || [])).map(o => o.id));
-    const mod = FINISHER_PREF.find(m => opts.has(m)) || 'walk';
+    const mod = prefList(ctx.profile, opts, FINISHER_PREF).find(m => opts.has(m)) || 'walk';
     blocks.push({ kind: 'cardio', modality: mod, minutes: val.addOn, intensity: 'easy', distance: null, calories: null, done: false, note: 'Easy Zone 2 after class' });
   }
   const target = cardioTarget(ctx.profile);
@@ -571,7 +584,7 @@ function balanceWeek(ctx, out, ws, we) {
       const loc = locationFor(ctx.profile, old.location);
       const targets = [...old.targets, g];
       const cardio = (old.blocks || []).filter(b => b.kind === 'cardio').map(b => ({ modality: b.modality, minutes: b.minutes, intensity: b.intensity }))[0] || null;
-      const w = buildWorkout({ targets, minutes: old.minutes, location: loc, profile: ctx.profile, sessions: hist, now, seed: old.seed, cardio });
+      const w = buildWorkout({ targets, minutes: old.minutes, location: loc, profile: ctx.profile, sessions: hist, now, seed: old.seed, cardio, style: styleOf(ctx.profile) });
       const repl = {
         ...w, id: old.id, date: old.date, status: 'planned', startedAt: null, endedAt: null, location: old.location, minutes: old.minutes,
         rationale: [old.rationale[0], `Added ${gName(g).toLowerCase()} to close this week's gap (${fmt(totals[g] || 0)}/${Math.round(T[g].target.min)} sets)`, ...(w.rationale || [])].slice(0, 7),
@@ -587,6 +600,69 @@ function balanceWeek(ctx, out, ws, we) {
     }
   }
 }
+
+// End-of-week cardio pass (§18): if the week's cardio (done + kept + planned) is under the target,
+// grow easy finishers on this week's auto lift days (round-robin, 5 min at a time, up to
+// finisherCap) and rebuild those days so the lifting part shrinks to fit the same minutes.
+function balanceCardio(ctx, out, ws, we, last) {
+  const target = cardioTarget(ctx.profile);
+  if (!(target > 0)) return;
+  let have = 0;
+  for (const s of ctx.history) if (s.date >= ws && s.date <= we) have += vol(s).cardioMin;
+  // Days of this week after the planned range: assume they hold what their slot can.
+  const cap = cardioCapacity(ctx.profile, ctx.schedule).byDay;
+  for (let d = addDays(parseDs(last), 1); ds(d) <= we; d = addDays(d, 1)) {
+    const k = ds(d);
+    if (!ctx.keptDates.has(k) && !ctx.doneDates.has(k)) have += cap[DOW[d.getDay()]] || 0;
+  }
+  // Within ~10% of the target is close enough (same tolerance as weekPlanSummary's warning).
+  if (target - have < Math.max(10, target * 0.1)) return;
+  let need = round5(target - have);
+  const cands = [];
+  for (const s of out) {
+    if (s.date < ws || s.date > we || s.plan?.kind !== 'lift' || !(s.minutes >= 30)) continue;
+    const loc = locationFor(ctx.profile, s.location);
+    const opts = new Set(cardioOptions(expandEquipment(loc.equipment || [])).map(c => c.id));
+    const cur = (s.blocks || []).filter(b => b.kind === 'cardio');
+    const mod = cur[0]?.modality || prefList(ctx.profile, opts, FINISHER_PREF).find(m => opts.has(m) && FINISHER_PREF.includes(m));
+    if (!mod) continue;
+    const curMin = cur.reduce((a, b) => a + (Number(b.minutes) || 0), 0);
+    const room = finisherCap(s.minutes) - curMin;
+    if (room >= 5) cands.push({ s, loc, mod, curMin, add: 0, room });
+  }
+  // Longest sessions first (a finisher costs them the smallest share of lifting), machines before
+  // outdoor run/walk; each finisher ends up 10+ min, and we stop once within tolerance.
+  const outdoor = c => (/^(run|walk)$/.test(c.mod) ? 1 : 0);
+  cands.sort((a, b) => b.s.minutes - a.s.minutes || outdoor(a) - outdoor(b));
+  const tol = Math.max(10, target * 0.1);
+  let left = need;
+  for (const c of cands) {
+    if (left < tol) break;
+    let add = Math.min(c.room, round5(left));
+    if (c.curMin + add < 10) add = 10 - c.curMin;
+    if (add < 5 || add > c.room) continue;
+    c.add = add; left -= add;
+  }
+  for (const c of cands) {
+    if (!c.add) continue;
+    const old = c.s, mins = c.curMin + c.add;
+    const hi = ctx.history.findIndex(h => h.id === old.id);
+    if (hi < 0) continue;
+    const hist = ctx.history.filter((_, j) => j !== hi);
+    const now = noonOf(old.date);
+    const cardio = { modality: c.mod, minutes: mins, intensity: 'easy' };
+    const w = buildWorkout({ targets: old.targets, minutes: old.minutes, location: c.loc, profile: ctx.profile, sessions: hist, now, seed: old.seed, cardio, upcoming: hist.filter(h => h.date > old.date), style: styleOf(ctx.profile) });
+    const why = `Weekly cardio target ${target} min: a ${mins}-min easy ${CARDIO[c.mod]?.name.toLowerCase() || c.mod} finisher (lifting gets the other ${old.minutes - mins} min)`;
+    const repl = {
+      ...w, id: old.id, date: old.date, status: 'planned', startedAt: null, endedAt: null, location: old.location, minutes: old.minutes, title: old.title,
+      rationale: [old.rationale[0], why, ...(old.rationale || []).slice(1).filter(x => !/finisher/i.test(x))].slice(0, 7),
+      plan: { ...old.plan, cardioFinisher: mins },
+    };
+    ctx.history[hi] = simulateDone(repl);
+    out[out.indexOf(old)] = repl;
+  }
+}
+const round5 = x => Math.round(x / 5) * 5;
 
 function seedHistory(ctx, sessions, from, keep) {
   for (const s of sessions || []) {
@@ -630,7 +706,7 @@ export function planRange({ from, days = 7, profile, sessions = [], schedule, cl
         ctx.history.push(simulateDone(s));
       }
     }
-    if (isLast) { const { ws, we } = weekBounds(date); balanceWeek(ctx, out, ws, we); }
+    if (isLast) { const { ws, we } = weekBounds(date); balanceCardio(ctx, out, ws, we, date); balanceWeek(ctx, out, ws, we); }
   }
   return out;
 }
@@ -685,7 +761,9 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
     regions[r] = { done: d, planned: p, total: tot, target: t.target, status: status(tot, t.target) };
   }
   const target = cardioTarget(profile);
-  const cardioMinutes = { done: Math.round(cDone), planned: Math.round(cPlan), target };
+  // This week's capacity from what's actually planned (a class day counts its class cardio), else availability.
+  const capacity = weekCardioCapacity(profile || {}, sessions || [], { now, weekStart: ws });
+  const cardioMinutes = { done: Math.round(cDone), planned: Math.round(cPlan), target, capacity, shortfall: Math.max(0, Math.round(target - cDone - cPlan)) };
 
   const warnings = [];
   const prio = priorityGroups(profile);
@@ -712,7 +790,12 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
     }
   }
   const cTot = cDone + cPlan;
-  if (target > 0 && cTot < target * 0.8) warnings.push(`Cardio ${Math.round(cTot)}/${target} min planned`);
+  if (target > 0 && cTot < target - Math.max(10, target * 0.1)) {
+    const short = Math.round(target - cTot);
+    warnings.push(`Cardio ${Math.round(cTot)}/${target} min planned (${short} short)` + (capacity < target - 5
+      ? `: this week fits ~${capacity} cardio min alongside lifting. Use "Make room" or add a cardio day / more minutes to reach ${target}.`
+      : sPlan ? '. Re-plan the week to rebalance auto days.' : '. Plan the week to fill it.'));
+  }
 
   // Score: priority-weighted coverage of minimums (80%) + cardio coverage (20%).
   let num = 0, den = 0;

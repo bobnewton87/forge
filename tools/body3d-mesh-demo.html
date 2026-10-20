@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Body3D Mesh Harness</title>
+<link rel="stylesheet" href="../css/base.css">
+<style>
+  body { padding: 16px; }
+  .wrap { max-width: 520px; margin: 0 auto; }
+  h1 { font-size: 20px; margin-bottom: 10px; }
+  .stats { font: 12px ui-monospace, monospace; color: var(--muted); margin: 8px 0; min-height: 16px; white-space: pre-wrap; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin-top: 12px; }
+  label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+  label b { color: var(--text); font-weight: 600; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .sec { grid-column: 1 / -1; font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--accent2); margin-top: 8px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .row button { padding: 8px 12px; border-radius: 10px; background: var(--card2); border: 1px solid var(--line); font-size: 13px; color: var(--text); }
+  .row button.on { border-color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Body3D mesh harness</h1>
+  <div id="mount"></div>
+  <div class="stats" id="stats"></div>
+  <div class="row">
+    <button id="ghost">"Now" ghost</button>
+    <button id="scale">Height ruler</button>
+    <button id="auto">Auto-rotate</button>
+    <button data-yaw="0">Front</button><button data-yaw="0.785">3/4</button><button data-yaw="1.571">Side</button><button data-yaw="3.1416">Back</button>
+  </div>
+  <div class="row" id="poses"></div>
+  <div class="grid" id="ctl"></div>
+</div>
+<script type="module">
+import { mountBody3D, supported, POSES } from '../js/ui/body3d-mesh.js';
+
+// Bob's tape (CONTRACT user facts / MESH brief)
+const state = {
+  bodyFatPct: 19,
+  shape: { heightIn: 69, neck: 15, shoulders: 46, chest: 39, waist: 34.5, hips: 38, arm: 13.5, forearm: 11.5, thigh: 22, calf: 14.5 },
+  muscle: { chest: 0.4, delts: 0.4, lats: 0.4, arms: 0.45, abs: 0.4, quads: 0.55, calves: 0.5, traps: 0.4 },
+};
+const qs = new URLSearchParams(location.search);
+if (qs.has('bf')) state.bodyFatPct = +qs.get('bf');
+if (qs.has('m')) for (const k in state.muscle) state.muscle[k] = +qs.get('m');
+for (const k of Object.keys(state.shape)) if (qs.has(k)) state.shape[k] = +qs.get(k);
+
+const ctl = document.getElementById('ctl');
+const add = (sec) => { const d = document.createElement('div'); d.className = 'sec'; d.textContent = sec; ctl.appendChild(d); };
+function slider(label, get, set, min, max, step) {
+  const l = document.createElement('label');
+  l.innerHTML = `<span>${label} <b></b></span><input type="range" min="${min}" max="${max}" step="${step}">`;
+  const inp = l.querySelector('input'), b = l.querySelector('b');
+  inp.value = get(); b.textContent = get();
+  inp.addEventListener('input', () => { set(+inp.value); b.textContent = inp.value; push(); });
+  ctl.appendChild(l);
+}
+add('Body fat');
+slider('Body fat %', () => state.bodyFatPct, v => state.bodyFatPct = v, 6, 32, 0.5);
+add('Muscle scores');
+for (const k of Object.keys(state.muscle)) slider(k, () => state.muscle[k], v => state.muscle[k] = v, 0, 1, 0.05);
+add('Measurements (in)');
+const R = { neck: [12, 20], shoulders: [40, 60], chest: [34, 52], waist: [26, 46], hips: [32, 48], arm: [10, 20], forearm: [9, 15], thigh: [18, 30], calf: [12, 19], heightIn: [62, 78] };
+for (const k of Object.keys(state.shape)) slider(k, () => state.shape[k], v => state.shape[k] = v, R[k][0], R[k][1], 0.25);
+
+let ghostOn = qs.has('ghost'), scaleOn = qs.has('scale'), auto = false, view = null;
+const mount = document.getElementById('mount');
+const statsEl = document.getElementById('stats');
+if (supported()) {
+  view = mountBody3D(mount, { ...state, pose: qs.get('pose') || 'relaxed', height: +(qs.get('h') || 420), showScale: scaleOn,
+    compareShape: ghostOn ? ghostShape() : null, onPose: p => syncPoseButtons(p) });
+  window.viewer = view;
+} else {
+  mount.textContent = 'WebGL2 not supported';
+}
+function ghostShape() {
+  const s = state.shape;
+  return { ...s, waist: s.waist + 3.5, chest: s.chest - 0.5, arm: s.arm - 1, hips: s.hips + 1, bodyFatPct: state.bodyFatPct + 6 };
+}
+let pending = 0;
+function push() {
+  if (!view || pending) return;
+  pending = requestAnimationFrame(() => {
+    pending = 0;
+    view.update({ shape: { ...state.shape }, muscle: { ...state.muscle }, bodyFatPct: state.bodyFatPct, showScale: scaleOn, compareShape: ghostOn ? ghostShape() : null });
+  });
+}
+const poseRow = document.getElementById('poses');
+for (const p of POSES) { const b = document.createElement('button'); b.textContent = p; b.dataset.pose = p; b.onclick = () => { view.setPose(p); syncPoseButtons(p); }; poseRow.appendChild(b); }
+function syncPoseButtons(p) { for (const b of poseRow.children) b.classList.toggle('on', b.dataset.pose === p); }
+syncPoseButtons(qs.get('pose') || 'relaxed');
+document.getElementById('ghost').onclick = () => { ghostOn = !ghostOn; push(); };
+document.getElementById('scale').onclick = () => { scaleOn = !scaleOn; push(); };
+document.getElementById('auto').onclick = () => { auto = !auto; view.update({ autoRotate: auto }); };
+for (const b of document.querySelectorAll('[data-yaw]')) b.onclick = () => view.setView(+b.dataset.yaw, 0.05);
+setInterval(() => {
+  if (!view) return;
+  const s = view.stats();
+  if (!s.ready) { statsEl.textContent = 'loading…'; return; }
+  const sh = s.report.shoulders;
+  statsEl.textContent = `fit ${s.fitMs.toFixed(0)} ms · frame ${s.frameMs.toFixed(2)} ms · ${s.verts} verts / ${s.tris} tris · shoulders loop ${sh.girth.toFixed(2)}/${sh.target.toFixed(2)} in`;
+}, 500);
+</script>
+</body>
+</html>

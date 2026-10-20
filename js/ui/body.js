@@ -9,6 +9,10 @@ import { ds, fmtShort, addDays, daysBetween } from '../util.js';
 import * as bodycomp from '../engine/bodycomp.js';
 import { silhouetteSVG } from './silhouette.js';
 import { mount3D, body3d, supports3D, estMuscle } from './projection.js';
+import { targetsSummaryHTML, bindTargetsSummary, cardioTargetHTML, bindCardioTarget } from './targets.js';
+// CONTRACT-NOTE (INTEGRATOR §18): the cardio card is the shared editable weekly target
+// (targets.js cardioTargetHTML: stepper + 90/150/225/300 chips, done vs planned vs target this
+// calendar week) and a "Your targets" strip sits at the top. Both write through setTargets.
 let card3d = null;   // 3D opts for the "Your body" card (UI-LAB)
 
 const safe = (fn, fb) => { try { const v = fn(); return v == null ? fb : v; } catch (e) { console.error(e); return fb; } };
@@ -171,12 +175,8 @@ export function render(ctx) {
     </button>`;
   }).join('');
 
-  // Cardio
-  const cpct = cardio.target ? cardio.minutes7d / cardio.target : 0;
-  const cardioCard = `<div class="card"><div class="row">${ring(cpct, 'var(--cardio)', Math.round(cpct * 100) + '%')}
-    <div class="grow"><div class="card-title">🫀 Cardio</div><div class="num" style="font-size:20px;font-weight:800;margin-top:2px">${cardio.minutes7d || 0}<span class="muted small" style="font-weight:600"> / ${cardio.target || 0} min · 7 days</span></div>
-    <div class="small muted">${cardio.sessions7d || 0} session${cardio.sessions7d === 1 ? '' : 's'} · last ${ago(cardio.daysSince).toLowerCase()}</div></div></div>
-    ${cardio.suggestion ? `<p class="small mt">${esc(cardio.suggestion)}</p>` : ''}</div>`;
+  // Cardio: the shared weekly target card (editable), plus the rolling 7-day line underneath.
+  const cardioCard = safe(() => cardioTargetHTML(ctx), '') + `<p class="tiny muted" style="margin:-4px 4px 12px">Last 7 days: ${cardio.minutes7d || 0} min in ${cardio.sessions7d || 0} session${cardio.sessions7d === 1 ? '' : 's'} · last ${ago(cardio.daysSince).toLowerCase()}</p>`;
 
   // Strength trends
   const prs = safe(() => prog.personalRecords(doneSessions), {});
@@ -203,6 +203,7 @@ export function render(ctx) {
   </div>`;
 
   return `<div class="page-head"><h1>Body</h1><p class="sub">Volume, recovery and progress across every muscle.</p></div>
+    ${safe(() => targetsSummaryHTML(ctx), '')}
     ${yourBodyCard(store, profile, log)}
     ${hero}
     <div class="section-title">Muscle map</div>${map}
@@ -265,6 +266,7 @@ function weightsSheet(ctx) {
 
 export function bind(root, ctx) {
   root.querySelectorAll('[data-bdnav]').forEach(b => b.onclick = () => ctx.nav(b.dataset.bdnav));
+  safe(() => { bindTargetsSummary(root, ctx); bindCardioTarget(root, ctx); return true; }, null);
   const host3d = root.querySelector('#bdCard3d');
   if (host3d && card3d) {
     const o3 = card3d;

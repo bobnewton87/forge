@@ -7,7 +7,12 @@
 import * as nut from '../engine/nutrition.js';
 import { esc } from './components.js';
 import { ds } from '../util.js';
-import { macros, macroBar, nutritionContext, safe, f1, whatIfDefaults } from './projection.js';
+import { macros, macroBar, nutritionContext, safe, f1 } from './projection.js';
+import { resolveTargets } from '../engine/targets.js';
+import { setTargets } from './targets.js';
+// CONTRACT-NOTE (INTEGRATOR §18): targets are read via resolveTargets(profile).nutrition (same
+//   defaults the projection uses) and saved via setTargets (no re-plan: nutrition doesn't change
+//   the plan, but the projection reads the same profile values).
 
 let override = null;   // user-picked day type for today (module state)
 let basisPick = null;  // 'cal' | 'surplus' while editing
@@ -60,8 +65,8 @@ export function render(ctx) {
   const n = p.nutrition || {};
   const mode = n.mode || 'off';
   const nc = safe(() => nutritionContext(ctx.store), null);
-  const d = whatIfDefaults(p);
-  const pg = d.pg, fatPct = d.fatPct;
+  const d = resolveTargets(p).nutrition;
+  const pg = d.proteinGPerLb, fatPct = d.fatPct;
   const basis = basisPick || (Number(n.calories) > 0 ? 'cal' : 'surplus');
   const cal = targetCalories(n, nc);
   const surplus = nc && cal ? cal - nc.maint : (n.surplus ?? 0);
@@ -119,9 +124,8 @@ export function render(ctx) {
 export function bind(root, ctx) {
   const st = ctx.store;
   root.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
-    const p = st.getProfile();
-    st.updateProfile({ nutrition: { ...(p.nutrition || {}), mode: b.dataset.mode } });
-    ctx.toast(b.dataset.mode === 'off' ? 'Nutrition off' : b.dataset.mode === 'cycling' ? 'Carb cycling on' : 'Simple targets on');
+    const m = b.dataset.mode;
+    setTargets(ctx, { nutrition: { mode: m } }, { replan: false, reason: m === 'off' ? 'nutrition off' : m === 'cycling' ? 'carb cycling on' : 'simple targets on' });
   });
   root.querySelector('[data-day]')?.addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (b) { override = b.dataset.v; ctx.rerender(); } });
   root.querySelector('[data-auto]')?.addEventListener('click', e => { e.preventDefault(); override = null; ctx.rerender(); });
@@ -160,7 +164,6 @@ export function bind(root, ctx) {
     if (document.activeElement) document.activeElement.blur();
     const p = st.getProfile(), n = p.nutrition || {};
     basisPick = null;
-    st.updateProfile({ nutrition: { ...n, mode: n.mode && n.mode !== 'off' ? n.mode : 'simple', calories: b === 'cal' ? Math.round(v) : null, surplus: b === 'surplus' ? Math.round(v) : null, proteinGPerLb: +(+pgEl.value).toFixed(2), fatPct: +fatEl.value } });
-    ctx.toast('Targets saved');
+    setTargets(ctx, { nutrition: { mode: n.mode && n.mode !== 'off' ? n.mode : 'simple', calories: b === 'cal' ? Math.round(v) : null, surplus: b === 'surplus' ? Math.round(v) : null, proteinGPerLb: +(+pgEl.value).toFixed(2), fatPct: +fatEl.value } }, { replan: false, reason: 'nutrition targets' });
   };
 }

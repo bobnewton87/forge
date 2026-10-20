@@ -684,3 +684,37 @@ export function crossSectionAt(geom, y, part)       // interpolated section betw
 Ratios: standard anthropometry scaled by height (Drillis & Contini; NASA-STD-3000 / ANSUR II male medians). Depth:width
 aspects are realistic per site and vary with body fat and muscle (more fat → rounder waist; more lats → wider
 underbust; etc.). Every given tape girth must be reproduced within ±1% by `perimeter(rx, rz, n)` at its landmark.
+
+## 18. Cohesion: one source of truth for targets (2026-10-20)
+Bob: "All of these pages need to work and tie together cohesively. If I say on the Body page I want to do 225 mins of
+cardio, we need to account for that." Every user-settable target lives in the profile and is read through ONE module;
+every screen that shows or edits a target uses it; changing a target propagates (auto-planned days re-plan, the projection
+uses the same values, Today's recommendations reflect it).
+
+Ownership: `js/engine/targets.js` (pure resolver), `js/ui/targets.js` (shared edit sheet + propagation),
+`test/targets-*.test.js` → **INTEGRATOR**, plus targeted edits in `js/ui/body.js`, `js/ui/plan.js`, `js/ui/today.js`,
+`js/ui/nutrition.js`, `js/ui/settings.js`, `js/ui/session.js`, `js/engine/planner.js` (only where needed to read targets).
+`js/ui/projection.js` and `js/engine/projection.js` belong to LONG-HORIZON, who adopts the API.
+`e2e/*` → **QA** (Playwright end-to-end suite; reports issues, doesn't edit app files).
+
+```js
+// js/engine/targets.js (pure)
+export function resolveTargets(profile, { now, sessions } = {}) → {
+  cardio:   { minPerWeek, modalities:[ids], hardSessionsPerWeek, source:'profile'|'default' },   // profile.cardioTargetMin (+ profile.cardio prefs)
+  training: { schedule, daysPerWeek, liftMinPerWeek, style, defaultMinutes },
+  nutrition:{ mode, calories, surplus, proteinGPerLb, fatPct, phases },       // profile.nutrition (+ phases)
+  adherence: number,                                                         // profile.adherence ?? 0.85
+  stack:    { active:[ids], count },
+  goals:    { goal, sculptGoals, goalBodyFatPct },
+}
+export function applyTargetChange(profile, patch) → newProfile               // pure merge + validation (e.g. cardio 0–900 min/wk)
+// js/ui/targets.js (browser)
+export function setTargets(ctx, patch, { replan = true, reason }) → Promise<void>
+   // saves profile via store, then (if replan) re-plans upcoming AUTO planned days (today → +27 days) with planner.planRange,
+   // keeping custom days; shows a toast "Plan updated for 225 min/wk cardio"
+export function openTargetsSheet(ctx, { focus:'cardio'|'nutrition'|'training'|'adherence' })  // one shared editor used everywhere
+export function targetsSummaryHTML(ctx) → html   // compact "Your targets" strip with tap-to-edit, used by Body/Plan/Projection/Today
+```
+Rules: projection what-if sliders are PREVIEWS (clearly labelled "what-if") until "Apply", which calls setTargets.
+Plan's cardio stepper, Body's cardio card, Nutrition's targets, and Settings all call setTargets. No screen keeps
+its own copy of a target value.

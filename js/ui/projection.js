@@ -11,6 +11,12 @@
 //   cardio at the same intake shows its real effect. "vs maintenance" uses result.energy.tdeeStart.
 // CONTRACT-NOTE: engine features are feature-detected; with the Phase-2 engine the lab is computed
 //   by calling project() per calorie level and extra cardio is simulated with synthetic planned sessions.
+// CONTRACT-NOTE (long horizon): horizon slider 4 wk → 5 yr (o.weeks), nutrition phases preview in o.ph
+//   (null = follow the saved plan, 'single' = one constant intake, or { preset, repeat, blocks }). Defaults for
+//   adherence, macros, cardio modality and phases come from targets.resolveTargets (CONTRACT §18) when loaded.
+//   Apply writes through targets.setTargets (nutrition incl. the dated phases list; cardio target with re-plan;
+//   adherence). The full repeating phase plan is also kept in profile.nutrition.phasePlan (setTargets only stores
+//   the dated list), which the engine prefers when present.
 import { esc } from './components.js';
 import { ds, fmtShort, parseDs, addDays, daysBetween } from '../util.js';
 import * as BC from '../engine/bodycomp.js';
@@ -18,6 +24,12 @@ import * as PJ from '../engine/projection.js';
 import * as NU from '../engine/nutrition.js';
 import { CARDIO, INTENSITIES, estimateCalories } from '../data/cardio.js';
 import { silhouetteSVG } from './silhouette.js';
+
+// Shared targets (CONTRACT §18), loaded lazily so this screen works before/without them.
+let TG = null, TGU = null;
+import('../engine/targets.js').then(m => { TG = m; }).catch(() => {});
+import('./targets.js').then(m => { TGU = m; }).catch(() => {});
+const targetsOf = (profile, sessions) => (TG && typeof TG.resolveTargets === 'function' ? safe(() => TG.resolveTargets(profile, { sessions }), null) : null);
 
 export const safe = (fn, fb) => { try { const v = fn(); return v == null ? fb : v; } catch (e) { console.error(e); return fb; } };
 export const f1 = n => { n = Number(n); if (!isFinite(n)) return '—'; return Math.abs(n - Math.round(n)) < 0.05 ? String(Math.round(n)) : n.toFixed(1); };
@@ -104,7 +116,25 @@ export function macroBar(m) {
 
 // ---------------- charts ----------------
 // data: [{ d, v, lo?, hi? }]; past: [{ d, v }] drawn as dots before today; target: horizontal guide.
-export function lineChart({ id, data, past = [], W = 340, H = 150, mini = false, unit = '', target = null, targetLabel = '', color = 'var(--accent)', today = null, decimals = 1 }) {
+// Long horizons: x ticks switch to "6 mo / 1 yr / 2 yr…", and `phases` ([{ start, end, goal, label }]) draw tinted bands.
+export const PHASE_COL = { cut: 'var(--good)', lean_bulk: 'var(--accent2)', bulk: 'var(--accent)', maintain: 'var(--muted)', custom: 'var(--cardio)' };
+function relTicks(d0, d1) {
+  const span = daysBetween(d0, d1);
+  if (span <= 200) return null;
+  const stepMo = span <= 800 ? 6 : 12, out = [];
+  for (let m = stepMo; m * 30.44 <= span - 20; m += stepMo) out.push({ d: ds(addDays(parseDs(d0), Math.round(m * 30.44))), label: m % 12 ? `${m} mo` : `${m / 12} yr` });
+  return out;
+}
+function phaseBands(phases, x, T, H, B, L, R, W) {
+  if (!Array.isArray(phases) || !phases.length) return '';
+  return phases.map(ph => {
+    const a = Math.max(L, x(ph.start)), b = Math.min(W - R, x(ph.end));
+    if (!(b > a + 0.5)) return '';
+    const col = PHASE_COL[ph.goal] || 'var(--muted)';
+    return `<rect x="${a.toFixed(1)}" y="${T}" width="${(b - a).toFixed(1)}" height="${H - T - B}" fill="${col}" opacity="${ph.goal === 'maintain' ? 0.04 : 0.08}"/><rect x="${a.toFixed(1)}" y="${H - B - 3}" width="${Math.max(0.5, b - a - 0.6).toFixed(1)}" height="3" fill="${col}" opacity=".7"/>`;
+  }).join('');
+}
+export function lineChart({ id, data, past = [], W = 340, H = 150, mini = false, unit = '', target = null, targetLabel = '', color = 'var(--accent)', today = null, decimals = 1, phases = null }) {
   data = (data || []).filter(p => p && isFinite(p.v));
   if (data.length < 2) return '';
   const L = mini ? 2 : 34, R = mini ? 4 : 10, T = mini ? 4 : 12, B = mini ? 4 : 22;
@@ -126,7 +156,7 @@ export function lineChart({ id, data, past = [], W = 340, H = 150, mini = false,
   if (!mini) {
     const ticks = [lo, (lo + hi) / 2, hi];
     axes = ticks.map(t => `<line x1="${L}" x2="${W - R}" y1="${y(t).toFixed(1)}" y2="${y(t).toFixed(1)}" stroke="var(--line)"/><text x="${L - 6}" y="${(y(t) + 3).toFixed(1)}" text-anchor="end">${f1(t)}</text>`).join('')
-      + `<text x="${L}" y="${H - 6}">${fmtShort(xs[0])}</text><text x="${W - R}" y="${H - 6}" text-anchor="end">${fmtShort(xs[xs.length - 1])}</text>`;
+      + xLabels(xs[0], xs[xs.length - 1], x, L, W, R, H);
     if (target != null && target > lo && target < hi) axes += `<line x1="${L}" x2="${W - R}" y1="${y(target).toFixed(1)}" y2="${y(target).toFixed(1)}" stroke="var(--good)" stroke-dasharray="4 4" opacity=".7"/><text x="${W - R}" y="${(y(target) - 4).toFixed(1)}" text-anchor="end" style="fill:var(--good)">${esc(targetLabel)}</text>`;
     if (today) { const tx = x(today); axes += `<line x1="${tx.toFixed(1)}" x2="${tx.toFixed(1)}" y1="${T}" y2="${H - B}" stroke="var(--muted)" stroke-dasharray="2 3"/><text x="${(tx + 4).toFixed(1)}" y="${T + 8}" style="font-weight:700">Today</text>`; }
   }
@@ -136,6 +166,7 @@ export function lineChart({ id, data, past = [], W = 340, H = 150, mini = false,
     .map(a => a.map(v => typeof v === 'number' ? +v.toFixed(decimals + 1) : v));
   return `<svg class="chart bd-chart ${mini ? 'mini' : ''}" viewBox="0 0 ${W} ${H}" data-unit="${esc(unit)}" data-pts='${esc(JSON.stringify(tipData))}' ${mini ? 'preserveAspectRatio="none"' : ''}>
     <defs><linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".22"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+    ${mini ? '' : phaseBands(phases, x, T, H, B, L, R, W)}
     ${axes}
     ${band ? `<path d="${band}" fill="${color}" opacity=".16"/>` : mini ? `<path d="${line} L${lx.toFixed(1)} ${H} L${pts[0][0].toFixed(1)} ${H} Z" fill="url(#${gid})"/>` : ''}
     ${dots}
@@ -143,6 +174,13 @@ export function lineChart({ id, data, past = [], W = 340, H = 150, mini = false,
     ${mini ? '' : `<circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="4" fill="${color}" stroke="var(--card)" stroke-width="2"/>`}
     ${mini ? '' : tipG(T, H - B)}
   </svg>`;
+}
+// First/last dates, or relative ticks (6 mo, 1 yr…) for long spans.
+function xLabels(d0, d1, x, L, W, R, H) {
+  const t = relTicks(d0, d1);
+  if (!t) return `<text x="${L}" y="${H - 6}">${fmtShort(d0)}</text><text x="${W - R}" y="${H - 6}" text-anchor="end">${fmtShort(d1)}</text>`;
+  return `<text x="${L}" y="${H - 6}">Now</text>` + t.map(k => `<line x1="${x(k.d).toFixed(1)}" x2="${x(k.d).toFixed(1)}" y1="${H - 22}" y2="${H - 18}" stroke="var(--muted)"/><text x="${x(k.d).toFixed(1)}" y="${H - 6}" text-anchor="middle">${k.label}</text>`).join('')
+    + `<text x="${W - R}" y="${H - 6}" text-anchor="end" style="opacity:${x(t[t.length - 1].d) > W - R - 40 ? 0 : 1}">${fmtShort(d1).replace(/ \d{4}$/, '')}${d1.slice(0, 4) !== d0.slice(0, 4) ? ' ’' + d1.slice(2, 4) : ''}</text>`;
 }
 const tipG = (y1, y2) => `<g class="bd-tip-g" style="display:none"><line y1="${y1}" y2="${y2}" stroke="var(--muted)" stroke-dasharray="3 3"/><circle r="4.5" fill="var(--text)" stroke="var(--card)" stroke-width="2"/><rect rx="6" height="20" fill="var(--card2)" stroke="var(--line)"/><text style="fill:var(--text);font-weight:700" text-anchor="middle"></text></g>`;
 
@@ -179,7 +217,7 @@ export function bindCharts(root) {
 }
 
 // Stacked lean + fat = weight, from zero (honest split), direct-labelled.
-function compChart(S, W = 340, H = 150) {
+function compChart(S, W = 340, H = 150, phases = null) {
   const L = 34, R = 10, T = 26, B = 22;
   const top = Math.ceil(Math.max(...S.map(p => p.weightLb)) / 20) * 20;
   const t0 = parseDs(S[0].date).getTime(), t1 = parseDs(S[S.length - 1].date).getTime();
@@ -200,22 +238,41 @@ function compChart(S, W = 340, H = 150) {
     <path d="${P(leanTop)}" fill="none" stroke="var(--card)" stroke-width="2"/>
     <text x="${L + 8}" y="${midY(0, s0.leanLb)}" style="fill:var(--text);font-weight:750">Lean ${f1(s0.leanLb)} → ${f1(sN.leanLb)} lb</text>
     <text x="${L + 2}" y="${T - 8}" style="fill:var(--accent2);font-weight:750">Fat ${f1(s0.fatLb ?? s0.weightLb - s0.leanLb)} → ${f1(sN.fatLb ?? sN.weightLb - sN.leanLb)} lb</text>
-    <text x="${L}" y="${H - 6}">${fmtShort(s0.date)}</text><text x="${W - R}" y="${H - 6}" text-anchor="end">${fmtShort(sN.date)}</text>
+    ${xLabels(s0.date, sN.date, x, L, W, R, H)}
+    ${phaseBands(phases, x, T, H, B, L, R, W)}
     ${tipG(T, H - B)}
   </svg>`;
 }
 
 // ---------------- state ----------------
-const DEF_OPTS = { weeks: 12, until: null, adherence: 0.85, repeat: true, kcal: null, pg: null, fatPct: null, cdelta: 0, cmod: 'bike', cint: 'easy', view: 'proj', scrub: null, pose: 'relaxed', useStack: true };
+const DEF_OPTS = { weeks: 12, until: null, adherence: null, repeat: true, kcal: null, pg: null, fatPct: null, cdelta: 0, cmod: null, cint: 'easy', view: 'proj', scrub: null, pose: 'relaxed', useStack: true, ph: null };
 function getOpts(store) { return { ...DEF_OPTS, ...(safe(() => store.kv('projection'), null) || {}) }; }
 function setOpts(store, patch) { const o = { ...getOpts(store), ...patch }; store.kv('projection', o); return o; }
 const PRESETS = [['Cut', -500], ['Recomp', -250], ['Maintain', 0], ['Lean bulk', 300], ['Bulk', 600], ['Dirty bulk', 1000]];
 
+const MAXW = PJ.MAX_WEEKS || 104;
 function weeksOf(o) {
-  if (o.until) { const n = Math.ceil(daysBetween(ds(), o.until) / 7); if (n >= 1) return Math.min(104, n); }
-  return o.weeks || 12;
+  if (o.until) { const n = Math.ceil(daysBetween(ds(), o.until) / 7); if (n >= 1) return Math.min(MAXW, n); }
+  return clampN(Math.round(o.weeks || 12), 1, MAXW);
 }
+// Horizon slider: positions 0..48 = 4..52 weeks (weekly), 49..64 = quarterly steps to 260 weeks.
+const H_FINE = 48;
+const hMax = () => (MAXW >= 260 ? H_FINE + 16 : Math.max(0, Math.min(H_FINE, MAXW - 4)));
+const weeksAtPos = p => (p <= H_FINE ? 4 + p : 52 + 13 * (p - H_FINE));
+const posOfWeeks = w => (w <= 52 ? clampN(w - 4, 0, H_FINE) : clampN(H_FINE + Math.round((w - 52) / 13), 0, hMax()));
+export function horizonText(w) {
+  w = Math.round(w);
+  if (w < 26) return `${w} week${w === 1 ? '' : 's'}`;
+  if (w < 104) return `${Math.round(w / 4.345)} months`;
+  const y = Math.round(w / 52.18 * 4) / 4;
+  return `${Number.isInteger(y) ? y : y.toFixed(2).replace(/0$/, '')} years`;
+}
+const H_CHIPS = [[12, '12 wk'], [26, '6 mo'], [52, '1 yr'], [104, '2 yr'], [260, '5 yr']];
+// "Week 9" early on, "Month 14" / "Year 3.5" later (for the scrubber and the end card).
+const whenText = wk => (wk < 26 ? `Week ${wk}` : wk < 104 ? `Month ${Math.round(wk / 4.345)}` : `Year ${Math.round(wk / 52.18 * 10) / 10}`);
 export function whatIfDefaults(profile) {
+  const t = targetsOf(profile);
+  if (t?.nutrition) return { pg: clampN(Number(t.nutrition.proteinGPerLb) || 1, 0.6, 1.4), fatPct: clampN(Number(t.nutrition.fatPct) || 25, 15, 40) };
   const n = profile.nutrition || {}, bw = Number(profile.bodyweight) || 0;
   const pg = Number(n.proteinGPerLb) > 0 ? Number(n.proteinGPerLb) : Number(n.protein) > 0 && bw ? Math.round(n.protein / bw * 20) / 20 : 1.0;
   return { pg: clampN(pg, 0.6, 1.4), fatPct: clampN(Number(n.fatPct) > 0 ? Number(n.fatPct) : 25, 15, 40) };
@@ -230,19 +287,43 @@ function inputs(store) {
   const foodLog = safe(() => store.getFoodLog(), []);
   const now = new Date();
   const b = safe(() => BC.baseline({ profile, bodyLog, measurements, now, foodLog }), null);
-  return { profile, bodyLog, measurements, sessions, foodLog, now, b };
+  return { profile, bodyLog, measurements, sessions, foodLog, now, b, targets: targetsOf(profile, sessions) };
 }
 // Phase-2 engine fallback: extra weekly cardio as its energy cost per day (no interference modelled).
 function cardioKcalDay(I, o) {
   if (!o.cdelta) return 0;
   return Math.sign(o.cdelta) * estimateCalories(o.cmod, Math.abs(o.cdelta), o.cint, I.b?.weightLb || 165) / 7;
 }
-function runProject(I, o, weeks, kcal, pg, fatPct) {
+// Saved plan (profile.nutrition.phasePlan, else the shared dated list) and the preview selection.
+function savedPlan(profile) {
+  const n = profile?.nutrition || {};
+  if (n.phasePlan && (n.phasePlan.preset || (n.phasePlan.blocks || []).length)) return n.phasePlan;
+  return Array.isArray(n.phases) && n.phases.length ? n.phases : null;
+}
+function planOf(I, o) {
+  if (o.ph === 'single') return null;
+  if (o.ph && typeof o.ph === 'object') return o.ph;
+  return savedPlan(I.profile);
+}
+// Planned cardio min/week over the next 4 weeks (unscaled by adherence), for "target X · planned Y".
+function plannedCardio(I) {
+  const t0 = ds(I.now), t1 = ds(addDays(I.now, 27));
+  let min = 0;
+  for (const s of I.sessions || []) {
+    if (!s || s.status !== 'planned' || s.date < t0 || s.date > t1) continue;
+    for (const b of s.blocks || []) min += b?.kind === 'cardio' ? Number(b.minutes) || 0 : b?.kind === 'class' ? Number(b.classify?.cardioMinutes) || 0 : 0;
+  }
+  return Math.round(min / 4);
+}
+const adhOf = (I, o) => o.adherence ?? I.targets?.adherence ?? 0.85;
+const cmodOf = (I, o) => o.cmod ?? (I.targets?.cardio?.modalities || []).find(m => CARDIO[m]) ?? 'bike';
+function runProject(I, o, weeks, kcal, pg, fatPct, plan = null) {
   if (!I.b) return null;
-  const base = { baseline: I.b, profile: I.profile, sessions: I.sessions, weeks, now: I.now, adherence: o.adherence, repeatPlan: o.repeat, useStack: o.useStack !== false };
+  const base = { baseline: I.b, profile: I.profile, sessions: I.sessions, weeks, now: I.now, adherence: adhOf(I, o), repeatPlan: o.repeat, useStack: o.useStack !== false };
   if (newEngine()) {
-    const intake = { proteinGPerLb: pg, fatPct }; if (kcal != null) intake.calories = kcal;
-    return safe(() => PJ.project({ ...base, bodyLog: I.bodyLog, foodLog: I.foodLog, intake, cardioDeltaMin: o.cdelta || 0, cardioModality: o.cmod, cardioIntensity: o.cint }), null);
+    const intake = { proteinGPerLb: pg, fatPct }; if (kcal != null && !plan) intake.calories = kcal;
+    return safe(() => PJ.project({ ...base, bodyLog: I.bodyLog, foodLog: I.foodLog, intake, cardioDeltaMin: o.cdelta || 0, cardioModality: cmodOf(I, o), cardioIntensity: o.cint,
+      phases: plan || null, stopAtGoal: true }), null);
   }
   const r = safe(() => PJ.project({ ...base, intake: kcal == null ? null : kcal - cardioKcalDay(I, o) }), null);
   if (r?.energy && o.cdelta) r.energy = { ...r.energy, tdeeStart: Math.round(r.energy.tdeeStart + cardioKcalDay(I, o)), intakeStart: kcal == null ? r.energy.intakeStart : kcal };
@@ -254,13 +335,13 @@ function runProject(I, o, weeks, kcal, pg, fatPct) {
 let labCache = { key: null, v: null };
 export function labData(I, o, weeks, maint, pg, fatPct) {
   if (!I.b || !I.b.weightLb) return null;
-  const key = JSON.stringify([weeks, o.adherence, o.repeat, o.useStack !== false, JSON.stringify(I.profile.supplements || []), JSON.stringify(I.profile.metabolic || {}), pg, fatPct, o.cdelta, o.cmod, o.cint, I.b.weightLb, I.b.bodyFatPct, I.sessions.length, Math.round(maint || 0), newEngine()]);
+  const key = JSON.stringify([weeks, adhOf(I, o), o.repeat, cmodOf(I, o), o.useStack !== false, JSON.stringify(I.profile.supplements || []), JSON.stringify(I.profile.metabolic || {}), pg, fatPct, o.cdelta, o.cmod, o.cint, I.b.weightLb, I.b.bodyFatPct, I.sessions.length, Math.round(maint || 0), newEngine()]);
   if (labCache.key === key) return labCache.v;
   const bf0 = I.b.bodyFatPct ?? 20, lean0 = I.b.comp?.leanLb ?? I.b.weightLb * (1 - bf0 / 100), fat0 = I.b.weightLb - lean0;
   let raw = null;
   if (newEngine()) {
     raw = safe(() => PJ.nutritionLab({ baseline: I.b, profile: I.profile, sessions: I.sessions, bodyLog: I.bodyLog, foodLog: I.foodLog, weeks, now: I.now, calorieRange: [-750, 1000], step: 125,
-      proteinGPerLb: pg, fatPct, cardioDeltaMin: o.cdelta || 0, cardioModality: o.cmod, cardioIntensity: o.cint, adherence: o.adherence, repeatPlan: o.repeat, useStack: o.useStack !== false }), null);
+      proteinGPerLb: pg, fatPct, cardioDeltaMin: o.cdelta || 0, cardioModality: cmodOf(I, o), cardioIntensity: o.cint, adherence: adhOf(I, o), repeatPlan: o.repeat, useStack: o.useStack !== false }), null);
   }
   if (!raw || !(raw.points || []).length) {
     if (!maint) return null;
@@ -299,26 +380,33 @@ function compute(store, o) {
   const weeks = weeksOf(o);
   const d = whatIfDefaults(I.profile);
   const pg = o.pg ?? d.pg, fatPct = o.fatPct ?? d.fatPct;
+  const plan = planOf(I, o);
   let res = null, kcal = o.kcal;
   if (I.b && I.b.weightLb) {
-    if (kcal == null) {
-      const r0 = runProject(I, o, weeks, null, pg, fatPct);
-      kcal = r0?.energy?.intakeStart ? Math.round(r0.energy.intakeStart / 25) * 25 : null;
-      res = kcal == null ? r0 : null;
+    if (plan) {
+      res = runProject(I, o, weeks, null, pg, fatPct, plan);
+      if (kcal == null) kcal = res?.energy?.intakeStart ? Math.round(res.energy.intakeStart / 25) * 25 : null;
+    } else {
+      if (kcal == null) {
+        const r0 = runProject(I, o, weeks, null, pg, fatPct);
+        kcal = r0?.energy?.intakeStart ? Math.round(r0.energy.intakeStart / 25) * 25 : null;
+        res = kcal == null ? r0 : null;
+      }
+      if (!res) res = runProject(I, o, weeks, kcal, pg, fatPct);
     }
-    if (!res) res = runProject(I, o, weeks, kcal, pg, fatPct);
   }
   const maint = res?.energy?.tdeeStart || (I.b?.weightLb ? Math.round(I.b.weightLb * 15.5) : null);
   if (kcal == null && maint) kcal = maint;
   const today = ds(I.now), end = ds(addDays(I.now, weeks * 7 - 1));
   const planned = I.sessions.filter(s => s.status === 'planned' && s.date >= today && s.date <= end && !(s.plan && s.plan.kind === 'rest' && !(s.blocks || []).length));
   const nutritionOn = I.profile.nutrition && I.profile.nutrition.mode && I.profile.nutrition.mode !== 'off';
-  return { ...I, res, weeks, planned, nutritionOn, end, kcal, maint, pg, fatPct };
+  const goalBf = Number(I.targets?.goals?.goalBodyFatPct) || Number(I.profile.body?.goalBodyFat) || 12;
+  return { ...I, res, weeks, planned, nutritionOn, end, kcal, maint, pg, fatPct, plan, adherence: adhOf(I, o), cmod: cmodOf(I, o), goalBf };
 }
 
 // Maintenance, current intake and a 12-week lab for other screens (nutrition). Ignores what-if kcal/macros/cardio.
 export function nutritionContext(store, { weeks = 12, pg = null, fatPct = null } = {}) {
-  const o = { ...getOpts(store), kcal: null, pg, fatPct, cdelta: 0, until: null, weeks };
+  const o = { ...getOpts(store), kcal: null, pg, fatPct, cdelta: 0, until: null, weeks, ph: null };
   const D = compute(store, o);
   if (!D.res || !D.b?.weightLb) return null;
   return { maint: D.maint, intake: D.kcal, weight: D.b.weightLb, pg: D.pg, fatPct: D.fatPct, weeks, lab: safe(() => labData(D, o, weeks, D.maint, D.pg, D.fatPct), null) };
@@ -326,7 +414,7 @@ export function nutritionContext(store, { weeks = 12, pg = null, fatPct = null }
 
 // Formula maintenance (kcal/day) with the current plan, for the food-log status on Measurements.
 export function maintenanceEstimate(store) {
-  const D = compute(store, { ...getOpts(store), kcal: null, cdelta: 0, until: null });
+  const D = compute(store, { ...getOpts(store), kcal: null, cdelta: 0, until: null, ph: null, weeks: 12 });
   const e = D.res?.energy; if (!e) return null;
   return { formula: e.tdeeFormula ?? e.tdeeStart, calibrated: e.tdeeStart, calibration: D.res.tdeeCalibration || null };
 }
@@ -367,31 +455,47 @@ function heroSvg(S, i, H) {
   const p0 = S[0], p = S[i];
   if (i === 0) return `<div class="bd-sil-wrap big">${silhouetteSVG(shapeOf(p0, H), { bodyFatPct: p0.bodyFatPct, heightIn: H })}</div>`;
   return `<div class="bd-pair"><div class="bd-col"><div class="bd-cap">Now</div><div class="bd-sil-wrap">${silhouetteSVG(shapeOf(p0, H), { bodyFatPct: p0.bodyFatPct, heightIn: H })}</div></div><div class="bd-arrow">→</div>
-    <div class="bd-col then"><div class="bd-cap">Week ${i}</div><div class="bd-sil-wrap">${silhouetteSVG(shapeOf(p, H), { bodyFatPct: p.bodyFatPct, heightIn: H, compare: { measurements: shapeOf(p0, H) } })}</div></div></div>`;
+    <div class="bd-col then"><div class="bd-cap">${esc(whenText(p.week ?? i))}</div><div class="bd-sil-wrap">${silhouetteSVG(shapeOf(p, H), { bodyFatPct: p.bodyFatPct, heightIn: H, compare: { measurements: shapeOf(p0, H) } })}</div></div></div>`;
 }
 function heroInfo(D, o) {
   const S = D.res.series, i = scrubIdx(o, S), p = S[i], H = D.b.heightIn || 69;
-  const lbl = i === 0 ? 'Now' : `Week ${i} · ${fmtShort(p.date)}`;
-  return `<div class="row between bd-scrubhead"><div class="bd-cap">${esc(lbl)}${i ? ' <span class="muted">vs now</span>' : ''}</div><div class="tiny muted">${D.weeks} wk horizon</div></div>
+  const wk = p.week ?? i;
+  const lbl = i === 0 ? 'Now' : `${whenText(wk)} · ${fmtShort(p.date)}${p.date.slice(0, 4) !== S[0].date.slice(0, 4) ? ' ' + p.date.slice(0, 4) : ''}`;
+  const ph = p.phase && i ? `<span class="bd-phtag" style="color:${PHASE_COL[p.phase.goal] || 'var(--muted)'}">${esc(p.phase.atMaintenance ? 'Maintenance' : p.phase.label || '')}</span>` : '';
+  return `<div class="row between bd-scrubhead"><div class="bd-cap">${esc(lbl)}${i ? ' <span class="muted">vs now</span>' : ''} ${ph}</div><div class="tiny muted">${esc(horizonText(D.weeks))}</div></div>
     ${keyNums(p, S[0], H)}`;
 }
 
+function horizonGroup(D, o) {
+  const w = D.weeks, p = posOfWeeks(w), mx = hMax();
+  return `<div class="bd-grp bd-hgrp">
+      <div class="row between"><div class="label">How far ahead</div><div class="num bold" id="pjHV">${esc(horizonText(w))}</div></div>
+      <input type="range" class="bd-range" id="pjH" min="0" max="${mx}" step="1" value="${p}" style="--pct:${(p / (mx || 1)) * 100}%" aria-label="Projection horizon" aria-valuetext="${esc(horizonText(w))}">
+      <div class="bd-hscale tiny muted"><span>4 wk</span><span style="left:${(48 / mx) * 100}%">1 yr</span><span>${MAXW >= 260 ? '5 yr' : horizonText(MAXW)}</span></div>
+      <div class="chips bd-hchips">${H_CHIPS.filter(([v]) => v <= MAXW).map(([v, l]) => `<button class="chip sm ${w === v ? 'active' : ''}" data-hw="${v}">${l}</button>`).join('')}</div>
+    </div>`;
+}
 function controls(D, o) {
   const m = macros(D.profile, { calories: D.kcal, bodyweight: D.b.weightLb, proteinGPerLb: D.pg, fatPct: D.fatPct });
   const lo = Math.round((D.maint - 1000) / 50) * 50, hi = Math.round((D.maint + 1500) / 50) * 50;
   const pctOf = (v, a, b) => ((v - a) / (b - a)) * 100;
-  const horizon = [4, 8, 12, 24].map(w => `<button class="chip sm ${!o.until && o.weeks === w ? 'active' : ''}" data-weeks="${w}">${w} wk</button>`).join('')
-    + `<label class="chip sm bd-datechip ${o.until ? 'active' : ''}">📅 <input type="date" id="pjUntil" min="${ds(addDays(new Date(), 7))}" value="${o.until || ''}"><span>${o.until ? fmtShort(o.until) : 'Date'}</span></label>`;
-  const mods = Object.values(CARDIO).map(c => `<option value="${c.id}" ${o.cmod === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+  const mods = Object.values(CARDIO).map(c => `<option value="${c.id}" ${D.cmod === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
   const ints = Object.entries(INTENSITIES).map(([k, v]) => `<option value="${k}" ${o.cint === k ? 'selected' : ''}>${esc(v.name)}</option>`).join('');
+  const strip = TGU && typeof TGU.targetsSummaryHTML === 'function' && D.ctx ? safe(() => TGU.targetsSummaryHTML(D.ctx), '') : '';
+  const tgtC = D.targets?.cardio?.minPerWeek;
+  const planC = plannedCardio(D), baseC = tgtC ?? planC;
   return `<div class="card bd-ctrl" id="pjCtrl">
-    <div class="row between"><div class="card-title">What if…</div><button class="link small" data-reset>Reset to my targets</button></div>
+    ${strip ? `<div class="bd-tgstrip">${strip}</div>` : ''}
+    <div class="row between"><div class="card-title">What if… <span class="badge">preview</span></div><button class="link small" data-reset>Reset to my targets</button></div>
+    <p class="tiny muted" style="margin-top:2px">Sliders only change this projection. Nothing is saved until you tap Apply.</p>
+    ${horizonGroup(D, o)}
 
-    <div class="bd-grp">
-      <div class="row between"><div class="label">Calories</div><div class="tiny muted" id="pjMaint">maintenance ≈ ${kfmt(D.maint)}</div></div>
-      <div class="bd-kcal"><b class="num" id="pjKcalV">${kfmt(D.kcal)}</b><span> kcal/day</span><em class="num" id="pjKcalD">${sgnK(D.kcal - D.maint)} vs maintenance</em></div>
+    <div class="bd-grp ${D.plan ? 'bd-dim' : ''}" id="pjKcalGrp">
+      <div class="row between"><div class="label">Calories${D.plan ? ' <span class="tiny muted">(phases set them)</span>' : ''}</div><div class="tiny muted" id="pjMaint">maintenance ≈ ${kfmt(D.maint)}</div></div>
+      <div class="bd-kcal"><b class="num" id="pjKcalV">${kfmt(D.kcal)}</b><span> kcal/day${D.plan ? ' to start' : ''}</span><em class="num" id="pjKcalD">${sgnK(D.kcal - D.maint)} vs maintenance</em></div>
       <input type="range" class="bd-range" id="pjKcal" min="${lo}" max="${hi}" step="25" value="${D.kcal}" style="--pct:${pctOf(D.kcal, lo, hi)}%" aria-label="Calories per day">
       <div class="chips bd-presets" id="pjPresets">${PRESETS.map(([l, off]) => `<button class="chip sm" data-preset="${off}"><b>${l}</b> <span>${off > 0 ? '+' : off < 0 ? '−' : ''}${off ? Math.abs(off) : '±0'}</span></button>`).join('')}</div>
+      ${D.plan ? '<div class="tiny muted" style="margin-top:6px">Moving the slider switches to one constant intake.</div>' : D.weeks > 52 ? '<div class="tiny muted" style="margin-top:6px">One intake held for years: weight drifts toward a new steady state. Phases below are the realistic way to plan this far ahead.</div>' : ''}
     </div>
 
     <div class="bd-grp">
@@ -404,27 +508,82 @@ function controls(D, o) {
     </div>
 
     <div class="bd-grp">
-      <div class="row between"><div class="label">Extra cardio</div><div class="tiny muted" id="pjCardioBase">plan: ${Math.round(D.res.weekly?.cardioMinPerWeek || 0)} min/wk</div></div>
+      <div class="row between"><div class="label">Cardio <span class="tiny muted">what-if</span></div><div class="tiny muted" id="pjCardioBase">${tgtC != null ? `target ${tgtC} · ` : ''}planned ${planC} min/wk</div></div>
       <div class="bd-step"><button class="btn bd-stepb" data-cstep="-15" aria-label="15 fewer minutes">−</button>
-        <div class="bd-stepv"><b class="num" id="pjCdV">${sgnK(o.cdelta)}</b><span>min / week</span></div>
+        <div class="bd-stepv"><b class="num" id="pjCdV">${sgnK(o.cdelta)}</b><span>min / week on top of the plan</span></div>
         <button class="btn bd-stepb" data-cstep="15" aria-label="15 more minutes">+</button></div>
       <div class="chips bd-cquick">${[30, 60, 120].map(v => `<button class="chip sm" data-cadd="${v}">+${v}</button>`).join('')}<button class="chip sm" data-cadd="0">Reset</button></div>
       <div class="grid2" style="margin-top:10px"><select id="pjCmod" aria-label="Cardio type">${mods}</select><select id="pjCint" aria-label="Cardio intensity">${ints}</select></div>
       <div class="tiny muted" id="pjCburn" style="margin-top:6px">${cardioBurn(D, o)}</div>
+      <button class="btn btn-sm btn-ghost btn-block" id="pjCApply" style="margin-top:8px;${o.cdelta ? '' : 'display:none'}">Make ${Math.max(0, baseC + (o.cdelta || 0))} min/wk my cardio target</button>
     </div>
 
     ${stackGroup(D, o)}
     <div class="bd-grp">
-      <div class="row between"><div class="label">Adherence</div><div class="num bold" id="pjAdhV">${Math.round(o.adherence * 100)}%</div></div>
-      <input type="range" class="bd-range" min="0.6" max="1" step="0.05" value="${o.adherence}" id="pjAdh" style="--pct:${((o.adherence - 0.6) / 0.4) * 100}%" aria-label="Adherence">
-      <div class="tiny muted" style="margin-top:-4px">Share of planned sessions you actually do.</div>
-      <div class="label mt">Horizon</div><div class="chips" style="margin-top:8px">${horizon}</div>
+      <div class="row between"><div class="label">Adherence</div><div class="num bold" id="pjAdhV">${Math.round(D.adherence * 100)}%</div></div>
+      <input type="range" class="bd-range" min="0.6" max="1" step="0.05" value="${D.adherence}" id="pjAdh" style="--pct:${((D.adherence - 0.6) / 0.4) * 100}%" aria-label="Adherence">
+      <div class="tiny muted" style="margin-top:-4px">Share of planned sessions you actually do${D.targets ? ` (your target: ${Math.round(D.targets.adherence * 100)}%)` : ''}.</div>
       <div class="set-row" style="border:0;padding-bottom:0"><div class="grow"><div class="t">Repeat my plan</div><div class="s">Weeks after the last planned day reuse your average week</div></div><label class="switch"><input type="checkbox" id="pjRepeat" ${o.repeat ? 'checked' : ''}><span></span></label></div>
     </div>
-    <button class="btn btn-primary btn-block" data-apply>Apply to my nutrition targets</button>
+    <button class="btn btn-primary btn-block" data-apply>Apply to my targets</button>
     <div class="tiny muted center" id="pjApplyNote" style="margin-top:6px">${applyNote(D)}</div>
   </div>`;
 }
+
+// ---------------- Nutrition phases ----------------
+const GOAL_OPTS = [['lean_bulk', 'Lean bulk'], ['bulk', 'Bulk'], ['cut', 'Cut'], ['maintain', 'Maintain'], ['custom', 'Custom kcal']];
+const presetOf = id => (PJ.PHASE_PRESETS || []).find(p => p.id === id) || null;
+function planBlocks(plan) {
+  if (!plan) return null;
+  if (Array.isArray(plan)) return null;   // dated list (shown as the timeline only)
+  return (plan.blocks && plan.blocks.length ? plan.blocks : presetOf(plan.preset)?.blocks) || null;
+}
+function phaseSel(D, o) {
+  if (o.ph === 'single' || !D.plan) return 'single';
+  if (o.ph && typeof o.ph === 'object') return o.ph.preset || 'custom';
+  return 'saved';
+}
+function timelineStrip(phases, weeks) {
+  if (!phases.length) return '';
+  return `<div class="bd-tl" role="img" aria-label="Nutrition phase timeline">${phases.map(ph => {
+    const w = (Math.min(ph.endWeek, weeks) - ph.startWeek) / weeks * 100;
+    if (w <= 0) return '';
+    const kc = ph.mode === 'track' ? '±0' : ph.calories ? kfmt(ph.calories) : sgnK(ph.surplus);
+    return `<i style="flex:${w};background:${PHASE_COL[ph.goal] || 'var(--muted)'}" title="${esc(ph.label)} ${esc(fmtShort(ph.start))}–${esc(fmtShort(ph.end))}">${w > 9 ? `<span>${esc(kc)}</span>` : ''}</i>`;
+  }).join('')}</div>
+    <div class="bd-tlax tiny muted"><span>Now</span><span>${esc(horizonText(weeks))}</span></div>`;
+}
+function phasesCard(D, o) {
+  const sel = phaseSel(D, o);
+  const res = D.res, phases = res.phases || [];
+  const blocks = sel === 'custom' || (sel !== 'single' && sel !== 'saved') ? planBlocks(D.plan) : null;
+  const saved = savedPlan(D.profile);
+  const chips = [['single', 'One intake'], ...(saved ? [['saved', 'My saved plan']] : []), ...(PJ.PHASE_PRESETS || []).map(p => [p.id, p.label]), ['custom', 'Custom']];
+  const desc = sel === 'single' ? 'One constant intake (the calorie slider above) for the whole horizon.' : sel === 'saved' ? 'The phases saved in your nutrition targets.' : sel === 'custom' ? 'Your own blocks, below.' : presetOf(sel)?.desc || '';
+  const editor = sel !== 'single' && sel !== 'saved' && blocks ? `<div class="bd-blocks" id="pjBlocks">${blocks.map((b, i) => `
+      <div class="bd-block" data-bi="${i}"><span class="bd-bdot" style="background:${PHASE_COL[b.goal] || 'var(--muted)'}"></span>
+        <select data-bf="goal" aria-label="Phase ${i + 1} goal">${GOAL_OPTS.map(([v, l]) => `<option value="${v}" ${b.goal === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <label class="bd-bnum"><input type="number" inputmode="numeric" min="1" max="260" data-bf="weeks" value="${b.weeks}" aria-label="Weeks"><span>wk</span></label>
+        ${b.goal === 'maintain' ? '<span class="bd-bnum muted tiny">±0</span>' : b.goal === 'custom'
+          ? `<label class="bd-bnum"><input type="number" inputmode="numeric" step="50" min="1000" max="6000" data-bf="calories" value="${b.calories ?? Math.round(D.maint)}" aria-label="kcal per day"><span>kcal</span></label>`
+          : `<label class="bd-bnum"><input type="number" inputmode="numeric" step="25" min="-1500" max="1500" data-bf="surplus" value="${b.surplus ?? 0}" aria-label="kcal vs maintenance"><span>±kcal</span></label>`}
+        <button class="bd-bdel" data-bdel="${i}" aria-label="Remove phase" ${blocks.length < 2 ? 'disabled' : ''}>✕</button></div>`).join('')}
+      <div class="row between" style="margin-top:8px"><button class="btn btn-sm btn-ghost" data-badd>+ Add phase</button>
+        <label class="row tiny" style="gap:6px">Repeat <span class="switch sm"><input type="checkbox" id="pjBRep" ${D.plan?.repeat !== false ? 'checked' : ''}><span></span></span></label></div></div>` : '';
+  const first = phases[0];
+  return `<div class="card bd-phcard" id="pjPhases">
+    <div class="row between"><div class="card-title">🗓️ Nutrition phases</div>${sel !== 'single' ? '<span class="badge">preview</span>' : ''}</div>
+    <div class="chips bd-phchips">${chips.map(([v, l]) => `<button class="chip sm ${sel === v ? 'active' : ''}" data-ph="${v}">${esc(l)}</button>`).join('')}</div>
+    <p class="small muted" style="margin-top:8px">${esc(desc)}</p>
+    ${phases.length ? timelineStrip(phases, D.weeks) : ''}
+    ${phases.length ? `<div class="bd-tlleg tiny">${[...new Set(phases.map(p => p.goal))].map(g => `<span><i class="bd-sw" style="background:${PHASE_COL[g]}"></i>${esc((GOAL_OPTS.find(x => x[0] === g) || [g, g])[1])}</span>`).join('')}</div>` : ''}
+    ${editor}
+    ${phases.length ? `<p class="tiny muted" style="margin-top:8px">Each phase eats its amount above/below the maintenance estimate at its start. Cuts stop at your ${D.goalBf}% goal and switch to maintenance.${phases.some(p => p.maintenanceWeeks > 0) ? ` Here that happens for ${phases.reduce((a, p) => a + p.maintenanceWeeks, 0)} weeks.` : ''}</p>` : ''}
+    ${first && sel !== 'single' ? `<button class="btn btn-sm btn-primary btn-block" data-phapply style="margin-top:10px">Apply first phase to my targets (${esc(first.label)}, ${first.mode === 'track' ? 'maintenance' : first.calories ? kfmt(first.calories) + ' kcal' : sgnK(first.surplus) + ' kcal'})</button>
+      <div class="tiny muted center" style="margin-top:4px">Saves the whole phase plan too, so Nutrition and Plan see it.</div>` : ''}
+  </div>`;
+}
+
 function stackLine(D, o) {
   const items = activeStack(D.profile);
   const contrib = (D.res.stack?.contributions || []).slice(0, 3);
@@ -449,6 +608,8 @@ function cardioBurn(D, o) {
 }
 function applyNote(D) {
   const n = D.profile.nutrition || {};
+  const sp = n.phasePlan?.preset ? presetOf(n.phasePlan.preset)?.label : n.phasePlan?.blocks?.length ? 'custom phases' : (n.phases || []).length ? `${n.phases.length} dated phases` : null;
+  if (sp && n.mode && n.mode !== 'off') return `Saved: ${sp}${n.proteinGPerLb ? `, ${n.proteinGPerLb} g/lb protein` : ''}${n.fatPct ? `, ${n.fatPct}% fat` : ''}.`;
   if (!n.mode || n.mode === 'off') return 'Turns on simple nutrition targets.';
   const cur = n.calories ? `${kfmt(n.calories)} kcal` : n.surplus != null ? `${sgnK(n.surplus)} kcal vs maintenance` : 'goal default';
   return `Current targets: ${cur}${n.proteinGPerLb ? `, ${n.proteinGPerLb} g/lb protein` : ''}${n.fatPct ? `, ${n.fatPct}% fat` : ''}.`;
@@ -472,14 +633,15 @@ function labChart(lab, selSurplus, weeks) {
   const ticks = []; for (let v = lo; v <= hi + 1e-9; v += st) ticks.push(Math.round(v * 100) / 100);
   const xt = [-500, 0, 500, 1000].filter(v => v >= x0 && v <= x1);
   const sw = lab.sweet;
-  const sel = clampN(selSurplus, x0, x1), sp = nearestPt(P, selSurplus);
+  const hasSel = selSurplus != null && isFinite(selSurplus);
+  const sel = hasSel ? clampN(selSurplus, x0, x1) : 0, sp = nearestPt(P, sel);
   const last = P[P.length - 1];
   let ly1 = y(last.fat), ly2 = y(last.lean); if (Math.abs(ly1 - ly2) < 14) { if (ly1 < ly2) { ly1 -= 7; ly2 += 7; } else { ly1 += 7; ly2 -= 7; } }
   const tip = P.map(p => {
     const gain = p.lean + p.fat; const sh = p.share != null ? p.share : p.lean > 0 && p.fat > 0 ? p.lean / gain : null; const q = sh != null && p.lean > 0 ? ` · ${Math.round(sh * 100)}% lean` : '';
     return [+x(p.surplus).toFixed(1), +y(Math.max(p.lean, p.fat)).toFixed(1), `${sgnK(p.surplus)}: muscle ${sgn(p.lean)}, fat ${sgn(p.fat)} lb${q}`, p.calories];
   });
-  return `<svg class="chart bd-chart bd-lab" data-kind="text" viewBox="0 0 ${W} ${H}" data-pts='${esc(JSON.stringify(tip))}' role="img" aria-label="Lean and fat gained over ${weeks} weeks by daily calories">
+  return `<svg class="chart bd-chart bd-lab" data-kind="text" viewBox="0 0 ${W} ${H}" data-pts='${esc(JSON.stringify(tip))}' role="img" aria-label="Lean and fat gained over ${esc(String(weeks))} by daily calories">
     ${sw ? `<rect x="${x(Math.max(sw.from, x0)).toFixed(1)}" y="${T}" width="${(x(Math.min(sw.to, x1)) - x(Math.max(sw.from, x0))).toFixed(1)}" height="${H - T - B}" fill="var(--good)" opacity=".09"/>
       <text x="${((x(Math.max(sw.from, x0)) + x(Math.min(sw.to, x1))) / 2).toFixed(1)}" y="${T - 5}" text-anchor="middle" style="fill:var(--good);font-weight:750">sweet spot</text>` : ''}
     ${ticks.map(t => `<line x1="${L}" x2="${W - R}" y1="${y(t).toFixed(1)}" y2="${y(t).toFixed(1)}" stroke="${t === 0 ? 'var(--muted)' : 'var(--line)'}" ${t === 0 ? 'opacity=".6"' : ''}/><text x="${L - 6}" y="${(y(t) + 3).toFixed(1)}" text-anchor="end">${t > 0 ? '+' : ''}${f1(t)}</text>`).join('')}
@@ -490,10 +652,10 @@ function labChart(lab, selSurplus, weeks) {
     <path d="${path('fat')}" fill="none" stroke="var(--accent2)" stroke-width="2.5" stroke-linejoin="round"/>
     <path d="${path('lean')}" fill="none" stroke="var(--good)" stroke-width="2.5" stroke-linejoin="round"/>
     ${P.map(p => `<circle cx="${x(p.surplus).toFixed(1)}" cy="${y(p.fat).toFixed(1)}" r="2.6" fill="var(--accent2)"/><circle cx="${x(p.surplus).toFixed(1)}" cy="${y(p.lean).toFixed(1)}" r="2.6" fill="var(--good)"/>`).join('')}
-    <line x1="${x(sel).toFixed(1)}" x2="${x(sel).toFixed(1)}" y1="${T}" y2="${H - B}" stroke="var(--accent)" stroke-width="2" stroke-dasharray="4 3"/>
+    ${hasSel ? `<line x1="${x(sel).toFixed(1)}" x2="${x(sel).toFixed(1)}" y1="${T}" y2="${H - B}" stroke="var(--accent)" stroke-width="2" stroke-dasharray="4 3"/>
     <circle cx="${x(sel).toFixed(1)}" cy="${y(sp.lean).toFixed(1)}" r="5" fill="var(--good)" stroke="var(--card)" stroke-width="2"/>
     <circle cx="${x(sel).toFixed(1)}" cy="${y(sp.fat).toFixed(1)}" r="5" fill="var(--accent2)" stroke="var(--card)" stroke-width="2"/>
-    <text x="${x(sel).toFixed(1)}" y="${H - B - 4}" text-anchor="${x(sel) > W - R - 30 ? 'end' : x(sel) < L + 30 ? 'start' : 'middle'}" style="fill:var(--accent);font-weight:800">You</text>
+    <text x="${x(sel).toFixed(1)}" y="${H - B - 4}" text-anchor="${x(sel) > W - R - 30 ? 'end' : x(sel) < L + 30 ? 'start' : 'middle'}" style="fill:var(--accent);font-weight:800">You</text>` : ''}
     <text x="${(W - R + 6).toFixed(1)}" y="${(ly1 + 4).toFixed(1)}" style="fill:var(--text);font-weight:750">Fat ${sgn(last.fat)}</text>
     <text x="${(W - R + 6).toFixed(1)}" y="${(ly2 + 4).toFixed(1)}" style="fill:var(--text);font-weight:750">Lean ${sgn(last.lean)}</text>
     ${tipG(T, H - B)}
@@ -505,26 +667,26 @@ function takeaway(lab, weeks) {
   const a = nearestPt(P, x1 >= 1000 ? 500 : Math.max(0, x1 / 2)), b = nearestPt(P, x1 >= 1000 ? 1000 : x1);
   if (a === b) return '';
   const dl = b.lean - a.lean, df = b.fat - a.fat;
-  return `Going from <b>${sgnK(a.surplus)}</b> to <b>${sgnK(b.surplus)}</b> kcal/day adds <b style="color:var(--good)">${sgn(dl)} lb muscle</b> but <b style="color:var(--accent2)">${sgn(df)} lb fat</b> over ${weeks} weeks.`;
+  return `Going from <b>${sgnK(a.surplus)}</b> to <b>${sgnK(b.surplus)}</b> kcal/day adds <b style="color:var(--good)">${sgn(dl)} lb muscle</b> but <b style="color:var(--accent2)">${sgn(df)} lb fat</b> over ${esc(String(weeks))}.`;
 }
 function labCard(D, o) {
   const lab = labData(D, o, D.weeks, D.maint, D.pg, D.fatPct);
   if (!lab || lab.points.length < 3) return '';
-  const sel = D.kcal - D.maint;
+  const sel = D.plan ? null : D.kcal - D.maint;
   const sm = D.res.summary || {};
   const S = D.res.series, s0 = S[0], sN = S[S.length - 1];
   const dLean = sm.leanLb ?? (sN.leanLb - s0.leanLb), dFat = sm.fatLb ?? ((sN.fatLb ?? sN.weightLb - sN.leanLb) - (s0.fatLb ?? s0.weightLb - s0.leanLb));
   const share = dLean > 0 && dFat > 0 ? Math.round(dLean / (dLean + dFat) * 100) : null;
   const sw = lab.sweet;
-  const inSweet = sw && sel >= sw.from - 30 && sel <= sw.to + 30;
-  const verdict = !sw ? '' : inSweet ? `<span class="badge good">in the sweet spot</span>` : sel > sw.to ? `<span class="badge warn">past the sweet spot</span>` : sel < 0 ? `<span class="badge accent">deficit</span>` : `<span class="badge">below the sweet spot</span>`;
+  const inSweet = sw && sel != null && sel >= sw.from - 30 && sel <= sw.to + 30;
+  const verdict = !sw || sel == null ? '' : inSweet ? `<span class="badge good">in the sweet spot</span>` : sel > sw.to ? `<span class="badge warn">past the sweet spot</span>` : sel < 0 ? `<span class="badge accent">deficit</span>` : `<span class="badge">below the sweet spot</span>`;
   return `<div class="card bd-labcard" id="pjLab">
     <div class="row between"><div class="card-title">🧪 Nutrition Lab</div>${verdict}</div>
-    <p class="small muted" style="margin-top:4px">What ${D.weeks} weeks of each calorie level would add, with your plan, protein and cardio. Tap the chart to try a level.</p>
+    <p class="small muted" style="margin-top:4px">What ${esc(horizonText(D.weeks))} of each constant calorie level would add, with your plan, protein and cardio. Tap the chart to try a level.${D.plan ? ' (Your phase plan is shown above; the lab compares single intakes.)' : ''}${D.weeks > 52 ? ' Over years a constant intake converges, so these level off.' : ''}</p>
     <div class="bd-labyou"><div><b class="num" style="color:var(--good)">${sgn(dLean)}</b><span>lb lean</span></div><div><b class="num" style="color:var(--accent2)">${sgn(dFat)}</b><span>lb fat</span></div>${dLean > 0 && dFat <= 0 ? `<div><b class="num" style="color:var(--good)">Recomp</b><span>fat down, lean up</span></div>` : `<div><b class="num">${share != null ? share + '%' : '—'}</b><span>of gain is lean</span></div>`}</div>
-    <div class="mt">${labChart(lab, sel, D.weeks)}</div>
+    <div class="mt">${labChart(lab, sel, horizonText(D.weeks))}</div>
     <div class="bd-legend tiny" style="justify-content:flex-start;margin-top:2px"><span><i class="bd-sw" style="background:var(--good)"></i>Lean</span><span><i class="bd-sw" style="background:var(--accent2)"></i>Fat</span>${sw ? `<span><i class="bd-sw" style="background:var(--good);opacity:.3"></i>Sweet spot ${sgnK(sw.from)} to ${sgnK(sw.to)}</span>` : ''}</div>
-    ${takeaway(lab, D.weeks) ? `<p class="bd-take">${takeaway(lab, D.weeks)}</p>` : ''}
+    ${takeaway(lab, horizonText(D.weeks)) ? `<p class="bd-take">${takeaway(lab, horizonText(D.weeks))}</p>` : ''}
     ${sw?.note ? `<p class="small" style="color:#cfcfd8;margin-top:8px">${esc(sw.note)}</p>` : ''}
     <ul class="tip-list bd-explain">${lab.explanation.slice(0, 2).map(t => `<li class="small">${esc(t)}</li>`).join('')}</ul>
     ${lab.explanation.length > 2 ? `<details class="bd-more"><summary class="small">More on how food, protein and cardio change this (${lab.explanation.length - 2})</summary><ul class="tip-list bd-explain">${lab.explanation.slice(2).map(t => `<li class="small">${esc(t)}</li>`).join('')}</ul></details>` : ''}
@@ -541,19 +703,23 @@ function outputs(D, o) {
   const shape0 = s0.shape || s0.measurements || b.measurements || {}, shapeN = sN.shape || sN.measurements || shape0;
   const past = bodyLog.filter(e => e.d < s0.date && daysBetween(e.d, s0.date) <= 42).map(e => ({ d: e.d, v: e.w }));
   const mk = key => S.map(p => ({ d: p.date, v: p[key], lo: p.low?.[key], hi: p.high?.[key] }));
-  const goalBf = profile.body?.goalBodyFat || 12;
+  const goalBf = D.goalBf || profile.body?.goalBodyFat || 12;
+  const phs = (res.phases || []).filter(ph => ph.endWeek > ph.startWeek);
+  const ceil = res.ceiling;
   const charts = `
     <div class="card"><div class="row between"><div class="card-title">Weight</div><div class="small muted num">${f1(s0.weightLb)} → <b style="color:var(--text)">${f1(sN.weightLb)}</b> lb</div></div>
-      <div class="mt">${lineChart({ id: 'pw', data: mk('weightLb'), past, unit: 'lb', today: s0.date })}</div>
+      <div class="mt">${lineChart({ id: 'pw', data: mk('weightLb'), past, unit: 'lb', today: s0.date, phases: phs })}</div>
       ${waterNote(S) ? `<div class="small bd-water">💧 ${waterNote(S)}</div>` : ''}
       <div class="tiny muted">Shaded = realistic low–high range. Grey dots = recent weigh-ins.</div></div>
     <div class="card"><div class="row between"><div class="card-title">Body fat</div><div class="small muted num">${f1(s0.bodyFatPct)} → <b style="color:var(--text)">${f1(sN.bodyFatPct)}</b>%</div></div>
-      <div class="mt">${lineChart({ id: 'pb', data: mk('bodyFatPct'), unit: '%', target: goalBf, targetLabel: `goal ${goalBf}%`, color: 'var(--accent2)', today: s0.date })}</div>
+      <div class="mt">${lineChart({ id: 'pb', data: mk('bodyFatPct'), unit: '%', target: goalBf, targetLabel: `goal ${goalBf}%`, color: 'var(--accent2)', today: s0.date, phases: phs })}</div>
       <div class="label" style="margin-top:10px">What your weight is made of</div>
-      <div class="mt" style="margin-top:4px">${compChart(S)}</div>
+      <div class="mt" style="margin-top:4px">${compChart(S, 340, 150, phs)}</div>
       <div class="tiny muted">Body fat % = fat ÷ total weight. Lean and fat are tracked separately; water and glycogen swings are not modelled.</div></div>
     <div class="card"><div class="row between"><div class="card-title">Lean mass</div><div class="small muted num">${f1(s0.leanLb)} → <b style="color:var(--text)">${f1(sN.leanLb)}</b> lb</div></div>
-      <div class="mt">${lineChart({ id: 'pl', data: mk('leanLb'), unit: 'lb', color: 'var(--good)', today: s0.date })}</div></div>`;
+      <div class="mt">${lineChart({ id: 'pl', data: mk('leanLb'), unit: 'lb', color: 'var(--good)', today: s0.date, phases: phs })}</div>
+      ${ceil && s0.ffmi != null ? `<div class="small" style="margin-top:6px">FFMI <b class="num">${f1(s0.ffmi)} → ${f1(sN.ffmi)}</b> <span class="muted">· natural ceiling ≈ ${f1(ceil.ffmiNatural)}${ceil.tShift > 0.05 ? ` (≈ ${f1(ceil.ffmiEffective)} with your testosterone)` : ''} ±${f1(ceil.sd)} · ${ceil.potentialUsedPct}% of your remaining potential used</span></div>` : ''}
+      ${phs.length ? `<div class="bd-tlleg tiny" style="margin-top:6px">${[...new Set(phs.map(p => p.goal))].map(g => `<span><i class="bd-sw" style="background:${PHASE_COL[g]};opacity:.8"></i>${esc((GOAL_OPTS.find(x => x[0] === g) || [g, g])[1])}</span>`).join('')}<span class="muted">tinted = phases</span></div>` : ''}</div>`;
 
   // measurements table (L/R shown where measured)
   const est = new Set(res.shapeEstimated || []);
@@ -597,7 +763,7 @@ function outputs(D, o) {
     return `<div><b class="num" style="color:${col}">${sgn(v)}<small>${u}</small></b><span>${l}</span></div>`;
   }).join('')}</div>`;
 
-  return `<div class="card bd-endcard"><div class="row between"><div class="label">In ${weeks} weeks · ${esc(fmtShort(sN.date))}</div><span class="badge ${confCls}">${conf} confidence</span></div>${deltas}
+  return `<div class="card bd-endcard"><div class="row between"><div class="label">In ${esc(horizonText(weeks))} · ${esc(fmtShort(sN.date))}${sN.date.slice(0, 4) !== s0.date.slice(0, 4) ? ' ' + sN.date.slice(0, 4) : ''}</div><span class="badge ${confCls}">${conf} confidence</span></div>${deltas}
       ${waterNote(S) ? `<p class="tiny muted" style="margin-top:10px">💧 ${waterNote(S)}</p>` : ''}
       ${res.bodyFatAssumed ? '<p class="tiny" style="color:var(--warn);margin-top:10px">Body fat was assumed (no height/neck/waist yet), so these numbers are very rough.</p>' : ''}</div>
     ${labCard(D, o)}
@@ -621,27 +787,43 @@ function waterNote(S) {
 
 let cur = null;   // { D, o } for the live screen
 
+const scrubLabels = S => `<span>Now</span><span>Drag through time</span><span>${esc(whenText(S[S.length - 1].week ?? S.length - 1))}</span>`;
+const subText = D => `Your body in ${esc(horizonText(D.weeks))} if the plan happens. Change the inputs and watch it move.`;
 export function render(ctx) {
   const o = getOpts(ctx.store);
   const D = compute(ctx.store, o);
+  D.ctx = ctx;
   cur = null;
   if (!D.b || !D.b.weightLb || !D.res || !(D.res.series || []).length) {
-    return `<div class="page-head"><p class="sub">Your body in ${D.weeks} weeks, if the plan happens.</p></div>${setupCard(D.b, D.res)}`;
+    return `<div class="page-head"><p class="sub">Your body in ${esc(horizonText(D.weeks))}, if the plan happens.</p></div>${setupCard(D.b, D.res)}`;
   }
   cur = { D, o };
   const S = D.res.series, i = scrubIdx(o, S), H = D.b.heightIn || 69;
   const hero = `<div class="card hero bd-hero">
     <div class="row between"><div class="tabs bd-viewseg" style="flex:0 0 auto">${[['now', 'Now'], ['proj', 'Projected']].map(([v, l]) => `<button class="${(i === 0 ? 'now' : 'proj') === v ? 'active' : ''}" data-view="${v}">${l}</button>`).join('')}</div>
-      <span class="badge" id="pjBadge">${D.weeks} wk</span></div>
+      <span class="badge" id="pjBadge">${esc(horizonText(D.weeks))}</span></div>
     <div class="bd-stage" id="pjStage" data-h="${H}">${heroSvg(S, i, H)}</div>
-    <div class="bd-scrub"><input type="range" class="bd-range" id="pjScrub" min="0" max="${S.length - 1}" step="1" value="${i}" style="--pct:${(i / (S.length - 1)) * 100}%" aria-label="Week">
-      <div class="row between tiny muted"><span>Now</span><span>Drag through the weeks</span><span>Wk ${S.length - 1}</span></div></div>
+    <div class="bd-scrub"><input type="range" class="bd-range" id="pjScrub" min="0" max="${S.length - 1}" step="1" value="${i}" style="--pct:${(i / (S.length - 1)) * 100}%" aria-label="Point in time">
+      <div class="row between tiny muted" id="pjScrubLbl">${scrubLabels(S)}</div></div>
     <div id="pjHeroInfo">${heroInfo(D, o)}</div>
   </div>`;
-  return `<div class="page-head"><p class="sub">Your body in ${D.weeks} weeks if the plan happens. Change the inputs and watch it move.</p></div>
+  return `<div class="page-head"><p class="sub" id="pjSub">${subText(D)}</p></div>
     ${hero}
     ${controls(D, o)}
+    <div id="pjPh">${phasesCard(D, o)}</div>
     <div id="pjOut">${outputs(D, o)}</div>`;
+}
+
+// Dated list for targets.js (max 12 entries) from a phase spec, starting today.
+function datedPhases(spec) {
+  if (!spec || typeof PJ.buildPhasePlan !== 'function') return [];
+  const plan = safe(() => PJ.buildPhasePlan(spec, true, MAXW, ds()), null);
+  if (!plan) return [];
+  return plan.instances.filter(x => !plan.blocks[x.bi].after).slice(0, 12).map(x => {
+    const b = plan.blocks[x.bi];
+    return { label: b.label, start: ds(addDays(parseDs(ds()), 7 * x.startWeek)), end: ds(addDays(parseDs(ds()), 7 * x.endWeek)),
+      surplus: b.calories ? null : b.mode === 'track' ? 0 : b.surplus, calories: b.calories || null };
+  });
 }
 
 export function bind(root, ctx, params = {}) {
@@ -653,6 +835,7 @@ export function bind(root, ctx, params = {}) {
   const H = D0.b.heightIn || 69;
   const $ = s => root.querySelector(s);
   const save = patch => { o = setOpts(st, patch); cur.o = o; };
+  if (TGU && typeof TGU.bindTargetsSummary === 'function') safe(() => TGU.bindTargetsSummary(root, ctx), null);
 
   // ---- hero: 3D or SVG ----
   const stage = $('#pjStage');
@@ -660,7 +843,7 @@ export function bind(root, ctx, params = {}) {
   const optsFor = () => {
     const { S, i, p } = viewPt();
     return opts3D(p, H, { compareShape: i > 0 ? { ...shapeOf(S[0], H), bodyFatPct: S[0].bodyFatPct, muscle: S[0].muscle || estMuscle(S[0], H) } : null,
-      label: i > 0 ? `Week ${i} · ${f1(p.bodyFatPct)}% BF` : `Now · ${f1(p.bodyFatPct)}% BF`, ghostLabel: i > 0 ? 'Ghost = now' : '' });
+      label: i > 0 ? `${whenText(p.week ?? i)} · ${f1(p.bodyFatPct)}% BF` : `Now · ${f1(p.bodyFatPct)}% BF`, ghostLabel: i > 0 ? 'Ghost = now' : '' });
   };
   let handle = null, lastUp = 0, upT = 0;
   const push3D = () => {
@@ -682,6 +865,11 @@ export function bind(root, ctx, params = {}) {
     if (handle) push3D(); else stage.innerHTML = heroSvg(S, i, H);
   };
   const scrub = $('#pjScrub');
+  const syncScrub = () => {
+    const S = cur.D.res.series, i = scrubIdx(o, S);
+    scrub.max = S.length - 1; scrub.value = i; scrub.style.setProperty('--pct', (i / (S.length - 1)) * 100 + '%');
+    $('#pjScrubLbl').innerHTML = scrubLabels(S);
+  };
   scrub.oninput = () => {
     const S = cur.D.res.series, v = +scrub.value;
     scrub.style.setProperty('--pct', (v / (S.length - 1)) * 100 + '%');
@@ -689,48 +877,80 @@ export function bind(root, ctx, params = {}) {
   };
   scrub.onchange = () => { scrub.blur(); save({ scrub: o.scrub, view: o.view }); };
   root.querySelectorAll('[data-view]').forEach(b => b.onclick = () => {
-    const S = cur.D.res.series; const v = b.dataset.view === 'now' ? 0 : (o.scrub && o.scrub > 0 ? o.scrub : S.length - 1);
+    const S = cur.D.res.series; const v = b.dataset.view === 'now' ? 0 : (o.scrub && o.scrub > 0 ? Math.min(o.scrub, S.length - 1) : S.length - 1);
     save({ view: b.dataset.view, scrub: v }); scrub.value = v; scrub.style.setProperty('--pct', (v / (S.length - 1)) * 100 + '%'); showView();
   });
 
-  // ---- live recompute ----
-  let t = 0;
+  // ---- live recompute (throttled; long horizons take ~100-200 ms) ----
+  let t = 0, busy = false, again = false;
   const refresh = () => {
-    const D = compute(st, o); if (!D.res || !(D.res.series || []).length) return;
-    cur.D = D;
-    const set = (sel, html) => { const el = $(sel); if (el) el.innerHTML = html; };
-    set('#pjMaint', `maintenance ≈ ${kfmt(D.maint)}`);
-    set('#pjKcalD', `${sgnK(D.kcal - D.maint)} vs maintenance`);
-    set('#pjStackLine', activeStack(D.profile).length ? stackLine(D, o) : '');
-    set('#pjCardioBase', `plan + extra: ${Math.round(D.res.weekly?.cardioMinPerWeek || 0)} min/wk`);
-    markPresets(D);
-    const y = window.scrollY;
-    set('#pjOut', outputs(D, o));
-    window.scrollTo(0, y);
-    bindOut();
-    showView();
+    if (busy) { again = true; return; }
+    busy = true;
+    try {
+      const D = compute(st, o); if (!D.res || !(D.res.series || []).length) return;
+      D.ctx = ctx;
+      cur.D = D;
+      const set = (sel, html) => { const el = $(sel); if (el) el.innerHTML = html; };
+      set('#pjMaint', `maintenance ≈ ${kfmt(D.maint)}`);
+      set('#pjKcalD', `${sgnK(D.kcal - D.maint)} vs maintenance`);
+      if (!kcDragging) { set('#pjKcalV', kfmt(D.kcal)); }
+      $('#pjKcalGrp')?.classList.toggle('bd-dim', !!D.plan);
+      set('#pjStackLine', activeStack(D.profile).length ? stackLine(D, o) : '');
+      const planC = plannedCardio(D), tgtC = D.targets?.cardio?.minPerWeek;
+      set('#pjCardioBase', `${tgtC != null ? `target ${tgtC} · ` : ''}planned ${planC} min/wk`);
+      const ca = $('#pjCApply'); if (ca) { ca.style.display = o.cdelta ? '' : 'none'; ca.textContent = `Make ${Math.max(0, (tgtC ?? planC) + (o.cdelta || 0))} min/wk my cardio target`; }
+      set('#pjBadge', esc(horizonText(D.weeks)));
+      set('#pjSub', subText(D));
+      set('#pjHV', esc(horizonText(D.weeks)));
+      markPresets(D);
+      const y = window.scrollY;
+      set('#pjPh', phasesCard(D, o));
+      set('#pjOut', outputs(D, o));
+      window.scrollTo(0, y);
+      bindPh(); bindOut(); syncScrub(); showView();
+    } finally {
+      busy = false;
+      if (again) { again = false; schedule(); }
+    }
   };
-  const schedule = () => { clearTimeout(t); t = setTimeout(refresh, 150); };
-  const markPresets = D => root.querySelectorAll('[data-preset]').forEach(b => b.classList.toggle('active', Math.abs(D.kcal - (D.maint + +b.dataset.preset)) < 13));
+  const schedule = (ms = 150) => { clearTimeout(t); t = setTimeout(refresh, ms); };
+  const markPresets = D => root.querySelectorAll('[data-preset]').forEach(b => b.classList.toggle('active', !D.plan && Math.abs(D.kcal - (D.maint + +b.dataset.preset)) < 13));
   markPresets(D0);
   const liveMacros = () => {
     const D = cur.D;
     const m = macros(D.profile, { calories: o.kcal ?? D.kcal, bodyweight: D.b.weightLb, proteinGPerLb: o.pg ?? D.pg, fatPct: o.fatPct ?? D.fatPct });
     $('#pjMacros').innerHTML = macroBar(m) + warnList(m.warnings);
   };
+
+  // horizon slider + chips
+  const hs = $('#pjH');
+  const setH = (w, ms) => {
+    w = clampN(Math.round(w), 4, MAXW);
+    const p = posOfWeeks(w);
+    hs.value = p; hs.style.setProperty('--pct', (p / (+hs.max || 1)) * 100 + '%'); hs.setAttribute('aria-valuetext', horizonText(w));
+    $('#pjHV').textContent = horizonText(w);
+    root.querySelectorAll('[data-hw]').forEach(b => b.classList.toggle('active', +b.dataset.hw === w));
+    if (w !== o.weeks || o.until) { save({ weeks: w, until: null, scrub: null }); schedule(ms); }
+  };
+  hs.oninput = () => setH(weeksAtPos(+hs.value), 350);
+  hs.onchange = () => { hs.blur(); setH(weeksAtPos(+hs.value), 30); };
+  root.querySelectorAll('[data-hw]').forEach(b => b.onclick = () => setH(+b.dataset.hw, 30));
+
+  // calories (a single intake; moving it leaves the phase preview)
   const kc = $('#pjKcal');
+  let kcDragging = false;
   const setKcal = v => {
     v = clampN(Math.round(v / 25) * 25, +kc.min, +kc.max);
     kc.value = v; kc.style.setProperty('--pct', ((v - kc.min) / (kc.max - kc.min)) * 100 + '%');
     $('#pjKcalV').textContent = kfmt(v); $('#pjKcalD').textContent = `${sgnK(v - cur.D.maint)} vs maintenance`;
-    save({ kcal: v }); liveMacros(); schedule();
+    save({ kcal: v, ...(cur.D.plan ? { ph: 'single' } : {}) }); liveMacros(); schedule(cur.D.weeks > 52 ? 300 : 150);
   };
-  kc.oninput = () => setKcal(+kc.value);
-  kc.onchange = () => kc.blur();
+  kc.oninput = () => { kcDragging = true; setKcal(+kc.value); };
+  kc.onchange = () => { kcDragging = false; kc.blur(); };
   root.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => setKcal(cur.D.maint + +b.dataset.preset));
   const rng = (sel, key, fmt, lo, hi) => {
     const el = $(sel);
-    el.oninput = () => { const v = +el.value; el.style.setProperty('--pct', ((v - lo) / (hi - lo)) * 100 + '%'); $(sel + 'V').textContent = fmt(v); save({ [key]: v }); liveMacros(); schedule(); };
+    el.oninput = () => { const v = +el.value; el.style.setProperty('--pct', ((v - lo) / (hi - lo)) * 100 + '%'); $(sel + 'V').textContent = fmt(v); save({ [key]: v }); liveMacros(); schedule(cur.D.weeks > 52 ? 300 : 150); };
     el.onchange = () => el.blur();
   };
   rng('#pjPg', 'pg', v => v.toFixed(2) + ' g/lb', 0.6, 1.4);
@@ -739,7 +959,7 @@ export function bind(root, ctx, params = {}) {
   adh.oninput = () => { $('#pjAdhV').textContent = Math.round(adh.value * 100) + '%'; adh.style.setProperty('--pct', ((adh.value - 0.6) / 0.4) * 100 + '%'); save({ adherence: +adh.value }); schedule(); };
   adh.onchange = () => adh.blur();
   const setCd = v => {
-    v = clampN(v, -60, 300); save({ cdelta: v });
+    v = clampN(v, -300, 600); save({ cdelta: v });
     $('#pjCdV').textContent = sgnK(v); $('#pjCburn').textContent = cardioBurn(cur.D, o).replace(/<[^>]+>/g, ''); schedule();
   };
   root.querySelectorAll('[data-cstep]').forEach(b => b.onclick = () => setCd((o.cdelta || 0) + +b.dataset.cstep));
@@ -751,19 +971,71 @@ export function bind(root, ctx, params = {}) {
     root.querySelectorAll('[data-stack]').forEach(x => x.classList.toggle('active', x === b));
     save({ useStack: b.dataset.stack === '1' }); schedule();
   });
-  root.querySelectorAll('[data-weeks]').forEach(b => b.onclick = () => { save({ weeks: +b.dataset.weeks, until: null, scrub: null }); ctx.rerender(); });
-  const until = $('#pjUntil');
-  if (until) until.onchange = () => { if (until.value && until.value > ds()) { until.blur(); save({ until: until.value, scrub: null }); ctx.rerender(); } };
-  $('[data-reset]').onclick = () => { save({ kcal: null, pg: null, fatPct: null, cdelta: 0 }); ctx.rerender(); ctx.toast('Back to your nutrition targets'); };
-  $('[data-apply]').onclick = () => {
-    const D = cur.D, p = st.getProfile(), n = p.nutrition || {};
-    const surplus = Math.round((D.kcal - D.maint) / 25) * 25;
-    const nutrition = { ...n, mode: n.mode && n.mode !== 'off' ? n.mode : 'simple', calories: null, surplus, proteinGPerLb: +D.pg.toFixed(2), fatPct: D.fatPct };
-    st.updateProfile({ nutrition });
-    if (o.cdelta) save({});
-    $('#pjApplyNote').textContent = applyNote({ profile: st.getProfile() });
-    ctx.toast(`Targets set: ${sgnK(surplus)} kcal vs maintenance, ${D.pg.toFixed(2)} g/lb protein, ${D.fatPct}% fat`);
+  // Cardio what-if → the real target (re-plans upcoming auto days, then the projection uses the new plan).
+  $('#pjCApply').onclick = () => {
+    const D = cur.D, baseC = D.targets?.cardio?.minPerWeek ?? plannedCardio(D), target = Math.max(0, Math.round((baseC + (o.cdelta || 0)) / 5) * 5);
+    const done = () => { save({ cdelta: 0 }); $('#pjCdV').textContent = sgnK(0); $('#pjCburn').textContent = cardioBurn(cur.D, o).replace(/<[^>]+>/g, ''); refresh(); };
+    if (TGU && typeof TGU.setTargets === 'function') Promise.resolve(TGU.setTargets(ctx, { cardio: { minPerWeek: target } }, { replan: true })).then(done, done);
+    else { st.updateProfile({ cardioTargetMin: target }); ctx.toast(`Cardio target: ${target} min/week`); done(); }
   };
+  $('[data-reset]').onclick = () => { save({ kcal: null, pg: null, fatPct: null, cdelta: 0, adherence: null, ph: null, cmod: null }); ctx.rerender(); ctx.toast('Back to your targets'); };
+
+  // Apply: nutrition (incl. phases) + adherence through the shared targets module.
+  const applyTargets = ({ withAdherence = true } = {}) => {
+    const D = cur.D, p = st.getProfile(), n = p.nutrition || {};
+    const spec = D.plan && !Array.isArray(D.plan) ? D.plan : null;
+    const first = (D.res.phases || [])[0];
+    const surplus = D.plan && first ? (first.mode === 'track' ? 0 : first.calories ? Math.round((first.calories - D.maint) / 25) * 25 : first.surplus) : Math.round((D.kcal - D.maint) / 25) * 25;
+    const dated = D.plan ? (spec ? datedPhases(spec) : (Array.isArray(D.plan) ? D.plan : [])) : [];
+    const nutrition = { mode: n.mode && n.mode !== 'off' ? n.mode : 'simple', surplus, proteinGPerLb: +D.pg.toFixed(2), fatPct: D.fatPct, phases: dated };
+    const patch = { nutrition, ...(withAdherence && o.adherence != null ? { adherence: o.adherence } : {}) };
+    const meta = () => {
+      // The repeating plan itself (targets.js keeps only the dated list).
+      const cur2 = st.getProfile(); const n2 = { ...(cur2.nutrition || {}) };
+      if (spec) n2.phasePlan = { preset: spec.preset || null, repeat: spec.repeat !== false, blocks: (planBlocks(spec) || []).map(b => ({ ...b })), start: ds() };
+      else if (!D.plan) n2.phasePlan = null;
+      st.updateProfile({ nutrition: n2 });
+    };
+    const after = () => { save({ kcal: null, pg: null, fatPct: null, adherence: withAdherence ? null : o.adherence, ph: null }); $('#pjApplyNote').innerHTML = applyNote({ profile: st.getProfile() }); refresh(); };
+    if (TGU && typeof TGU.setTargets === 'function') {
+      const pr = TGU.setTargets(ctx, patch, { replan: false, reason: D.plan ? `${dated.length ? dated[0].label : 'phase plan'} (${sgnK(surplus)} kcal), ${D.pg.toFixed(2)} g/lb protein, ${D.fatPct}% fat` : undefined });
+      meta(); Promise.resolve(pr).then(after, after);
+    } else {
+      st.updateProfile({ nutrition: { ...n, ...nutrition, calories: null }, ...(patch.adherence != null ? { adherence: patch.adherence } : {}) });
+      meta(); after();
+      ctx.toast(`Targets set: ${sgnK(surplus)} kcal vs maintenance, ${D.pg.toFixed(2)} g/lb protein, ${D.fatPct}% fat`);
+    }
+  };
+  $('[data-apply]').onclick = () => applyTargets();
+
+  // ---- phases card ----
+  const readBlocks = () => [...root.querySelectorAll('#pjBlocks .bd-block')].map(el => {
+    const g = el.querySelector('[data-bf="goal"]').value, num = k => { const x = el.querySelector(`[data-bf="${k}"]`); return x && x.value !== '' ? Number(x.value) : null; };
+    const b = { weeks: clampN(Math.round(num('weeks') || 8), 1, 260), goal: g };
+    if (g === 'custom') b.calories = clampN(num('calories') ?? Math.round(cur.D.maint), 1000, 6000);
+    else if (g !== 'maintain') b.surplus = clampN(num('surplus') ?? ({ cut: -500, bulk: 500, lean_bulk: 300 }[g] || 0), -1500, 1500);
+    return b;
+  });
+  const setPlan = ph => { save({ ph, scrub: null }); schedule(20); };
+  const bindPh = () => {
+    const box = $('#pjPh');
+    box.querySelectorAll('[data-ph]').forEach(b => b.onclick = () => {
+      const v = b.dataset.ph;
+      if (v === 'single') return setPlan('single');
+      if (v === 'saved') return setPlan(null);
+      if (v === 'custom') {
+        const blocks = planBlocks(cur.D.plan) || [{ weeks: 16, goal: 'lean_bulk', surplus: 300 }, { weeks: 6, goal: 'cut', surplus: -500 }];
+        return setPlan({ preset: null, repeat: cur.D.plan?.repeat !== false, blocks: blocks.map(x => ({ ...x })) });
+      }
+      const pr = presetOf(v); if (pr) setPlan({ preset: pr.id, repeat: pr.repeat, blocks: pr.blocks.map(x => ({ ...x })) });
+    });
+    box.querySelectorAll('#pjBlocks select, #pjBlocks input[type=number]').forEach(el => el.onchange = () => setPlan({ preset: null, repeat: $('#pjBRep')?.checked !== false, blocks: readBlocks() }));
+    box.querySelectorAll('[data-bdel]').forEach(b => b.onclick = () => { const bl = readBlocks(); bl.splice(+b.dataset.bdel, 1); if (bl.length) setPlan({ preset: null, repeat: $('#pjBRep')?.checked !== false, blocks: bl }); });
+    const add = box.querySelector('[data-badd]'); if (add) add.onclick = () => setPlan({ preset: null, repeat: $('#pjBRep')?.checked !== false, blocks: [...readBlocks(), { weeks: 8, goal: 'maintain' }].slice(0, 12) });
+    const rep = box.querySelector('#pjBRep'); if (rep) rep.onchange = () => setPlan({ preset: null, repeat: rep.checked, blocks: readBlocks() });
+    const ap = box.querySelector('[data-phapply]'); if (ap) ap.onclick = () => applyTargets({ withAdherence: false });
+  };
+  bindPh();
 
   // ---- output regions (charts, lab taps) ----
   const bindOut = () => {
