@@ -380,3 +380,11 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border-radius: 
 
 @media (min-width: 521px) { body { background: #060607; } #app { background: var(--bg); box-shadow: 0 0 0 1px var(--line); } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* "Why the max is N" notes: Settings priority sliders + Plan coverage rows at their max */
+.st-maxd { margin: -2px 0 6px 108px; }
+.st-maxd summary, .pl-maxd summary { list-style: none; cursor: pointer; }
+.st-maxd summary::-webkit-details-marker, .pl-maxd summary::-webkit-details-marker { display: none; }
+.st-maxd[open] summary, .pl-maxd[open] summary { color: var(--text); }
+.st-maxd > div, .pl-maxd > div { margin-top: 4px; line-height: 1.45; }
+.pl-maxd { margin: 3px 0 2px; }

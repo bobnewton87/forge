@@ -8,7 +8,7 @@ import { ds } from '../util.js';
 import { setTargets } from './targets.js';
 import { styleChipsHTML, customStylesListHTML, openStyleEditor, openStyleInfo, deleteStyle } from './styles.js';
 import { buildWorkout } from '../engine/generator.js';
-import { resolveTargets, unitTargets, starredGroups, STAR_LEGEND, LIMITS, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
+import { resolveTargets, unitTargets, maxNote, starredGroups, STAR_LEGEND, LIMITS, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
 // CONTRACT-NOTE (INTEGRATOR §18): goal, sculpt focus, muscle priority, default length/style, the
 //   weekly cardio target and adherence all read resolveTargets and write through setTargets (planning
 //   changes re-plan upcoming auto days). The cardio slider spans 0–600 (the API allows up to 900).
@@ -31,8 +31,15 @@ function prioLine(p, g) {
   const U = unitTargets(p);
   const us = UNIT_ORDER.filter(id => VOLUME_UNITS[id].group === g && VOLUME_UNITS[id].tier !== 'tracked' && !VOLUME_UNITS[id].sub && U[id]);
   const f = x => Math.round(x * 10) / 10;
-  if (us.length === 1) { const x = U[us[0]]; return `→ ${f(x.target)} sets/wk (max ${x.max})${x.target >= x.max - 0.05 ? ' · at max' : ''}`; }
-  return '→ ' + us.map(id => `${VOLUME_UNITS[id].name.replace(/ \(.*\)$/, '').toLowerCase()} ${f(U[id].target)}/${U[id].max}`).join(' · ') + ' (target/max)';
+  const tag = id => { const n = maxNote(id, U[id]); return n && n.tag ? ` · ${n.tag}` : ''; };
+  if (us.length === 1) { const x = U[us[0]]; return `→ ${f(x.target)} sets/wk (max ${x.max})${tag(us[0])} ⓘ`; }
+  return '→ ' + us.map(id => `${VOLUME_UNITS[id].name.replace(/ \(.*\)$/, '').toLowerCase()} ${f(U[id].target)}/${U[id].max}${tag(id)}`).join(' · ') + ' (target/max) ⓘ';
+}
+// Tap-to-open note under each slider: why the max doesn't rise with the slider (maxNote).
+function prioNote(p, g) {
+  const U = unitTargets(p);
+  const ns = UNIT_ORDER.filter(id => VOLUME_UNITS[id].group === g && !VOLUME_UNITS[id].sub).map(id => [id, maxNote(id, U[id])]).filter(([, n]) => n);
+  return { capped: ns.some(([, n]) => n.capped), text: ns.map(([id, n]) => (ns.length > 1 ? `${VOLUME_UNITS[id].name.replace(/ \(.*\)$/, '')}: ` : '') + n.text).join(' ') };
 }
 
 function renderMore(ctx) {
@@ -118,10 +125,10 @@ function renderSettings(ctx) {
   </div>
 
   <div class="section-title" id="sec-priority">Muscle priority</div>
-  <div class="card"><p class="small muted mb">Scales each group's weekly set target. 1.0 = standard, lower = maintenance. Targets never go past each muscle's max (Body → Why these numbers?). ${esc(STAR_LEGEND)}.</p>
+  <div class="card"><p class="small muted mb">Scales each group's weekly set target. 1.0 = standard, lower = maintenance. Sliders move the target, not the max: tap a line to see why each max is where it is. ${esc(STAR_LEGEND)}.</p>
     ${GROUP_ORDER.filter(g => GROUPS[g]).map(g => { const v = gp[g] ?? 1; return `<div style="min-height:44px"><div class="row" style="gap:12px"><span style="width:96px;font-weight:650;font-size:15px">${esc(GROUPS[g].name)}${starG.has(g) ? ' <span class="star">★</span>' : ''}</span>
       <input type="range" min="${PR[0]}" max="${PR[1]}" step="0.05" value="${v}" data-prio="${g}" style="--pct:${prioPct(v)}%" class="grow" aria-label="${esc(GROUPS[g].name)} priority"><span class="num bold" style="width:44px;text-align:right" data-prio-v="${g}">×${Number(v).toFixed(2)}</span></div>
-      <div class="tiny muted" style="margin:-2px 0 4px 108px" data-prio-t="${g}">${esc(prioLine(p, g))}</div></div>`; }).join('')}
+      ${(() => { const n = prioNote(p, g); return `<details class="st-maxd" data-prio-d="${g}"${n.capped ? ' open' : ''}><summary class="tiny muted" data-prio-t="${g}">${esc(prioLine(p, g))}</summary><div class="tiny muted" data-prio-n="${g}">${esc(n.text)}</div></details>`; })()}</div>`; }).join('')}
     <button class="btn btn-sm btn-ghost mt" data-prio-reset>Reset to Forge defaults</button></div>
 
   <div class="section-title" id="sec-locations">Locations</div>
@@ -244,10 +251,12 @@ function bindSettings(root, ctx, params) {
   root.querySelectorAll('[data-ginfo]').forEach(b => b.onclick = () => goalInfoSheet(ctx, b.dataset.ginfo));
   root.querySelectorAll('[data-prio]').forEach(r => {
     const g = r.dataset.prio; const lab = root.querySelector(`[data-prio-v="${g}"]`);
-    const tl = root.querySelector(`[data-prio-t="${g}"]`);
+    const tl = root.querySelector(`[data-prio-t="${g}"]`), tn = root.querySelector(`[data-prio-n="${g}"]`), td = root.querySelector(`[data-prio-d="${g}"]`);
     r.addEventListener('input', () => {
       lab.textContent = '×' + Number(r.value).toFixed(2); r.style.setProperty('--pct', prioPct(r.value) + '%');
-      const p = ctx.store.getProfile(); if (tl) tl.textContent = prioLine({ ...p, groupPriority: { ...(p.groupPriority || {}), [g]: Number(r.value) } }, g);
+      const p = ctx.store.getProfile(), q = { ...p, groupPriority: { ...(p.groupPriority || {}), [g]: Number(r.value) } };
+      if (tl) tl.textContent = prioLine(q, g);
+      const n = prioNote(q, g); if (tn) tn.textContent = n.text; if (td && n.capped) td.open = true;   // the moment a slider hits the cap, say why
     });
     r.addEventListener('change', () => { const p = ctx.store.getProfile(); setTargets(ctx, { training: { groupPriority: { ...(p.groupPriority || {}), [g]: Number(r.value) } } }); });
   });

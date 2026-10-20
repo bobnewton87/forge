@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultProfile } from '../js/store.js';
 import { VOLUME_UNITS, UNIT_ORDER, MAX_WHY } from '../js/data/muscles.js';
-import { unitTargets, starredUnits, starredGroups, applyTargetChange, LIMITS } from '../js/engine/targets.js';
+import { unitTargets, starredUnits, starredGroups, applyTargetChange, maxNote, LIMITS } from '../js/engine/targets.js';
 import { planRange, explainWeek } from '../js/engine/planner.js';
 import { parseDs } from '../js/util.js';
 
@@ -52,4 +52,24 @@ test('planner: biceps ×2 is planned to ~20 (was capped at 16), nothing over its
   assert.equal(e.biceps.target, 20);
   assert.ok(e.biceps.planned >= 19.5 && e.biceps.planned <= 20.25, `biceps planned ${e.biceps.planned}`);
   for (const [u, x] of Object.entries(e)) assert.ok(x.planned <= x.max + 0.25, `${u} ${x.planned} > max ${x.max}`);
+});
+
+test('maxNote: explains why a raised slider stops at the max (Bob: "we need an info on why")', () => {
+  const U = unitTargets(prof({ groupPriority: { biceps: 2 }, sculptGoals: ['biceps_peak'] }));
+  const n = maxNote('biceps', U.biceps);
+  assert.ok(n.capped && n.atMax, 'slider ×2 + biceps peak asks past 20');
+  assert.ok(n.asked > 20, `asked ${n.asked}`);
+  assert.match(n.tag, /^capped, asks /);
+  assert.match(n.text, /stops at the max of 20/);
+  assert.match(n.text, /Baz-Valle 2022/);
+  assert.match(n.text, /priority moves only the target/);
+  const at = maxNote('biceps', unitTargets(prof({ groupPriority: { biceps: 2 }, sculptGoals: [] })).biceps);
+  assert.ok(at.atMax && !at.capped && at.tag === 'at max', '10 × 2 = 20 sits exactly at the max');
+  const none = maxNote('biceps', unitTargets(prof({ sculptGoals: [] })).biceps);
+  assert.ok(!none.atMax && none.tag === '' && /up to the max of 20/.test(none.text));
+  assert.equal(maxNote('lower_back', unitTargets(prof()).lower_back), null, 'no target, nothing to explain');
+  for (const [id, x] of Object.entries(unitTargets(prof({ groupPriority: Object.fromEntries(UNIT_ORDER.map(u => [VOLUME_UNITS[u].group, 2])) })))) {
+    const m = maxNote(id, x); if (!m) continue;
+    assert.ok(m.text.includes(`Why ${x.max}:`), `${id} cites its max reason`);
+  }
 });

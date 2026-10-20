@@ -9,7 +9,7 @@
 //   ("Why these numbers?"), openVolumeRoomSheet(ctx, short), openExtendSheet(ctx, { extended, onApply }),
 //   extendedToast(list), REPLAN_DAYS, ensureTargetStyles(). Styles are injected
 //   at runtime (a <style id="tg-css">) because INTEGRATOR owns no CSS file.
-import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, volumeRoomOptions, unitTargets, starredUnits, STAR_LEGEND, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
+import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, volumeRoomOptions, unitTargets, maxNote, starredUnits, STAR_LEGEND, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
 import { planRange } from '../engine/planner.js';
 import { resolveStyle } from '../engine/generator.js';
 import { explainWeek } from '../engine/planner.js';
@@ -261,11 +261,11 @@ export function openMinimumsInfo(ctx) {
   const tracked = Object.entries(U).filter(([, x]) => !(x.min > 0 || x.target > 0)).map(([, x]) => x.name).join(', ');
   const deriv = x => `${x.base}${x.slider !== 1 ? ` × ${x.slider} (slider)` : ''}${x.extra ? ` + ${x.extra} (sculpt goals)` : ''}${x.base * x.slider + x.extra > x.max + 0.05 ? `, capped at ${x.max}` : ''}`;
   ctx.openSheet(`<div class="tg-sheet"><h2>Why these numbers?</h2>
-    <p class="muted small">Weekly sets are compared with your <b>target</b>. Each muscle also has a <b>minimum</b> (the evidence floor, always planned) and a <b>max</b> Forge never plans past. The max is a ceiling on what the body can use and is the same whatever your priorities: 20 sets a week for most muscles (the top of the 12-20 range; more than 20 added nothing for biceps or quads, Baz-Valle et al. 2022), 24 for triceps (more than 20 helped them) and side delts, 22 for back (two muscles), 10 for lower back (fatigue guard). Priorities, sliders and sculpt goals move only the target. ${esc(STAR_LEGEND)}.</p>
+    <p class="muted small">Weekly sets are compared with your <b>target</b>. Each muscle also has a <b>minimum</b> (the evidence floor, always planned) and a <b>max</b> Forge never plans past. The max is a ceiling on what the body can use and is the same whatever your priorities: 20 sets a week for most muscles (the top of the 12-20 range; more than 20 added nothing for biceps or quads, Baz-Valle et al. 2022), 24 for triceps (more than 20 helped them) and side delts, 22 for back (two muscles), 10 for lower back (fatigue guard). Priorities, sliders and sculpt goals move only the target, so a muscle you prioritize can sit at its max while its slider keeps rising: past the max, studies found extra sets add fatigue, not growth. ${esc(STAR_LEGEND)}.</p>
     ${table}
     <div class="label mt">Each muscle</div>
     <div class="tg-units">${rows.map(([id, x]) => `<div class="tg-unit"><div class="row between"><b>${stars.has(id) ? '<span class="star">★</span> ' : ''}${esc(x.name)}</b><span class="num small">target <b>${x.target}</b> · min ${x.min} · max ${x.max}</span></div>
-      <div class="tiny muted">Floor ${x.min}: ${esc(FLOOR_WHY[x.tier] || FLOOR_WHY.normal)}. Target = ${esc(deriv(x))}. Max ${esc(MAX_WHY[id] || String(x.max))}.${stars.has(id) ? ` ★ ${esc(starWhy(x))}.` : ''}</div></div>`).join('')}</div>
+      <div class="tiny muted">Floor ${x.min}: ${esc(FLOOR_WHY[x.tier] || FLOOR_WHY.normal)}. Target = ${esc(deriv(x))}. Max ${esc(MAX_WHY[id] || String(x.max))}.${stars.has(id) ? ` ★ ${esc(starWhy(x))}.` : ''}${(() => { const n = maxNote(id, x); return n && n.atMax ? ` <b>${n.capped ? `Your settings ask ${f(n.asked)}, but the target stops at the max.` : 'At the max: raising the slider adds no sets.'}</b>` : ''; })()}</div></div>`).join('')}</div>
     ${tracked ? `<p class="tiny muted">${esc(tracked)}: tracked, not counted (pressing covers front delts; traps and lower back don't count toward back).</p>` : ''}
     <div class="label mt">The evidence</div>
     <ul class="tip-list mt">${MINIMUMS_EVIDENCE.map(e => `<li>${esc(e.claim)} <span class="tiny muted">(${esc(e.source)})</span></li>`).join('')}</ul>

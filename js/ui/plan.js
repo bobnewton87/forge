@@ -26,7 +26,7 @@ import { renderClassPicker, bindClassPicker } from './classes.js';
 import { startSession, sessionGroups } from './today.js';
 import { summarize, detailSheet } from './history.js';
 import { setTargets, targetsSummaryHTML, bindTargetsSummary, makeRoomHTML, bindMakeRoom, extendedToast, openMinimumsInfo, openVolumeRoomSheet, openExtendSheet, openHitTargetsSheet } from './targets.js';
-import { resolveTargets, volumePolicyOf, CARDIO_STYLES, CARDIO_STYLE_NAMES, starredUnits, STAR_LEGEND } from '../engine/targets.js';
+import { resolveTargets, volumePolicyOf, CARDIO_STYLES, CARDIO_STYLE_NAMES, starredUnits, unitTargets, maxNote, STAR_LEGEND } from '../engine/targets.js';
 import { UNIT_ORDER } from '../data/muscles.js';
 import { styleChipsHTML } from './styles.js';
 import { resolveStyle } from '../engine/generator.js';
@@ -246,6 +246,7 @@ function summaryCard(sessions, profile, ws, roomLine = '') {
   // One row per enforcement unit (weekly-volume audit): bar = done + planned, solid tick = minimum
   // (evidence floor), dashed tick = your target. Tracked-only muscles go in a muted line.
   const stars = safe(() => starredUnits(profile), new Set());
+  const U = safe(() => unitTargets(profile), {});
   const rows = ids.map(u => {
     const x = units[u];
     const done = Number(x.done) || 0, planned = Number(x.planned) || 0, total = Number(x.total) || 0;
@@ -256,6 +257,7 @@ function summaryCard(sessions, profile, ws, roomLine = '') {
         <span class="num"><b>${fmtNum(total, 0)}</b><span class="muted"> / ${fmtNum(x.target, 0)} target</span></span></div>
       <div class="pl-track"><i class="d" style="width:${(done / scale) * 100}%"></i><i class="p" style="left:${(done / scale) * 100}%;width:${(planned / scale) * 100}%"></i>
         ${x.min > 0 ? `<span class="tick" style="left:${(x.min / scale) * 100}%"></span>` : ''}<span class="tick tgt" style="left:${(x.target / scale) * 100}%"></span><span class="tick max" style="left:${(x.max / scale) * 100 - 0.5}%"></span></div>
+      ${(() => { const n = U[u] && maxNote(u, U[u]); return n && n.atMax ? `<details class="pl-maxd"><summary class="tiny muted">Target at the max of ${x.max}${n.capped ? ` (your settings ask ${fmtNum(n.asked, 1)})` : ''} · why ⓘ</summary><div class="tiny muted">${esc(n.text)}</div></details>` : ''; })()}
     </div>`;
   }).join('');
   const tracked = UNIT_ORDER.filter(u => units[u] && !(units[u].min > 0 || units[u].target > 0)).map(u => `${units[u].name} ${fmtNum(units[u].total, 0)}`).join(' · ');
@@ -277,7 +279,8 @@ function summaryCard(sessions, profile, ws, roomLine = '') {
   return `${head}<div class="card pl-sum">
     <div class="pl-sum-head">${ring}<div class="grow"><div class="card-title">${sc == null ? 'This week' : sc >= 80 ? 'Well covered' : sc >= 55 ? 'Mostly covered' : 'Gaps to fill'}</div>
       <div class="muted small">${Number(ss.done) || 0} done · ${Number(ss.planned) || 0} planned${sc != null ? ' · coverage score' : ''}</div></div></div>
-    <div class="pl-legend"><span><i class="d"></i>Done</span><span><i class="p"></i>Planned</span><span><i class="t tgt"></i>Target</span><span><i class="t"></i>Min</span><span class="muted">bar end = max</span><span class="muted">${esc(STAR_LEGEND)}</span></div>
+    <div class="pl-legend"><span><i class="d"></i>Done</span><span><i class="p"></i>Planned</span><span><i class="t tgt"></i>Target</span><span><i class="t"></i>Min</span><span class="muted">bar end = max</span></div>
+    <div class="tiny muted" style="margin:-2px 0 6px">${esc(STAR_LEGEND)}</div>
     <div class="pl-bars">${rows}</div>
     ${tracked ? `<div class="tiny muted" style="margin-top:6px">Tracked, not counted: ${esc(tracked)}</div>` : ''}
     <div class="pl-bar-row cardio">

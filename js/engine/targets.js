@@ -43,7 +43,7 @@
 import { CARDIO, cardioOptions } from '../data/cardio.js';
 import { DEFAULT_LOCATIONS, expandEquipment } from '../data/equipment.js';
 import { sessionVolume, groupStatus } from './recovery.js';
-import { GROUPS, REGIONS, VOLUME_UNITS, UNIT_ORDER } from '../data/muscles.js';
+import { GROUPS, REGIONS, VOLUME_UNITS, UNIT_ORDER, MAX_WHY } from '../data/muscles.js';
 import { SCULPT_GOALS } from '../data/sculpt.js';
 import { ds, parseDs, addDays, weekStart } from '../util.js';
 import { BUILTIN_STYLES, STYLE_LIMITS, normalizeCustomStyle, styleOptions, isStyleId, resolveStyle } from './generator.js';
@@ -371,6 +371,22 @@ export function starredGroups(profile) {
   return new Set([...s].map(id => VOLUME_UNITS[id]?.group).filter(Boolean));
 }
 export const STAR_LEGEND = '★ = priority: one of your priorities, a raised slider or a sculpt goal';
+// Why a target stops at the max even when sliders or sculpt goals ask for more (Bob 2026-10-20: "if the
+// max number of sets doesn't go up we need an info on why"). id = unit id, x = its unitTargets() row.
+// → null for muscles without a target, else { asked, capped, atMax, tag, text }.
+export function maxNote(id, x) {
+  if (!x || !(x.target > 0)) return null;
+  const asked = Math.round((x.base * x.slider + x.extra) * 10) / 10;
+  const capped = asked > x.max + 0.05, atMax = capped || x.target >= x.max - 0.05;
+  const by = [x.slider !== 1 && `slider ×${x.slider}`, x.extra > 0 && `sculpt goals +${x.extra}`].filter(Boolean).join(' and ');
+  const name = x.name.replace(/ \(.*\)$/, '');
+  const head = capped ? `Your ${by || 'settings'} ${by.includes(' and ') ? 'ask' : 'asks'} for ${asked} sets a week of ${name.toLowerCase()}, but the target stops at the max of ${x.max}.`
+    : atMax ? `Your ${name.toLowerCase()} target is at the max of ${x.max}, so raising the slider further adds no sets.`
+      : `Raising the slider moves the target up to the max of ${x.max}, no further.`;
+  const why = String(MAX_WHY[id] || '').replace(/^\d+:\s*/, '');
+  const body = `The max doesn't rise with priority because it's a ceiling on what the muscle can use, the same for everyone; priority moves only the target.${why ? ` Why ${x.max}: ${why}.` : ''} Sets past it add fatigue and time, not muscle.`;
+  return { asked, capped, atMax, tag: capped ? `capped, asks ${asked}` : atMax ? 'at max' : '', text: `${head} ${body}` };
+}
 
 // Ways to fit the weekly minimums when the cap/availability can't: raise the cap, add a lift day
 // (flex/rest → lift), lengthen short lift days. → [{ id, label, patch }] (patch for setTargets).
