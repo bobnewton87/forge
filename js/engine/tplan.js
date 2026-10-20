@@ -240,7 +240,10 @@ export function tPlan(profile, opts = {}) {
       extrapolated: !!t.extrapolated, cost: ids.some(id => COST_IDS.includes(id)),
       applies: moves || already,
       t: { from: Math.round(t0), to: Math.round(t.level ?? t0), lo: Math.round(t.levelLo ?? t.level ?? t0), hi: Math.round(t.levelHi ?? t.level ?? t0),
-        credited: Math.round(t.leanLevel ?? t.level ?? t0) },
+        credited: Math.round(t.leanLevel ?? t.level ?? t0),
+        // The starting number is a population average until he enters a lab. Every figure on the row is
+        // downstream of it, so the row has to say so (estradiol already did; total T did not).
+        assumed: num((profile.metabolic || {}).totalT, 1, 5000) == null },
       freeT: { from: t.freeTBase != null ? r1(t.freeTBase) : null, to: t.freeT != null ? r1(t.freeT) : null },
       e2: { from: t.estradiolBase != null ? r1(t.estradiolBase) : null, to: t.estradiol != null ? r1(t.estradiol) : null, assumed: !!t.estradiolAssumed, actionDrop: t.e2ActionDrop || 0 },
       shbg: t.shbg != null ? r1(t.shbg) : null,
@@ -285,6 +288,8 @@ export function tPlan(profile, opts = {}) {
     || (Number(a.rx) - Number(b.rx))
     || a.name.localeCompare(b.name));
 
+  const tAssumed = num((profile.metabolic || {}).totalT, 1, 5000) == null;
+  const tAssumedLevel = Math.round(rows.length ? rows[0].t.from : (ctxFacts.totalT ?? 550));
   // ---- what to do first
   const actions = [];
   if (!labs.decisive) {
@@ -302,6 +307,7 @@ export function tPlan(profile, opts = {}) {
   notes.push('Ranked by modeled 12-month lean and fat change, not by how much the testosterone number moves. Those are different lists: the aromatase inhibitor produces the biggest number here and, in the trials that measured it, no muscle at all.');
 
   return {
+    tAssumed, tAssumedLevel,
     female: false, hidden: false, labs, actions, rows, notes, assumptions, wada: WADA_NOTE,
     exogenous: EXOGENOUS_IDS.map(id => ({ id, name: SUPPLEMENTS[id]?.name })),
     facts: ctxFacts, weeks, projected: canProject, projections,

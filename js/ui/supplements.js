@@ -264,7 +264,7 @@ function planRow(r) {
   const tMoved = Math.abs(r.t.to - r.t.from) >= 2;
   const e2Moved = r.e2.from != null && r.e2.to != null && Math.abs(r.e2.to - r.e2.from) >= 0.5;
   const nums = [];
-  nums.push(`<div class="sp-pn"><span class="k">Total T</span><b>${tMoved ? `${r.t.from} → ${r.t.to}` : `${r.t.from} (no change)`}</b>${tMoved && r.t.hi !== r.t.lo ? `<span class="tiny muted">range ${r.t.lo}–${r.t.hi} ng/dL</span>` : '<span class="tiny muted">ng/dL</span>'}</div>`);
+  nums.push(`<div class="sp-pn"><span class="k">Total T</span><b>${tMoved ? `${r.t.from} → ${r.t.to}` : `${r.t.from} (no change)`}</b>${tMoved && r.t.hi !== r.t.lo ? `<span class="tiny muted">range ${r.t.lo}–${r.t.hi} ng/dL${r.t.assumed ? ' · start assumed' : ''}</span>` : `<span class="tiny muted">ng/dL${r.t.assumed ? ' · start assumed' : ''}</span>`}</div>`);
   if (r.freeT.to != null) nums.push(`<div class="sp-pn"><span class="k">Free T</span><b>${f1(r.freeT.from)} → ${f1(r.freeT.to)}</b><span class="tiny muted">pg/mL (Vermeulen)</span></div>`);
   if (r.e2.from != null) nums.push(`<div class="sp-pn"><span class="k">Estradiol</span><b>${e2Moved ? `${f1(r.e2.from)} → ${f1(r.e2.to)}` : `${f1(r.e2.from)} (no change)`}</b><span class="tiny muted">pg/mL${r.e2.assumed ? ' · assumed' : ''}</span></div>`);
   nums.push(`<div class="sp-pn ${r.lean.lb > 0.05 ? 'good' : ''}"><span class="k">Lean</span><b>${sgn(r.lean.lb)} lb</b><span class="tiny muted">${rng(r.lean.lo, r.lean.hi)} over ${Math.round(r.weeks / 4.345)} mo</span></div>`);
@@ -312,6 +312,7 @@ function planCard(I) {
   const shown = worth.slice(0, PLAN_MAX);
   return `<div class="card sp-plan">
     <p class="small">Every published way to raise your <b>own</b> testosterone, ranked by what Forge models it doing to your <b>lean and fat mass over 12 months</b> — not by how much it moves the number. Those are different lists.</p>
+    ${plan.tAssumed ? `<p class="small" style="color:var(--warn)"><b>Your starting testosterone is a guess.</b> You have not entered a lab, so Forge uses ${plan.tAssumedLevel} ng/dL, the population average for your age. Your real level could be half that or well above it, and <b>every number below is downstream of it</b>. Get the panel first.</p>` : ''}
     ${act ? `<div class="sp-plabs"><div class="t">① ${esc(act.title)}</div><p class="small">${esc(act.body)}</p>
       <ul class="sp-plablist">${act.labs.map(l => `<li><b>${esc(l.label)}</b><span class="tiny muted">${esc(l.why)}</span></li>`).join('')}</ul></div>` : ''}
     ${plan.notes.map(n => `<p class="tiny muted">${esc(n)}</p>`).join('')}
