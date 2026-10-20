@@ -12,17 +12,30 @@
 //   home = home default kit only; travel = dumbbell + flat bench or less; gym = needs anything else.
 //   Band moves get a 'band' tag (bands are an optional home toggle).
 // CONTRACT-NOTE: `alt` only references ids in this file.
+// CONTRACT-NOTE: 'push' / 'pull' tags are derived from the pattern by the helper below so the
+//   planner can enforce pull >= push. push = presses, dips, flyes, raises (incl. upright rows,
+//   which are side-delt primary and do not balance pressing); pull = rows, pulldowns, pull-ups,
+//   rear-delt work, face pulls, shrugs/high pulls. Hinges and lower-back/core moves get neither.
+//
+// Fractional credit follows Pelland et al. 2025 (Sports Med, doi:10.1007/s40279-025-02344-w):
+// a synergist counts 0.5. Presses are indirect for triceps and front delts (overhead presses are
+// direct for front delts = 1). Rows and pulldowns are indirect for biceps (Mannarino 2021: a row
+// is worth about half a curl). Group credit is the max over its regions, so 0.5 on the lead head
+// = 0.5 triceps/biceps sets.
 
 const HOME = new Set(['dumbbell', 'adjustable_bench', 'flat_bench', 'trap_bar']);
 const TRAVEL = new Set(['dumbbell', 'flat_bench']);
 const BW_UNIT = new Set(['band', 'trx', 'pullup_bar', 'dip_station']);
+const PUSH_PAT = new Set(['horizontal_push', 'vertical_push', 'fly', 'lateral_raise', 'elbow_extension']);
+const PULL_PAT = new Set(['horizontal_pull', 'vertical_pull', 'rear_delt', 'shrug', 'elbow_flexion']);
 
 // Common secondary credits.
-const TRI = { triceps_lateral: 0.25, triceps_medial: 0.25 };            // standard presses
-const TRI_DIP = { triceps_lateral: 0.5, triceps_medial: 0.5, triceps_long: 0.25 }; // dips / narrow presses
-const BI = { biceps_short: 0.25, brachialis: 0.25 };                     // overhand / neutral pulls
-const BI_UNDER = { biceps_long: 0.25, biceps_short: 0.5, brachialis: 0.25 };  // underhand pulls
-const BI_CHIN = { biceps_long: 0.5, biceps_short: 0.5, brachialis: 0.25 };    // chin-ups
+// Presses (flat, incline, overhead, dips): lateral/medial heads do most of the work; the long head less.
+const TRI = { triceps_lateral: 0.5, triceps_medial: 0.5, triceps_long: 0.25 };
+// Overhand and neutral pulls: about half a reverse/hammer curl (brachialis-led).
+const BI = { brachialis: 0.5, biceps_long: 0.25, biceps_short: 0.25 };
+// Underhand pulls and chin-ups: about half a supinated curl (biceps-led).
+const BI_UNDER = { biceps_long: 0.5, biceps_short: 0.5, brachialis: 0.25 };
 
 function yt(q) {
   return 'https://www.youtube.com/results?search_query=' + q.toLowerCase().replace(/[^a-z0-9]+/g, '+').replace(/^\+|\+$/g, '') + '+form';
@@ -47,6 +60,8 @@ function ex(o) {
   if (!eq.every(e => HOME.has(e))) tags.add('gym');
   if (eq.includes('band')) tags.add('band');
   if (eq.length === 0) tags.add('no_equipment');
+  if (PUSH_PAT.has(o.pat)) tags.add('push');
+  else if (PULL_PAT.has(o.pat)) tags.add('pull');
   const category = o.cat || 'compound';
   if (category === 'isolation' && (o.setup ?? 30) <= 30) tags.add('superset_friendly');
   return {
@@ -89,18 +104,18 @@ const CHEST = [
     why: 'At a 30 degree incline the press lines up with the clavicular (upper) pec fibers, which builds the shelf that makes a chest look full.',
     tags: ['stretch_position'] }),
   ex({ id: 'db_incline_low', name: 'Low-Incline (15°) Dumbbell Press', eq: ['dumbbell', 'adjustable_bench'], pat: 'horizontal_push',
-    m: { chest_upper: 1, chest_mid: 1, delt_front: 0.25, ...TRI }, emph: ['upper_chest', 'chest_fullness'],
+    m: { chest_upper: 1, chest_mid: 1, delt_front: 0.5, ...TRI }, emph: ['upper_chest', 'chest_fullness'],
     rr: [8, 12], alt: ['db_incline', 'db_bench', 'machine_incline_press'],
     cues: ['Set the bench one notch up (about 15 degrees)', 'Pinch shoulder blades and keep a small arch', 'Lower to mid/upper chest with a deep stretch', 'Drive up without letting your shoulders roll forward'],
     why: 'A 15 degree incline hits upper and mid pecs about equally with very little front-delt takeover, so it is the most chest-efficient press.',
     tags: ['stretch_position'] }),
   ex({ id: 'db_incline_45', name: 'Steep Incline (45°) Dumbbell Press', eq: ['dumbbell', 'adjustable_bench'], pat: 'horizontal_push',
-    m: { chest_upper: 1, delt_front: 1, chest_mid: 0.25, ...TRI }, emph: ['upper_chest'],
+    m: { chest_upper: 1, delt_front: 0.5, chest_mid: 0.25, ...TRI }, emph: ['upper_chest'],
     rr: [8, 12], alt: ['db_incline', 'db_incline_low', 'landmine_chest_press'],
     cues: ['Bench at 45 degrees', 'Tuck elbows slightly. Do not flare them straight out', 'Lower to the top of your chest just under the collarbone', 'Press up and back over your eyes'],
     why: 'The steeper angle puts the upper pec fibers in their most direct line of pull. The trade-off is that front delts take on a lot more of the work.' }),
   ex({ id: 'db_decline', name: 'Decline Dumbbell Press', eq: ['dumbbell', 'adjustable_bench'], pat: 'horizontal_push',
-    m: { chest_lower: 1, chest_mid: 1, ...TRI }, emph: ['chest_fullness'],
+    m: { chest_lower: 1, chest_mid: 1, delt_front: 0.5, ...TRI }, emph: ['chest_fullness'],
     rr: [8, 12], alt: ['dip_chest', 'assisted_dip', 'cable_crossover', 'pushup_incline'],
     cues: ['Bench at a slight decline (about 15 degrees), feet locked in', 'Shoulder blades pinched', 'Lower to your lower chest', 'Press up in a straight line. Have someone hand you heavy dumbbells'],
     why: 'The decline lines up with the lower (costal) pec fibers and is easy on the shoulders because front delts do less.' }),
@@ -117,13 +132,13 @@ const CHEST = [
     why: 'An upper-chest isolation with the most tension in the stretched position. A great finisher after incline presses.',
     tags: ['stretch_position'] }),
   ex({ id: 'db_squeeze_press', name: 'Dumbbell Squeeze (Hex) Press', eq: ['dumbbell', 'flat_bench'], pat: 'horizontal_push',
-    m: { chest_mid: 1, chest_lower: 0.25, delt_front: 0.25, ...TRI_DIP }, emph: ['chest_fullness'],
+    m: { chest_mid: 1, chest_lower: 0.25, delt_front: 0.5, ...TRI }, emph: ['chest_fullness'],
     rr: [10, 15], alt: ['db_bench', 'pushup', 'machine_chest_press'],
     cues: ['Press the dumbbells hard into each other the whole set', 'Lower to your sternum with elbows tucked', 'Press up while still squeezing them together', 'Go light. The squeeze is the point'],
     why: 'Squeezing the bells together adds inward (adduction) tension that a normal press lacks, so the pecs stay loaded at the top.',
     tags: ['shortened_position'] }),
   ex({ id: 'db_floor_press', name: 'Dumbbell Floor Press', eq: ['dumbbell'], pat: 'horizontal_push',
-    m: { chest_mid: 1, chest_lower: 0.25, delt_front: 0.25, ...TRI_DIP }, emph: ['chest_fullness'],
+    m: { chest_mid: 1, chest_lower: 0.25, delt_front: 0.5, ...TRI }, emph: ['chest_fullness'],
     rr: [8, 12], alt: ['db_bench', 'kb_floor_press', 'pushup'],
     cues: ['Lie on the floor with knees bent and feet flat', 'Lower until your upper arms lightly touch the floor', 'Pause briefly. Do not bounce', 'Press up and together'],
     why: 'A bench-free press for hotel rooms. The shorter range is easy on the shoulders, though it gives up some of the stretch.' }),
@@ -133,7 +148,7 @@ const CHEST = [
     cues: ['Brace hard and do not let your body roll toward the weight', 'Free hand on your stomach or gripping the bench', 'Lower deep with a big stretch', 'Press up and slightly in'],
     why: 'Works one pec at a time to fix left/right gaps, and the anti-rotation brace is a free core challenge.' }),
   ex({ id: 'db_reverse_bench', name: 'Reverse-Grip Dumbbell Bench Press', eq: ['dumbbell', 'flat_bench'], pat: 'horizontal_push',
-    m: { chest_upper: 1, chest_mid: 0.5, delt_front: 0.25, ...TRI_DIP }, emph: ['upper_chest'],
+    m: { chest_upper: 1, chest_mid: 0.5, delt_front: 0.5, ...TRI }, emph: ['upper_chest'],
     rr: [8, 12], diff: 2, alt: ['db_incline', 'db_incline_low'],
     cues: ['Palms face your head (underhand)', 'Elbows tucked close to your sides', 'Lower to your lower chest', 'Press up toward your eyes'],
     why: 'The underhand grip shifts work to the upper pec fibers even on a flat bench. Useful when you cannot set an incline.' }),
@@ -195,7 +210,7 @@ const CHEST = [
     cues: ['Seat height so the handles are at mid-chest', 'Slight elbow bend, chest up', 'Squeeze the handles together and hold for 1 second', 'Open slowly to a deep but comfortable stretch'],
     why: 'Steady resistance through the whole arc and no balance needed. The easiest way to get a deep pec pump.' }),
   ex({ id: 'assisted_dip', name: 'Assisted Dip (Machine)', eq: ['assisted_pullup'], pat: 'horizontal_push',
-    m: { chest_lower: 1, chest_mid: 0.5, delt_front: 0.5, ...TRI_DIP }, emph: ['chest_fullness'],
+    m: { chest_lower: 1, chest_mid: 0.5, delt_front: 0.5, ...TRI }, emph: ['chest_fullness'],
     rr: [8, 12], setup: 30, alt: ['dip_chest', 'db_decline'],
     cues: ['Kneel on the pad. More assistance makes it easier', 'Lean your torso forward for chest', 'Lower until the shoulders are just below the elbows', 'Press up without locking out hard'],
     why: 'Builds the chest-focused dip pattern. The forward lean biases the lower pecs. The logged weight is assistance, so less weight means progress.',
@@ -222,7 +237,7 @@ const CHEST = [
     cues: ['Hold the bar end in both hands at your chest, staggered stance', 'Lean into the bar slightly', 'Press up and forward along the arc', 'Squeeze the hands together at the top'],
     why: 'The upward, inward arc lines up with the upper pecs and is very kind to the shoulders.' }),
   ex({ id: 'kb_floor_press', name: 'Kettlebell Floor Press', eq: ['kettlebell'], pat: 'horizontal_push',
-    m: { chest_mid: 1, delt_front: 0.25, ...TRI_DIP }, emph: ['chest_fullness'],
+    m: { chest_mid: 1, delt_front: 0.5, ...TRI }, emph: ['chest_fullness'],
     rr: [8, 12], alt: ['db_floor_press', 'db_bench'],
     cues: ['Lie on the floor, bell resting on your forearm', 'Wrist straight, knuckles to the ceiling', 'Lower until your upper arm touches the floor', 'Press up and keep the bell stacked'],
     why: 'A shoulder-friendly press when you only have kettlebells. The offset load trains stability.' }),
@@ -268,7 +283,7 @@ const CHEST = [
     cues: ['Feet on a bench, bed or chair', 'Hands slightly wider than shoulders', 'Lower your upper chest toward the floor', 'Keep your hips in line. Do not pike up'],
     why: 'Raising the feet turns a push-up into an incline press, so it biases the upper chest with zero equipment.' }),
   ex({ id: 'pushup_incline', name: 'Incline Push-Up (Hands Elevated)', eq: [], pat: 'horizontal_push',
-    m: { chest_lower: 1, chest_mid: 0.5, delt_front: 0.25, ...TRI }, emph: ['chest_fullness'], rr: [12, 25], spr: 2, setup: 10,
+    m: { chest_lower: 1, chest_mid: 0.5, delt_front: 0.5, ...TRI }, emph: ['chest_fullness'], rr: [12, 25], spr: 2, setup: 10,
     alt: ['db_decline', 'pushup', 'dip_chest'],
     cues: ['Hands on a bench, desk or counter edge', 'Body straight, core tight', 'Lower your lower chest to the edge', 'Press away and squeeze'],
     why: 'Hands up turns it into a decline-press angle that favors the lower pecs. It also works as an easier push-up for high-rep burnouts.' }),
@@ -279,7 +294,7 @@ const CHEST = [
     why: 'Raising the hands lets your chest sink below them, adding the deep pec stretch a floor push-up misses.',
     tags: ['stretch_position'] }),
   ex({ id: 'pushup_wide', name: 'Wide Push-Up', eq: [], pat: 'horizontal_push',
-    m: { chest_mid: 1, chest_lower: 0.5, delt_front: 0.25, triceps_lateral: 0.25 }, emph: ['chest_fullness'], rr: [10, 20], spr: 2, setup: 10,
+    m: { chest_mid: 1, chest_lower: 0.5, delt_front: 0.5, ...TRI }, emph: ['chest_fullness'], rr: [10, 20], spr: 2, setup: 10,
     alt: ['pushup', 'pushup_archer'],
     cues: ['Hands about 1.5 times shoulder width, fingers turned slightly out', 'Lower slowly to a big chest stretch', 'Keep elbows below shoulder level', 'Press up with your chest'],
     why: 'The wider hands take triceps out and put more of the work on the pecs.' }),
@@ -289,7 +304,7 @@ const CHEST = [
     cues: ['Very wide hands', 'Shift your weight over one hand as you lower', 'The other arm stays nearly straight as a helper', 'Alternate sides or do all reps on one side'],
     why: 'A near one-arm push-up that loads one pec much harder. It is the bodyweight progression once regular push-ups go past 25 reps.' }),
   ex({ id: 'dip_chest', name: 'Chest Dip', eq: ['dip_station'], pat: 'horizontal_push',
-    m: { chest_lower: 1, chest_mid: 0.5, delt_front: 0.5, ...TRI_DIP }, emph: ['chest_fullness'], rr: [6, 12], setup: 20, diff: 2, fat: 2,
+    m: { chest_lower: 1, chest_mid: 0.5, delt_front: 0.5, ...TRI }, emph: ['chest_fullness'], rr: [6, 12], setup: 20, diff: 2, fat: 2,
     alt: ['assisted_dip', 'db_decline', 'pushup_incline'],
     cues: ['Lean your torso forward about 30 degrees, knees slightly forward', 'Elbows flare a little', 'Lower until you feel a stretch in the chest, about to upper arm parallel', 'Press up without fully locking out'],
     why: 'The forward lean makes this a heavy lower-chest press with a big stretch. One of the best lower-pec builders.',
@@ -377,12 +392,12 @@ const LATS = [
     cues: ['Grip about 1.5 times shoulder width', 'Pull your elbows down to your sides', 'Get your chin over the bar without craning your neck', 'Full hang at the bottom'],
     why: 'A wider grip shortens the range and puts more of the load on the lats than the arms. It is harder than a standard pull-up.' }),
   ex({ id: 'chinup', name: 'Chin-Up', eq: ['pullup_bar'], pat: 'vertical_pull',
-    m: { lats: 1, upper_back: 0.25, ...BI_CHIN }, emph: ['lat_width'],
+    m: { lats: 1, upper_back: 0.25, ...BI_UNDER }, emph: ['lat_width'],
     rr: [5, 12], setup: 15, diff: 2, fat: 2, alt: ['lat_pulldown_underhand', 'assisted_pullup', 'band_pullup'],
     cues: ['Underhand shoulder-width grip', 'Dead hang, then pull your chest toward the bar', 'Elbows drive down past your ribs', 'Slow 3-second lowering'],
     why: 'The underhand grip adds lots of biceps help, so most people get more reps and more lat volume than with pull-ups.' }),
   ex({ id: 'pullup_neutral', name: 'Neutral-Grip Pull-Up', eq: ['pullup_bar'], pat: 'vertical_pull',
-    m: { lats: 1, upper_back: 0.5, biceps_short: 0.25, brachialis: 0.5 }, emph: ['lat_width', 'v_taper'],
+    m: { lats: 1, upper_back: 0.5, ...BI }, emph: ['lat_width', 'v_taper'],
     rr: [5, 12], setup: 15, diff: 2, fat: 2, alt: ['lat_pulldown_close', 'pullup'],
     cues: ['Parallel handles, palms facing each other', 'Full hang, then pull your chest up between the handles', 'Elbows down and in', 'Lower all the way'],
     why: 'The most shoulder-friendly pull-up, with strong brachialis help. Good if wide pull-ups bother your shoulders.' }),
@@ -482,7 +497,7 @@ const ROWS = [
     cues: ['Stand in the trap bar, hinge to about 45 degrees with a flat back', 'Neutral grip on the handles, arms long', 'Row the bar to your stomach', 'Lower with control and keep your core braced'],
     why: 'The neutral grip lets you load a heavy two-arm row with less wrist and shoulder strain than a barbell. This is the home heavy row.' }),
   ex({ id: 'trap_rack_pull', name: 'Trap Bar Rack Pull (Elevated)', eq: ['trap_bar'], pat: 'hinge',
-    m: { traps: 1, upper_back: 0.5, lower_back: 0.5, glutes: 0.25, forearms: 0.25 }, emph: ['traps_yoke', 'back_thickness'],
+    m: { traps: 1, upper_back: 0.25, lower_back: 0.5, glutes: 0.25, forearms: 0.25 }, emph: ['traps_yoke', 'back_thickness'],
     rr: [5, 8], step: 10, setup: 90, diff: 2, fat: 3, alt: ['trap_shrug', 'bb_row'],
     cues: ['Raise the trap bar on crash pads or plates to just below knee height', 'Hinge, flat back, high handles', 'Drive your hips through to stand tall, then squeeze the traps', 'Lower under control'],
     why: 'A partial deadlift that lets you hold very heavy loads, which hits the traps and upper back without the leg fatigue of a full pull.' }),
@@ -648,7 +663,7 @@ const TRAPS = [
     cues: ['Bells at your sides', 'Shrug straight up and hold', 'Lower slowly to a full stretch', 'Keep your chin neutral'],
     why: 'A trap option when kettlebells are all that is available.' }),
   ex({ id: 'scap_pullup', name: 'Scapular Pull-Up', eq: ['pullup_bar'], cat: 'isolation', pat: 'vertical_pull',
-    m: { traps: 1, upper_back: 0.5, lats: 0.25 }, emph: ['back_thickness'], rr: [8, 15], spr: 3, setup: 15,
+    m: { upper_back: 1, lats: 0.5 }, emph: ['back_thickness'], rr: [8, 15], spr: 3, setup: 15,
     alt: ['pullup', 'scap_pushup'],
     cues: ['Hang with straight arms', 'Pull the shoulder blades down and back without bending the elbows', 'Your body rises an inch or two', 'Pause, then relax back into a hang'],
     why: 'Trains the lower traps and scapular depression, which builds pull-up strength and shoulder health.' }),
@@ -667,7 +682,7 @@ const LOWER_BACK = [
     cues: ['Pad higher, at your upper hips, so the hips cannot hinge much', 'Curl down one vertebra at a time', 'Roll back up, extending the spine', 'Go light and smooth'],
     why: 'Moving through the spine rather than the hips puts the erectors through their full range.' }),
   ex({ id: 'superman', name: 'Superman', eq: [], cat: 'isolation', pat: 'hinge',
-    m: { lower_back: 1, glutes: 0.25, upper_back: 0.25 }, emph: [], rr: [12, 20], spr: 3, setup: 10,
+    m: { lower_back: 1, glutes: 0.25 }, emph: [], rr: [12, 20], spr: 3, setup: 10,
     alt: ['prone_cobra', 'back_extension'],
     cues: ['Lie face down, arms overhead', 'Lift arms, chest and legs off the floor together', 'Hold for 2 seconds and squeeze the glutes', 'Lower slowly'],
     why: 'An equipment-free erector exercise that offsets hours of sitting.' }),
@@ -701,7 +716,7 @@ const SHOULDER_PRESS = [
     cues: ['Start with palms facing you at chin height', 'Rotate the palms forward as you press', 'Finish overhead with palms forward', 'Reverse the rotation on the way down'],
     why: 'The rotation adds front-delt range at the bottom and brings the side delts in as the arms open.' }),
   ex({ id: 'db_neutral_press', name: 'Neutral-Grip Dumbbell Shoulder Press', eq: ['dumbbell', 'adjustable_bench'], pat: 'vertical_push',
-    m: { delt_front: 1, delt_side: 0.25, ...TRI_DIP }, emph: ['capped_delts'],
+    m: { delt_front: 1, delt_side: 0.25, ...TRI }, emph: ['capped_delts'],
     rr: [8, 12], alt: ['db_shoulder', 'landmine_press'],
     cues: ['Palms facing each other, elbows in front', 'Press straight up', 'Lower to your shoulders', 'Keep your ribs down'],
     why: 'The most shoulder-friendly dumbbell press. Use it if regular overhead pressing bothers your joints.' }),
@@ -721,7 +736,7 @@ const SHOULDER_PRESS = [
     cues: ['Bench upright, bar path just in front of your face', 'Grip slightly wider than shoulders', 'Lower to chin level', 'Press up'],
     why: 'Heavy, stable delt pressing without a rack or spotter.' }),
   ex({ id: 'bb_ohp', name: 'Barbell Overhead Press', eq: ['barbell', 'rack'], pat: 'vertical_push',
-    m: { delt_front: 1, delt_side: 0.5, upper_back: 0.25, ...TRI }, emph: ['capped_delts'],
+    m: { delt_front: 1, delt_side: 0.5, traps: 0.25, ...TRI }, emph: ['capped_delts'],
     rr: [5, 8], setup: 90, diff: 2, fat: 2, alt: ['db_shoulder', 'machine_shoulder_press'],
     cues: ['Bar on your front delts, grip just outside your shoulders', 'Squeeze glutes and brace', 'Press straight up, moving your head back then through', 'Lock out over mid-foot'],
     why: 'Mainly a strength movement. Dumbbell and machine presses build the delts just as well with less joint stress.' }),
@@ -751,7 +766,7 @@ const SHOULDER_PRESS = [
     cues: ['Feet on a bench or chair, hips stacked over your shoulders', 'Lower your head toward the floor', 'Keep your core tight', 'Press up through your shoulders'],
     why: 'A more vertical body angle shifts more bodyweight onto the delts. The step before handstand push-ups.' }),
   ex({ id: 'handstand_pushup', name: 'Wall Handstand Push-Up', eq: [], pat: 'vertical_push',
-    m: { delt_front: 1, delt_side: 0.5, upper_back: 0.25, ...TRI_DIP }, emph: ['capped_delts'], rr: [3, 8], setup: 20, diff: 3, fat: 2,
+    m: { delt_front: 1, delt_side: 0.5, traps: 0.25, ...TRI }, emph: ['capped_delts'], rr: [3, 8], setup: 20, diff: 3, fat: 2,
     alt: ['pike_pushup_elevated', 'db_shoulder'],
     cues: ['Kick up into a handstand facing the wall', 'Hands slightly wider than shoulders', 'Lower your head to the floor or a cushion', 'Press back up. Only do this if you are confident upside down'],
     why: 'A full bodyweight overhead press. Very hard and very effective if you can do it safely.' }),
@@ -775,12 +790,12 @@ const SHOULDER_PRESS = [
 // ───────────────────────────── SHOULDERS: SIDE DELTS ─────────────────────────────
 const SIDE = [
   ex({ id: 'db_lateral', name: 'Lateral Raise', eq: ['dumbbell'], cat: 'isolation', pat: 'lateral_raise',
-    m: { delt_side: 1, traps: 0.25 }, emph: ['shoulder_width', 'capped_delts', 'v_taper'], rr: [12, 20], setup: 15,
+    m: { delt_side: 1 }, emph: ['shoulder_width', 'capped_delts', 'v_taper'], rr: [12, 20], setup: 15,
     alt: ['cable_lateral', 'machine_lateral', 'db_lateral_seated', 'band_lateral', 'db_lateral_lean'],
     cues: ['Lean slightly forward with soft elbows', 'Raise out to the sides, leading with the elbows', 'Stop at shoulder height', 'Lower over 2-3 seconds. Go lighter than your ego wants'],
     why: 'The main side-delt builder. Side delts create shoulder width, and they respond to lots of volume.' }),
   ex({ id: 'db_lateral_seated', name: 'Seated Dumbbell Lateral Raise', eq: ['dumbbell', 'flat_bench'], cat: 'isolation', pat: 'lateral_raise',
-    m: { delt_side: 1, traps: 0.25 }, emph: ['shoulder_width', 'capped_delts'], rr: [12, 20], setup: 15,
+    m: { delt_side: 1 }, emph: ['shoulder_width', 'capped_delts'], rr: [12, 20], setup: 15,
     alt: ['db_lateral', 'machine_lateral'],
     cues: ['Sit on the end of a bench', 'Raise out to the sides with elbows leading', 'Stop at shoulder height', 'Lower slowly'],
     why: 'Sitting takes out leg drive and swing, so it is a stricter side-delt set.' }),
@@ -797,7 +812,7 @@ const SIDE = [
     why: 'Partials in the lower half extend a set past failure and train the side delts at longer lengths.',
     tags: ['stretch_position'] }),
   ex({ id: 'db_lu_raise', name: 'Lu Raise', eq: ['dumbbell'], cat: 'isolation', pat: 'lateral_raise',
-    m: { delt_side: 1, delt_front: 0.5, traps: 0.5 }, emph: ['shoulder_width', 'capped_delts'], rr: [10, 15], spr: 3, setup: 10, diff: 2,
+    m: { delt_side: 1, delt_front: 0.5, traps: 0.25 }, emph: ['shoulder_width', 'capped_delts'], rr: [10, 15], spr: 3, setup: 10, diff: 2,
     alt: ['db_lateral', 'cable_y_raise'],
     cues: ['Thumbs up, arms straight, very light weight', 'Raise out to the sides all the way overhead', 'Keep your ribs down and do not arch', 'Lower slowly'],
     why: 'A full-range lateral raise (made popular by weightlifter Lu Xiaojun). It works the side delts and upper traps through their whole range.' }),
@@ -808,7 +823,7 @@ const SIDE = [
     why: 'Lying on an incline moves the hardest part of the lift to the bottom, the stretched position, for a cable-like profile at home.',
     tags: ['stretch_position'] }),
   ex({ id: 'db_y_raise', name: 'Chest-Supported Dumbbell Y-Raise', eq: ['dumbbell', 'adjustable_bench'], cat: 'isolation', pat: 'lateral_raise',
-    m: { delt_side: 1, delt_rear: 0.5, traps: 0.5 }, emph: ['shoulder_width', 'rear_delts', 'capped_delts'], rr: [12, 20], setup: 20,
+    m: { delt_side: 1, delt_rear: 0.5, traps: 0.25 }, emph: ['shoulder_width', 'rear_delts', 'capped_delts'], rr: [12, 20], setup: 20,
     alt: ['cable_y_raise', 'trx_y_raise', 'prone_ytw'],
     cues: ['Lie face down on a 30-45 degree incline', 'Thumbs up, raise your arms in a Y', 'Stop at ear height', 'Very light weight. Squeeze and lower slowly'],
     why: 'The chest support removes cheating, and the Y path hits the side and rear delts plus the lower traps.' }),
@@ -862,7 +877,7 @@ const SIDE = [
     cues: ['Light bells held by the handles', 'Raise out to the sides', 'Keep the bells hanging below your hands', 'Slow lowering'],
     why: 'A side-delt option when only kettlebells are available.' }),
   ex({ id: 'trx_y_raise', name: 'TRX Y-Raise', eq: ['trx'], cat: 'isolation', pat: 'lateral_raise',
-    m: { delt_side: 1, delt_rear: 0.5, traps: 0.5 }, emph: ['shoulder_width', 'rear_delts'], rr: [10, 15], setup: 20,
+    m: { delt_side: 1, delt_rear: 0.5, traps: 0.25 }, emph: ['shoulder_width', 'rear_delts'], rr: [10, 15], setup: 20,
     alt: ['db_y_raise', 'trx_reverse_fly'],
     cues: ['Face the anchor, lean back with arms straight in front', 'Raise your arms into a Y, pulling yourself up', 'Keep your body rigid', 'Walk your feet forward to make it harder'],
     why: 'A bodyweight Y-raise for the side and rear delts.' }),

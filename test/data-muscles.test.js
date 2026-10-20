@@ -17,7 +17,7 @@ test('region shapes are valid', () => {
   for (const r of Object.values(REGIONS)) {
     assert.ok(r.name && r.description.length > 20, r.id);
     assert.ok([0.5, 1, 1.5].includes(r.priority), r.id);
-    assert.ok(r.weeklySets.min > 0 && r.weeklySets.max >= r.weeklySets.min, r.id);
+    assert.ok(r.weeklySets.min > 0 && r.weeklySets.max >= r.weeklySets.min && r.weeklySets.target >= r.weeklySets.min && r.weeklySets.target <= r.weeklySets.max, r.id);
     assert.ok([48, 72].includes(r.recoveryHours), r.id);
   }
 });
@@ -32,13 +32,20 @@ test('regionsFor handles region, group, preset and unknown', () => {
   assert.deepEqual(regionsFor('nope'), []);
 });
 
-test("user's priorities are baked in", () => {
-  assert.ok(GROUPS.triceps.weeklySets.min >= 12);
-  assert.ok(REGIONS.delt_side.weeklySets.min >= 12);
-  assert.ok(REGIONS.abs.weeklySets.min >= 6);
+// INTEGRATOR (weekly-volume audit, docs/research/weekly-volume-audit.md): minimums used to be the
+// SUM of per-head region minimums with priority baked into the base numbers. Enforcement now uses
+// VOLUME_UNITS (evidence floors, separate side/rear delts, back = lats + upper back) and priority lives
+// in REGIONS[r].priority (scoring) and the target (sliders/sculpt), not in the floors.
+test("user's priorities live in priority + targets; floors are evidence-based units", async () => {
+  const { VOLUME_UNITS, UNIT_ORDER } = await import('../js/data/muscles.js');
   for (const r of ['triceps_long', 'delt_side', 'abs', 'lats', 'chest_upper']) assert.equal(REGIONS[r].priority, 1.5, r);
   for (const g of ['quads', 'hamstrings', 'glutes', 'calves']) for (const r of GROUPS[g].regions) assert.equal(REGIONS[r].priority, 0.5, r);
+  assert.equal(VOLUME_UNITS.triceps.min, 10); assert.equal(VOLUME_UNITS.delt_side.min, 10); assert.equal(VOLUME_UNITS.delt_rear.min, 4);
+  assert.deepEqual(VOLUME_UNITS.back.regions, ['lats', 'upper_back'], 'traps and lower back do not count toward back');
+  for (const u of ['quads', 'hamstrings', 'glutes', 'calves']) assert.ok(VOLUME_UNITS[u].min <= 4, u);
+  for (const id of UNIT_ORDER) { const u = VOLUME_UNITS[id]; assert.ok(u.min <= u.target && u.target <= u.max && u.max <= 24, id); }
   for (const g of Object.values(GROUPS)) {
-    assert.equal(g.weeklySets.min, g.regions.reduce((a, r) => a + REGIONS[r].weeklySets.min, 0));
+    const us = Object.values(VOLUME_UNITS).filter(u => u.group === g.id && !u.sub);
+    assert.equal(g.volume.min, us.reduce((a, u) => a + u.min, 0), g.id);
   }
 });

@@ -10,9 +10,16 @@
 //   - Sled push, pendulum and belt squat are omitted because they have no equipment ID.
 // CONTRACT-NOTE: 'home'/'travel'/'office'/'gym' tags are derived from equipment against
 //   DEFAULT_LOCATIONS (office = bodyweight only). Extra descriptive tags are set per exercise.
+// CONTRACT-NOTE: 'push' / 'pull' tags are derived from the pattern (same rule as exercises-upper.js)
+//   so the planner can enforce pull >= push: triceps extensions, close-grip presses and dips = push;
+//   curls = pull. Wrist, carry, core, leg and conditioning moves get neither.
+// Fractional credit follows Pelland et al. 2025 (Sports Med, doi:10.1007/s40279-025-02344-w):
+//   synergists count 0.5, so close-grip presses and dips credit front delts 0.5 like other presses.
 
 const HOME = new Set(['dumbbell', 'adjustable_bench', 'flat_bench', 'trap_bar', 'outdoors']);
 const TRAVEL = new Set(['dumbbell', 'flat_bench', 'treadmill', 'bike', 'outdoors']);
+const PUSH_PAT = new Set(['horizontal_push', 'vertical_push', 'fly', 'lateral_raise', 'elbow_extension']);
+const PULL_PAT = new Set(['horizontal_pull', 'vertical_pull', 'rear_delt', 'shrug', 'elbow_flexion']);
 
 const yt = q => 'https://www.youtube.com/results?search_query=' + encodeURIComponent(q + ' form').replace(/%20/g, '+');
 
@@ -23,6 +30,8 @@ function X(id, name, equipment, o) {
   if (eq.every(e => TRAVEL.has(e))) auto.push('travel');
   if (eq.length === 0) auto.push('office');
   if (!(eq.length === 1 && eq[0] === 'trap_bar')) auto.push('gym');
+  if (PUSH_PAT.has(o.pattern)) auto.push('push');
+  else if (PULL_PAT.has(o.pattern)) auto.push('pull');
   const { tags = [], ytq, ...rest } = o;
   return {
     id, name, equipment: eq,
@@ -47,7 +56,7 @@ const OH_TRI = { triceps_long: 1, triceps_lateral: 0.5, triceps_medial: 0.5 };
 const SKULL = { triceps_long: 1, triceps_lateral: 0.5, triceps_medial: 0.5 };
 const PUSHDOWN = { triceps_lateral: 1, triceps_medial: 1, triceps_long: 0.5 };
 const KICKBACK = { triceps_lateral: 1, triceps_medial: 0.5, triceps_long: 0.5 };
-const CG_PRESS = { triceps_lateral: 1, triceps_medial: 1, triceps_long: 0.5, chest_mid: 0.5, delt_front: 0.25 };
+const CG_PRESS = { triceps_lateral: 1, triceps_medial: 1, triceps_long: 0.5, chest_mid: 0.5, delt_front: 0.5 };
 
 const EXERCISES = [
   // ───────────────────────────── BICEPS ─────────────────────────────
@@ -525,21 +534,21 @@ const EXERCISES = [
     why: 'Skull crusher with cable tension that stays on at lockout; long-head emphasis.',
   }),
   X('assisted_dip_tri', 'Assisted Tricep Dip (Machine)', ['assisted_pullup'], {
-    pattern: 'vertical_push', muscles: { triceps_lateral: 1, triceps_medial: 1, triceps_long: 0.5, chest_lower: 0.5, delt_front: 0.25 }, emphasis: ['triceps_mass', 'triceps_horseshoe'],
+    pattern: 'vertical_push', muscles: { triceps_lateral: 1, triceps_medial: 1, triceps_long: 0.5, chest_lower: 0.5, delt_front: 0.5 }, emphasis: ['triceps_mass', 'triceps_horseshoe'],
     category: 'compound', repRange: [8, 12], unit: 'total', step: 5, setupSec: 40, fatigue: 2,
     alt: ['dip_tri', 'bench_dip_tri'],
     cues: ['Torso upright, elbows back (not flared)', 'Descend to about 90 degrees at the elbow', 'Drive up to lockout', 'Less assistance as you get stronger'],
     why: 'Upright, assisted dip keeps the stress on triceps and lets you train to proper failure.',
   }),
   X('dip_tri', 'Upright Tricep Dip', ['dip_station'], {
-    pattern: 'vertical_push', muscles: { triceps_lateral: 1, triceps_medial: 1, triceps_long: 0.5, chest_lower: 0.5, delt_front: 0.25 }, emphasis: ['triceps_mass', 'triceps_horseshoe'],
+    pattern: 'vertical_push', muscles: { triceps_lateral: 1, triceps_medial: 1, triceps_long: 0.5, chest_lower: 0.5, delt_front: 0.5 }, emphasis: ['triceps_mass', 'triceps_horseshoe'],
     category: 'compound', repRange: [6, 12], unit: 'bodyweight', step: 0, setupSec: 20, difficulty: 2, fatigue: 2,
     alt: ['assisted_dip_tri', 'bench_dip_tri'],
     cues: ['Stay vertical, do not lean forward', 'Elbows track straight back', 'Lower to 90 degrees, no deeper if shoulders complain', 'Lock out hard'],
     why: 'Bodyweight compound that heavily loads the lateral and medial heads when kept upright.',
   }),
   X('bench_dip_tri', 'Bench Dip', ['flat_bench'], {
-    pattern: 'vertical_push', muscles: { triceps_lateral: 1, triceps_medial: 1, triceps_long: 0.5, delt_front: 0.25 }, emphasis: ['triceps_horseshoe'],
+    pattern: 'vertical_push', muscles: { triceps_lateral: 1, triceps_medial: 1, triceps_long: 0.5, delt_front: 0.5 }, emphasis: ['triceps_horseshoe'],
     category: 'compound', repRange: [10, 20], unit: 'bodyweight', step: 0, secPerRep: 2.5, setupSec: 15,
     alt: ['dip_tri', 'close_grip_pushup', 'diamond_pushup'],
     cues: ['Hands on bench edge behind you, fingers forward', 'Hips close to the bench', 'Lower to about 90 degrees at the elbow only', 'Feet farther out or plate on lap to progress'],
@@ -547,14 +556,14 @@ const EXERCISES = [
     ytq: 'bench dip triceps',
   }),
   X('close_grip_pushup', 'Close-Grip Push-Up', [], {
-    pattern: 'horizontal_push', muscles: { triceps_lateral: 1, triceps_medial: 1, triceps_long: 0.5, chest_mid: 0.5, delt_front: 0.25 }, emphasis: ['triceps_mass', 'triceps_horseshoe'],
+    pattern: 'horizontal_push', muscles: { triceps_lateral: 1, triceps_medial: 1, triceps_long: 0.5, chest_mid: 0.5, delt_front: 0.5 }, emphasis: ['triceps_mass', 'triceps_horseshoe'],
     category: 'compound', repRange: [8, 20], unit: 'bodyweight', step: 0, secPerRep: 2.5, setupSec: 10,
     alt: ['diamond_pushup', 'db_close_press', 'bench_dip_tri'],
     cues: ['Hands just inside shoulder width', 'Elbows brush your ribs on the way down', 'Body in a straight line', 'Elevate feet or add a pause to progress'],
     why: 'Anywhere triceps compound; tucked elbows shift load from chest to lateral/medial heads.',
   }),
   X('diamond_pushup', 'Diamond Push-Up', [], {
-    pattern: 'horizontal_push', muscles: { triceps_lateral: 1, triceps_medial: 1, triceps_long: 0.5, chest_mid: 0.5 }, emphasis: ['triceps_horseshoe'],
+    pattern: 'horizontal_push', muscles: { triceps_lateral: 1, triceps_medial: 1, triceps_long: 0.5, chest_mid: 0.5, delt_front: 0.5 }, emphasis: ['triceps_horseshoe'],
     category: 'compound', repRange: [6, 15], unit: 'bodyweight', step: 0, secPerRep: 2.5, setupSec: 10, difficulty: 2,
     alt: ['close_grip_pushup', 'bw_tri_ext'],
     cues: ['Thumbs and index fingers form a diamond under your chest', 'Elbows track back, not out', 'Chest to hands', 'Drop to knees if form breaks'],
@@ -715,14 +724,14 @@ const EXERCISES = [
     why: 'Carry with thick handles for grip and traps.',
   }),
   X('kb_rack_carry', 'Front-Rack Carry', ['kettlebell'], {
-    pattern: 'carry', category: 'compound', muscles: { abs: 1, obliques: 0.5, upper_back: 0.5, forearms: 0.25 }, emphasis: ['six_pack'],
+    pattern: 'carry', category: 'compound', muscles: { abs: 1, obliques: 0.5, upper_back: 0.25, forearms: 0.25 }, emphasis: ['six_pack'],
     repRange: [30, 45], unit: 'seconds', step: 4, secPerRep: 1, setupSec: 20, difficulty: 2, fatigue: 2,
     alt: ['db_rack_carry', 'suitcase_carry'],
     cues: ['Clean bells to the front rack', 'Elbows tucked, wrists straight', 'Ribs down, do not lean back', 'Walk steadily'],
     why: 'Front load fights extension: a carry that really trains the abs.',
   }),
   X('db_rack_carry', 'Dumbbell Front-Rack Carry', ['dumbbell'], {
-    pattern: 'carry', category: 'compound', muscles: { abs: 1, obliques: 0.5, upper_back: 0.5 }, emphasis: ['six_pack'],
+    pattern: 'carry', category: 'compound', muscles: { abs: 1, obliques: 0.5, upper_back: 0.25 }, emphasis: ['six_pack'],
     repRange: [30, 45], unit: 'seconds', step: 5, secPerRep: 1, setupSec: 15, fatigue: 2,
     alt: ['kb_rack_carry', 'farmer'],
     cues: ['DBs on your shoulders, one end resting', 'Ribs down, glutes squeezed', 'Do not lean back', 'Short steps'],

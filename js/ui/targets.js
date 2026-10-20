@@ -9,7 +9,7 @@
 //   ("Why these numbers?"), openVolumeRoomSheet(ctx, short), openExtendSheet(ctx, { extended, onApply }),
 //   extendedToast(list), REPLAN_DAYS, ensureTargetStyles(). Styles are injected
 //   at runtime (a <style id="tg-css">) because INTEGRATOR owns no CSS file.
-import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, volumeRoomOptions, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES } from '../engine/targets.js';
+import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, volumeRoomOptions, unitTargets, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
 import { planRange } from '../engine/planner.js';
 import { CARDIO } from '../data/cardio.js';
 import { ds, addDays, weekStart } from '../util.js';
@@ -62,6 +62,13 @@ const CSS = `
 .tg-roomline .tg-room{flex:none;border-color:var(--warn);color:var(--warn)}
 .tg-diff .tg-from{color:var(--muted);text-decoration:line-through}
 .tg-mins{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.tg-units{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.tg-unit{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.pl-track .tick.tgt,.pl-legend i.t.tgt{background:none;border-left:2px dashed var(--accent2);width:0}
+.pl-legend i.t.tgt{display:inline-block;height:10px}
+.pl-sub .pl-bar-top span:first-child{padding-left:14px;font-size:12px;color:var(--muted)}
+.pl-below-tgt .pl-track i.d{background:var(--warn)}
+.pl-cstyle{display:flex;align-items:center;gap:8px;margin-top:10px}.pl-cstyle .tabs{flex:1;margin:0}
 .pl-ext{background:var(--card2);border:1px solid var(--accent);color:var(--accent);font-weight:750;border-radius:999px;padding:1px 7px;font-size:11px;margin-left:6px;cursor:pointer}
 .pl-mins{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;font-size:13px}
 .pl-mins .ok{color:var(--good);font-weight:750}.pl-mins .bad{color:var(--warn);font-weight:750}
@@ -187,19 +194,43 @@ export function extendedToast(list) {
   const more = ext.length > 3 ? ` +${ext.length - 3} more` : '';
   return `Extended ${parts.length > 1 ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1] : parts[0]}${more} to hit weekly minimums`;
 }
+const FLOOR_WHY = {
+  priority: 'priority muscle, where gains rise steeply up to ~10 sets (Schoenfeld 2017; Pelland 2025)',
+  normal: 'normal muscle, above the ~4-set minimum effective dose (Pelland 2025)',
+  maintenance: 'maintenance, about a third of a build dose (Bickel 2011; Spiering 2021)',
+  none: 'covered by other lifts (pulling, curls, carries)', tracked: 'tracked only, not counted toward any minimum',
+};
 export function openMinimumsInfo(ctx) {
   ensureStyles();
   const p = ctx.store.getProfile();
   const t = resolveTargets(p);
-  const rows = Object.entries(t.minimums.groups).filter(([, x]) => x.min > 0);
-  const nm = g => g[0].toUpperCase() + g.slice(1);
+  const U = unitTargets(p);
+  const rows = Object.entries(U).filter(([, x]) => x.min > 0 || x.target > 0);
+  const tracked = Object.entries(U).filter(([, x]) => !(x.min > 0 || x.target > 0)).map(([, x]) => x.name).join(', ');
+  const deriv = x => `${x.base}${x.slider !== 1 ? ` × ${x.slider} (slider)` : ''}${x.extra ? ` + ${x.extra} (sculpt goals)` : ''}${x.base * x.slider + x.extra > x.max + 0.05 ? `, capped at ${x.max}` : ''}`;
   ctx.openSheet(`<div class="tg-sheet"><h2>Why these numbers?</h2>
-    <p class="muted small">Your weekly minimums are hard sets per muscle group, counting done plus planned this week. Priority and sculpt goals raise some of them.</p>
+    <p class="muted small">Each muscle has a <b>minimum</b> (the evidence floor, always planned), a <b>target</b> (filled with spare time) and a <b>cap</b>. Your priority sliders and sculpt goals move only the target.</p>
+    <div class="tg-units">${rows.map(([, x]) => `<div class="tg-unit"><div class="row between"><b>${esc(x.name)}</b><span class="num small">min <b>${x.min}</b> · target <b>${x.target}</b> · cap ${x.max}</span></div>
+      <div class="tiny muted">Floor ${x.min}: ${esc(FLOOR_WHY[x.tier] || FLOOR_WHY.normal)}. Target = ${esc(deriv(x))}.</div></div>`).join('')}</div>
+    ${tracked ? `<p class="tiny muted">${esc(tracked)}: tracked, not counted (pressing covers front delts; traps and lower back don't count toward back).</p>` : ''}
+    <div class="label mt">The evidence</div>
     <ul class="tip-list mt">${MINIMUMS_EVIDENCE.map(e => `<li>${esc(e.claim)} <span class="tiny muted">(${esc(e.source)})</span></li>`).join('')}</ul>
-    <div class="label mt">Your minimums (sets / week)</div>
-    <div class="tg-mins">${rows.map(([g, x]) => `<span class="badge">${esc(nm(g))} <b>${x.min}</b></span>`).join('')}</div>
-    <p class="tiny muted mt">Workouts get longer (up to ${t.training.volumePolicy.maxMinutes}′) when the week can't fit these in your slot times${t.training.volumePolicy.mode === 'fixed' ? ', but you chose fixed lengths, so Forge only warns' : t.training.volumePolicy.mode === 'ask' ? '. Forge asks first' : ''}. Change it in Settings → Training defaults.</p>
+    <p class="tiny muted mt">Minimums: Forge lengthens workouts up to ${t.training.volumePolicy.maxMinutes}′ when your slot times can't fit them${t.training.volumePolicy.mode === 'fixed' ? ' (you chose fixed lengths, so it only warns)' : t.training.volumePolicy.mode === 'ask' ? ' (it asks first)' : ''}. Targets: ${t.training.volumePolicy.fillTargets === 'extend' ? 'workouts may also lengthen to reach them' : 'only spare time is used'}. Change it in Settings → Training defaults.</p>
     <div class="sheet-actions"><button type="button" class="btn btn-block" data-close>Got it</button></div></div>`, (el, close) => { el.querySelector('[data-close]').onclick = () => close(); });
+}
+// "Hit targets: +N min/wk": consent to lengthen workouts (up to the cap) for targets, not just minimums.
+export function openHitTargetsSheet(ctx, sum) {
+  ensureStyles();
+  const t = sum?.targets; if (!t) return;
+  const pol = resolveTargets(ctx.store.getProfile()).training.volumePolicy;
+  ctx.openSheet(`<div class="tg-sheet"><h2>Hit your targets?</h2>
+    <p class="muted small">Your minimums are covered. Reaching every target needs about <b>+${t.minutesToHit} min a week</b> (${t.shortSets} more sets), spread over your lift days, never past ${pol.maxMinutes}′ a workout.</p>
+    <div class="tg-mins">${t.short.map(x => `<span class="badge">${esc(x.name)} <b>${Math.round(x.total * 10) / 10}/${x.target}</b></span>`).join('')}</div>
+    <div class="sheet-actions"><button type="button" class="btn btn-primary btn-block" data-apply>Lengthen workouts for targets</button>
+    <button type="button" class="btn btn-ghost btn-block" data-cancel>Keep spare-time only</button></div></div>`, (el, close) => {
+    el.querySelector('[data-cancel]').onclick = () => close();
+    el.querySelector('[data-apply]').onclick = () => { close(); setTargets(ctx, { training: { volumePolicy: { fillTargets: 'extend', mode: 'extend' } } }, { reason: 'workouts lengthened to reach targets' }); };
+  });
 }
 // Short after the cap: options to raise the cap, add a lift day, or lengthen days.
 export function openVolumeRoomSheet(ctx, short = []) {
@@ -276,6 +307,8 @@ export function cardioTargetHTML(ctx) {
       <div class="tg-stepv"><b class="num" data-tg-ctv>${target}</b><span>min / week</span></div>
       <button type="button" data-tg-ct="15" aria-label="Raise cardio target" ${target >= LIMITS.cardioMin[1] ? 'disabled' : ''}>+</button></div>
     <div class="chips tg-chips">${CARDIO_CHIPS.map(v => `<button type="button" class="chip sm ${v === target ? 'active' : ''}" data-tg-cset="${v}">${v}</button>`).join('')}</div>
+    <div class="tabs tg-seg" role="group" aria-label="Cardio style">${CARDIO_STYLES.map(v => `<button type="button" class="${v === t.cardio.style ? 'active' : ''}" data-tg-cstyle="${v}">${esc(CARDIO_STYLE_NAMES[v])}</button>`).join('')}</div>
+    <p class="tiny muted" style="margin:-2px 0 10px">${esc(CARDIO_STYLE_WHY)}</p>
     <div class="tg-track" aria-hidden="true"><i class="d" style="width:${(w.done / scale) * 100}%"></i><i class="p" style="left:${(w.done / scale) * 100}%;width:${(w.planned / scale) * 100}%"></i><span class="tick" style="left:${(target / scale) * 100}%"></span></div>
     <div class="tg-legend small"><span><i class="d"></i>${w.done} done</span><span><i class="p"></i>${w.planned} planned</span><span class="muted">target ${target} · this week</span></div>
     <p class="small muted" style="margin:8px 0 0">${target === 0 ? 'No cardio target: the planner leans toward lifting.' : w.total >= target ? 'This week\'s plan covers your target.' : `${left} min to go this week${w.planned ? `, ${Math.max(0, target - w.total)} not planned yet` : ''}.`}</p>
@@ -287,6 +320,7 @@ export function bindCardioTarget(root, ctx) {
   const set = v => setTargets(ctx, { cardio: { minPerWeek: v } });
   card.querySelectorAll('[data-tg-ct]').forEach(b => b.onclick = () => { const cur = resolveTargets(ctx.store.getProfile()).cardio.minPerWeek; set(cur + Number(b.dataset.tgCt)); });
   card.querySelectorAll('[data-tg-cset]').forEach(b => b.onclick = () => set(Number(b.dataset.tgCset)));
+  card.querySelectorAll('[data-tg-cstyle]').forEach(b => b.onclick = () => setTargets(ctx, { cardio: { style: b.dataset.tgCstyle } }));
   card.querySelector('[data-tg-plan]')?.addEventListener('click', () => ctx.nav('plan'));
   bindMakeRoom(card, ctx);
 }
@@ -303,6 +337,8 @@ function sheetHTML(ctx, focus) {
     <div class="tg-step"><button type="button" data-s-ct="-15" aria-label="Lower cardio target">−</button><div class="tg-stepv"><b class="num">${c.minPerWeek}</b><span>min / week</span></div><button type="button" data-s-ct="15" aria-label="Raise cardio target">+</button></div>
     <div class="chips tg-chips">${CARDIO_CHIPS.map(v => `<button type="button" class="chip sm ${v === c.minPerWeek ? 'active' : ''}" data-s-cset="${v}">${v}</button>`).join('')}</div>
     <p class="tiny muted">This week: ${w.done} done + ${w.planned} planned. Your availability fits ~${t.capacity.cardio} min (cardio days ${t.capacity.cardioDays}, flex ${t.capacity.flex}, finishers ${t.capacity.finishers}).</p>
+    <div class="label mt">How to spread it</div>${seg('s-cstyle', CARDIO_STYLES.map(v => [v, CARDIO_STYLE_NAMES[v]]), c.style)}
+    <p class="tiny muted">${esc(CARDIO_STYLE_WHY)} No cardio block shorter than ${c.minSession}′.</p>
     ${step('s-hard', 'Hard sessions / week', c.hardSessionsPerWeek, '')}
     <div class="label mt">Preferred cardio <span class="muted tiny">(none = planner picks)</span></div>
     <div class="chips">${MOD_CHOICES.filter(m => CARDIO[m]).map(m => `<button type="button" class="chip sm ${c.modalities.includes(m) ? 'active' : ''}" data-s-mod="${m}">${esc((CARDIO[m].icon || '') + ' ' + CARDIO[m].name)}</button>`).join('')}</div>`);
@@ -313,6 +349,7 @@ function sheetHTML(ctx, focus) {
     <div class="label mt">Default style</div>${seg('s-style', STYLES.map(s => [s, STYLE_NAMES[s]]), t.training.style)}
     <div class="label mt">When the week's set minimums don't fit</div>${seg('s-vmode', [['extend', 'Lengthen'], ['ask', 'Ask me'], ['fixed', 'Keep times']], t.training.volumePolicy.mode)}
     ${step('s-vmax', 'Longest workout', t.training.volumePolicy.maxMinutes, '′')}
+    <div class="label mt">Targets (above the minimums)</div>${seg('s-vfill', [['time', 'Spare time only'], ['extend', 'May lengthen']], t.training.volumePolicy.fillTargets)}
     <button type="button" class="btn btn-ghost btn-block mt" data-s-avail>🗓 Weekly availability (Plan)</button>`);
   const nutrition = sec('nutrition', '🍽️ Nutrition', `
     ${seg('s-mode', Object.entries(MODE_NAMES), n.mode)}
@@ -340,10 +377,12 @@ export function openTargetsSheet(ctx, { focus = 'cardio' } = {}) {
       const d = b.dataset; const t = T();
       if (d.sCt) set({ cardio: { minPerWeek: t.cardio.minPerWeek + Number(d.sCt) } });
       else if (d.sCset) set({ cardio: { minPerWeek: Number(d.sCset) } });
+      else if (d.sCstyle) set({ cardio: { style: d.sCstyle } });
       else if (d.sHard) set({ cardio: { hardSessionsPerWeek: t.cardio.hardSessionsPerWeek + Number(d.sHard) } });
       else if (d.sMod) { const m = new Set(t.cardio.modalities); m.has(d.sMod) ? m.delete(d.sMod) : m.add(d.sMod); set({ cardio: { modalities: [...m] } }); }
       else if (d.sMin) set({ training: { defaultMinutes: Number(d.sMin) } }, { replan: false });
       else if (d.sStyle) set({ training: { style: d.sStyle } });
+      else if (d.sVfill) set({ training: { volumePolicy: { fillTargets: d.sVfill } } });
       else if (d.sVmode) set({ training: { volumePolicy: { mode: d.sVmode } } });
       else if (d.sVmax) set({ training: { volumePolicy: { maxMinutes: t.training.volumePolicy.maxMinutes + Number(d.sVmax) * 15 } } });
       else if (d.sMode) set({ nutrition: { mode: d.sMode } }, { replan: false });

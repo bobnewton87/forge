@@ -354,7 +354,7 @@ test('weekPlanSummary splits done vs planned and flags back-to-back + cardio', (
   for (const [g, x] of Object.entries(sum.groups)) {
     assert.ok(Math.abs(x.total - (x.done + x.planned)) < 0.11, g);
     assert.ok(['under', 'ok', 'over'].includes(x.status));
-    assert.ok(x.target.min > 0);
+    assert.ok(x.target.min >= 0);   // INTEGRATOR: incidental muscles (glutes, calves, forearms) have a 0 floor now
   }
   assert.ok(sum.score >= 0 && sum.score <= 100);
   assert.ok(sum.regions.delt_side && sum.regions.abs && sum.regions.lats && sum.regions.chest_upper);

@@ -25,8 +25,9 @@ import { loadSchedule } from '../classes/crunch.js';
 import { renderClassPicker, bindClassPicker } from './classes.js';
 import { startSession, sessionGroups } from './today.js';
 import { summarize, detailSheet } from './history.js';
-import { setTargets, targetsSummaryHTML, bindTargetsSummary, makeRoomHTML, bindMakeRoom, extendedToast, openMinimumsInfo, openVolumeRoomSheet, openExtendSheet } from './targets.js';
-import { resolveTargets, volumePolicyOf } from '../engine/targets.js';
+import { setTargets, targetsSummaryHTML, bindTargetsSummary, makeRoomHTML, bindMakeRoom, extendedToast, openMinimumsInfo, openVolumeRoomSheet, openExtendSheet, openHitTargetsSheet } from './targets.js';
+import { resolveTargets, volumePolicyOf, CARDIO_STYLES, CARDIO_STYLE_NAMES } from '../engine/targets.js';
+import { UNIT_ORDER } from '../data/muscles.js';
 // CONTRACT-NOTE (INTEGRATOR §18): the coverage card's cardio target reads resolveTargets and its
 //   stepper calls setTargets (which re-plans upcoming auto days, debounced). Saving availability goes
 //   through setTargets too (its own re-plan prompt stays). params.avail opens the availability sheet.
@@ -231,28 +232,27 @@ function addCardio(ctx, date, mins) {
 
 function summaryCard(sessions, profile, ws, roomLine = '') {
   const sum = safe(() => weekPlanSummary(sessions, { weekStart: ws, profile, now: new Date() }), null);
-  const groups = sum && sum.groups && typeof sum.groups === 'object' ? sum.groups : {};
-  const ids = Object.keys(groups).filter(g => GROUPS[g]);
+  const units = sum && sum.units && typeof sum.units === 'object' ? sum.units : {};
+  const ids = UNIT_ORDER.filter(u => units[u] && (units[u].min > 0 || units[u].target > 0));
   const head = `<div class="section-title">Week coverage <button type="button" class="link" data-a="history">History ›</button></div>`;
   if (!ids.length) {
     return `${head}<div class="card pl-sum"><div class="empty" style="padding:18px 10px"><p>Plan your week to see how it covers your muscle and cardio targets.</p></div></div>`;
   }
-  const prio = g => (GROUPS[g]?.priority || 1) * ((profile.groupPriority || {})[g] || 1);
-  ids.sort((a, b) => prio(b) - prio(a) || GROUP_ORDER.indexOf(a) - GROUP_ORDER.indexOf(b));
-  const rows = ids.map(g => {
-    const x = groups[g] || {};
-    const done = Number(x.done) || 0, planned = Number(x.planned) || 0;
-    const total = Number(x.total ?? done + planned) || 0;
-    const tmin = Number(x.target?.min) || 0, tmax = Number(x.target?.max) || tmin || 1;
-    const scale = Math.max(tmax, total, 1);
-    const st = x.status || (total < tmin ? 'under' : total > tmax ? 'over' : 'ok');
-    return `<div class="pl-bar-row ${st}">
-      <div class="pl-bar-top"><span>${prio(g) > 1 ? '<span class="star">★</span> ' : ''}${esc(GROUPS[g].name)}</span>
-        <span class="num"><b>${fmtNum(total, 0)}</b><span class="muted">/${Math.round(tmin)}${tmax > tmin ? '–' + Math.round(tmax) : ''}</span></span></div>
+  // One row per enforcement unit (weekly-volume audit): bar = done + planned, solid tick = minimum
+  // (evidence floor), dashed tick = your target. Tracked-only muscles go in a muted line.
+  const rows = ids.map(u => {
+    const x = units[u];
+    const done = Number(x.done) || 0, planned = Number(x.planned) || 0, total = Number(x.total) || 0;
+    const scale = Math.max(x.target, x.min, total, 1) * 1.1;
+    const st = x.status === 'under' ? 'under' : x.status === 'below_target' ? 'tgt' : x.status === 'over' ? 'over' : 'ok';
+    return `<div class="pl-bar-row ${st === 'tgt' ? 'ok pl-below-tgt' : st}${x.sub ? ' pl-sub' : ''}">
+      <div class="pl-bar-top"><span>${x.tier === 'priority' && !x.sub ? '<span class="star">★</span> ' : ''}${esc(x.name)}</span>
+        <span class="num"><b>${fmtNum(total, 0)}</b><span class="muted">/${x.min ? fmtNum(x.min, 0) : '0'} · target ${fmtNum(x.target, 0)}</span></span></div>
       <div class="pl-track"><i class="d" style="width:${(done / scale) * 100}%"></i><i class="p" style="left:${(done / scale) * 100}%;width:${(planned / scale) * 100}%"></i>
-        <span class="tick" style="left:${(tmin / scale) * 100}%"></span></div>
+        ${x.min > 0 ? `<span class="tick" style="left:${(x.min / scale) * 100}%"></span>` : ''}<span class="tick tgt" style="left:${(x.target / scale) * 100}%"></span></div>
     </div>`;
   }).join('');
+  const tracked = UNIT_ORDER.filter(u => units[u] && !(units[u].min > 0 || units[u].target > 0)).map(u => `${units[u].name} ${fmtNum(units[u].total, 0)}`).join(' · ');
   const tgt = resolveTargets(profile).cardio.minPerWeek;
   const cm = sum.cardioMinutes && typeof sum.cardioMinutes === 'object' ? sum.cardioMinutes : { done: Number(sum.cardioMinutes) || 0, planned: 0, target: tgt };
   const ctarget = Number.isFinite(Number(cm.target)) ? Number(cm.target) : tgt;
@@ -271,27 +271,38 @@ function summaryCard(sessions, profile, ws, roomLine = '') {
   return `${head}<div class="card pl-sum">
     <div class="pl-sum-head">${ring}<div class="grow"><div class="card-title">${sc == null ? 'This week' : sc >= 80 ? 'Well covered' : sc >= 55 ? 'Mostly covered' : 'Gaps to fill'}</div>
       <div class="muted small">${Number(ss.done) || 0} done · ${Number(ss.planned) || 0} planned${sc != null ? ' · coverage score' : ''}</div></div></div>
-    <div class="pl-legend"><span><i class="d"></i>Done</span><span><i class="p"></i>Planned</span><span><i class="t"></i>Weekly min</span></div>
+    <div class="pl-legend"><span><i class="d"></i>Done</span><span><i class="p"></i>Planned</span><span><i class="t"></i>Minimum</span><span><i class="t tgt"></i>Target</span></div>
     <div class="pl-bars">${rows}</div>
+    ${tracked ? `<div class="tiny muted" style="margin-top:6px">Tracked, not counted: ${esc(tracked)}</div>` : ''}
     <div class="pl-bar-row cardio">
       <div class="pl-bar-top"><span>🏃 Cardio</span><span class="num"><b>${fmtNum((cm.done || 0) + (cm.planned || 0), 0)}</b><span class="muted">/${ctarget} min</span></span></div>
       <div class="pl-track"><i class="d" style="width:${((cm.done || 0) / cscale) * 100}%"></i><i class="p" style="left:${((cm.done || 0) / cscale) * 100}%;width:${((cm.planned || 0) / cscale) * 100}%"></i><span class="tick" style="left:${(ctarget / cscale) * 100}%"></span></div>
     </div>
     <div class="pl-ctarget"><span class="muted small">Weekly cardio target</span>
       <span class="pl-step" role="group" aria-label="Weekly cardio target"><button type="button" data-a="ct-dec" aria-label="Lower cardio target" ${ctarget <= 0 ? 'disabled' : ''}>−</button><b>${ctarget}′</b><button type="button" data-a="ct-inc" aria-label="Raise cardio target" ${ctarget >= 900 ? 'disabled' : ''}>+</button></span></div>
+    ${cardioStyleSeg(profile)}
     ${roomLine}
-    ${minsLine(sum)}
+    ${minsLine(sum, profile)}
     ${capLine ? `<div class="pl-cap muted small">${esc(capLine)}</div>` : ''}
     ${warnings.length ? `<details class="pl-notes"><summary>Notes <span class="pl-notes-n">${warnings.length}</span></summary><ul>${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul></details>` : ''}
   </div>`;
 }
 
-function minsLine(sum) {
+function cardioStyleSeg(profile) {
+  const st = resolveTargets(profile).cardio.style;
+  return `<div class="pl-cstyle"><span class="muted small">Cardio as</span><div class="tabs tg-seg">${CARDIO_STYLES.map(v => `<button type="button" class="${v === st ? 'active' : ''}" data-a="cstyle" data-v="${v}">${esc(CARDIO_STYLE_NAMES[v])}</button>`).join('')}</div></div>`;
+}
+function minsLine(sum, profile) {
   const m = sum.minimums;
   if (!m) return '';
   const ext = (sum.extended || []).reduce((n, x) => n + (x.to - x.from), 0);
-  return `<div class="pl-mins"><span>Minimums:</span>${m.met ? '<span class="ok">✓ met</span>' : `<span class="bad">✗ ${m.short.length} short</span><span class="muted small">${esc(m.short.slice(0, 3).map(x => `${x.name} ${fmtNum(x.total, 0)}/${fmtNum(x.min, 0)}`).join(', '))}</span>`}
-    ${ext ? `<span class="muted small">· +${ext}′ added</span>` : ''}<button type="button" data-a="why-min">Why these numbers?</button>${m.met ? '' : '<button type="button" data-a="vol-room">Make room</button>'}</div>`;
+  const t = sum.targets, pp = sum.pushPull;
+  const pol = volumePolicyOf(profile || {});
+  const hit = t && t.met < t.total && pol.fillTargets !== 'extend' && t.minutesToHit > 0;
+  return `<div class="pl-mins"><span>Minimums</span>${m.met ? '<span class="ok">✓</span>' : `<span class="bad">✗ ${m.short.length} short</span><span class="muted small">${esc(m.short.slice(0, 3).map(x => `${x.name} ${fmtNum(x.total, 0)}/${fmtNum(x.min, 0)}`).join(', '))}</span>`}
+    ${t ? `<span class="muted">·</span><span>Targets <b>${t.met}/${t.total}</b></span>` : ''}${pp ? `<span class="muted small">· push:pull ${pp.push}:${pp.pull}</span>` : ''}
+    ${ext ? `<span class="muted small">· +${ext}′ added</span>` : ''}</div>
+    <div class="pl-mins">${hit ? `<button type="button" data-a="hit-targets">Hit targets: +${t.minutesToHit} min/wk</button>` : ''}<button type="button" data-a="why-min">Why these numbers?</button>${m.met ? '' : '<button type="button" data-a="vol-room">Make room</button>'}</div>`;
 }
 
 // ---------- day sheet ----------
@@ -691,6 +702,11 @@ export function bind(root, ctx) {
         break;
       }
       case 'why-min': openMinimumsInfo(ctx); break;
+      case 'cstyle': setTargets(ctx, { cardio: { style: a.dataset.v } }); break;
+      case 'hit-targets': {
+        const sum = safe(() => weekPlanSummary(ctx.store.getSessions(), { weekStart: ws, profile: ctx.store.getProfile(), now: new Date() }), null);
+        openHitTargetsSheet(ctx, sum); break;
+      }
       case 'vol-room': {
         const sum = safe(() => weekPlanSummary(ctx.store.getSessions(), { weekStart: ws, profile: ctx.store.getProfile(), now: new Date() }), null);
         openVolumeRoomSheet(ctx, sum?.minimums?.short || []); break;

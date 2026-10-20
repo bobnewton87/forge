@@ -136,8 +136,11 @@ function gripLoad(ex) {
 // second one is pre-fatigued (e.g. dead hang + curls, close-grip press + dips).
 function sharesLimiter(a, b) {
   const la = groupLoad(a), lb = groupLoad(b);
+  const isPull = e => e.pattern === 'horizontal_pull' || e.pattern === 'vertical_pull';
   for (const g of ['triceps', 'biceps']) {
     const x = la[g] || 0, y = lb[g] || 0;
+    // Rows/pulldowns credit the elbow flexors (0.5, fractional counting) but a row + curl superset is fine.
+    if (g === 'biceps' && (isPull(a) || isPull(b))) continue;
     if (Math.min(x, y) >= 0.5) return true;
     // a triceps isolation after any press still pre-fatigues the press (rows + curls are fine)
     if (g === 'triceps' && Math.max(x, y) >= 0.75 && Math.min(x, y) >= 0.25) return true;

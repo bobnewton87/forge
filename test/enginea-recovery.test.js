@@ -44,6 +44,8 @@ test('muscleStatus: sets7d is rolling 7 days, lastTrained/daysSince', () => {
   for (const r of Object.values(m)) { assert.ok(r.readiness >= 0 && r.readiness <= 1); assert.ok(r.need >= 0 && r.need <= 1); }
 });
 
+// INTEGRATOR (weekly-volume audit): ONE priority mechanism. Sliders and sculpt extras move only the
+// target (clamped to [min, max]); the min stays the evidence floor. (Previously both min and max scaled.)
 test('targets scale with groupPriority and sculpt goals', () => {
   const base = muscleStatus([], { profile: noProfile });
   for (const r of Object.keys(REGIONS)) close(base[r].target.min, Math.round(REGIONS[r].weeklySets.min * 10) / 10, 0.051);
@@ -53,11 +55,11 @@ test('targets scale with groupPriority and sculpt goals', () => {
   const m = muscleStatus([], { profile: p });
   const regs = Object.entries(goal.regions).filter(([r, w]) => REGIONS[r] && w > 0);
   const tot = regs.reduce((s, [, w]) => s + w, 0);
-  for (const [r, w] of regs) {
-    const gp = groupOf(r) === 'triceps' ? 1.5 : 1;
-    close(m[r].target.min, REGIONS[r].weeklySets.min * gp + goal.extraWeeklySets * w / tot, 0.051);
-  }
-  close(m.triceps_lateral.target.min, REGIONS.triceps_lateral.weeklySets.min * 1.5 + (goal.regions.triceps_lateral ? goal.extraWeeklySets * goal.regions.triceps_lateral / tot : 0), 0.051);
+  const want = r => { const ws = REGIONS[r].weeklySets, gp = groupOf(r) === 'triceps' ? 1.5 : 1, ex = goal.regions[r] > 0 ? goal.extraWeeklySets * goal.regions[r] / tot : 0; return Math.min(ws.max, Math.max(ws.min, ws.target * gp + ex)); };
+  for (const [r] of regs) { close(m[r].target.min, REGIONS[r].weeklySets.min, 0.051); close(m[r].target.target, want(r), 0.051); }
+  close(m.triceps_lateral.target.min, REGIONS.triceps_lateral.weeklySets.min, 0.051);
+  close(m.triceps_lateral.target.target, want('triceps_lateral'), 0.051);
+  assert.ok(m.triceps_lateral.target.target > base.triceps_lateral.target.target);
 });
 
 test('readiness: big session takes longer to recover than a small touch', () => {

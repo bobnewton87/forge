@@ -127,7 +127,8 @@ function readinessFor(key, kind, entries, nowMs, recoveryHours) {
 }
 
 function needScore(sets7d, target, daysSince, prioMult) {
-  const deficit = target.min > 0 ? clamp((target.min - sets7d) / target.min, 0, 1) : 0;
+  const goal = target.target ?? target.min;   // need is scored against the (priority-moved) target
+  const deficit = goal > 0 ? clamp((goal - sets7d) / goal, 0, 1) : 0;
   const over = sets7d >= target.max ? -0.2 : 0;
   const stale = daysSince == null ? 0.35 : clamp((daysSince - 3) / 4, 0, 1) * 0.4;
   const raw = Math.max(0, (0.7 * deficit + stale + over) * prioMult);
@@ -153,9 +154,12 @@ function sculptExtras(profile) {
   return extra;
 }
 
+// CONTRACT-NOTE (INTEGRATOR, weekly-volume audit): ONE priority mechanism. The min is the evidence
+// floor and never moves; sliders (prio) and sculpt extras move only the TARGET, clamped to [min, max].
 function scaleTarget(base, prio, extra) {
-  const min = (base?.min ?? 0) * prio + extra, max = (base?.max ?? 0) * prio + extra;
-  return { min: Math.round(min * 10) / 10, max: Math.round(Math.max(max, min) * 10) / 10 };
+  const min = base?.min ?? 0, max = Math.max(base?.max ?? 0, min);
+  const target = clamp((base?.target ?? min) * prio + extra, min, max);
+  return { min: Math.round(min * 10) / 10, target: Math.round(target * 10) / 10, max: Math.round(max * 10) / 10 };
 }
 
 // ---------------------------------------------------------------- public API
@@ -255,7 +259,7 @@ function statusCore(entries, now, profile, ahead = null) {
     const g = GROUPS[gid];
     const gp = groupPriority(profile, gid);
     const extra = g.regions.reduce((s, r) => s + (extras[r] || 0), 0);
-    const base = g.weeklySets || { min: g.regions.reduce((s, r) => s + (REGIONS[r]?.weeklySets?.min || 0), 0), max: g.regions.reduce((s, r) => s + (REGIONS[r]?.weeklySets?.max || 0), 0) };
+    const base = g.volume || g.weeklySets || { min: g.regions.reduce((s, r) => s + (REGIONS[r]?.weeklySets?.min || 0), 0), max: g.regions.reduce((s, r) => s + (REGIONS[r]?.weeklySets?.max || 0), 0) };
     const target = scaleTarget(base, gp, extra);
     const lastTrained = lastOf('groups', gid);
     const daysSince = lastTrained ? daysBetween(lastTrained, today) : null;

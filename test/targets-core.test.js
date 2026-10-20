@@ -9,7 +9,9 @@ import { parseDs } from '../js/util.js';
 
 const MON = '2026-10-26';
 const NOW = new Date(2026, 9, 26, 7, 0);   // Monday 07:00
-const prof = (patch = {}) => ({ ...defaultProfile(), bodyweight: 170, ...patch });
+// Most cardio tests here exercise the finisher logic, so they pin cardio.style 'finishers'
+// (the default is 'longer'; see the cardio-style tests at the end).
+const prof = (patch = {}) => ({ ...defaultProfile(), bodyweight: 170, cardio: { style: 'finishers' }, ...patch });
 const cardioOf = list => list.reduce((n, s) => n + (s.blocks || []).reduce((a, b) => a + (b.kind === 'cardio' ? b.minutes : b.kind === 'class' ? (b.classify?.cardioMinutes || 0) : 0), 0), 0);
 
 // ---------------------------------------------------------------- resolveTargets
@@ -70,7 +72,7 @@ test('applyTargetChange: clamps, rounds and ignores invalid values without mutat
   assert.equal(applyTargetChange(p, { cardio: { minPerWeek: 'lots' } }).cardioTargetMin, 120);
   assert.equal(applyTargetChange(p, { cardio: { minPerWeek: null } }).cardioTargetMin, 120);
   const c = applyTargetChange(p, { cardio: { modalities: ['bike', 'nope', 'run', 'bike'], hardSessionsPerWeek: 9 } }).cardio;
-  assert.deepEqual(c, { modalities: ['bike', 'run'], hardPerWeek: 4 });
+  assert.deepEqual(c, { style: 'finishers', modalities: ['bike', 'run'], hardPerWeek: 4 });
   assert.equal(applyTargetChange(p, { adherence: 2 }).adherence, 1);
   assert.equal(applyTargetChange(p, { adherence: 0.1 }).adherence, 0.5);
   assert.equal(applyTargetChange(p, { training: { defaultMinutes: 5, style: 'yoga' } }).defaultMinutes, 10);
@@ -229,4 +231,41 @@ test('weekCardioCapacity counts a planned class day by its class cardio, matchin
   assert.equal(satShare, 41 - cardioCapacity(p).byDay.sat, 'class day = 31 class + 10 add-on, not the template');
   assert.ok(sum.cardioMinutes.planned <= capWeek, `${sum.cardioMinutes.planned} planned ≤ ${capWeek} capacity`);
   assert.equal(cardioWeek(p, week, { now: NOW }).capacity, capWeek);
+});
+
+// ---------------------------------------------------------------- cardio style (longer / balanced / finishers)
+test("cardio style: 'longer' (default) never plans a cardio block under minSession and keeps a long session", () => {
+  const p0 = { ...defaultProfile(), bodyweight: 170 };
+  assert.equal(cardioPrefs(p0).style, 'longer');
+  assert.equal(cardioPrefs(p0).minSession, 30);
+  for (const target of [120, 225]) {
+    const p = { ...p0, cardioTargetMin: target };
+    const out = planRange({ from: MON, days: 7, profile: p, sessions: [], now: NOW, seed: 1 });
+    const blocks = out.flatMap(s => s.blocks.filter(b => b.kind === 'cardio'));
+    assert.ok(blocks.every(b => b.minutes >= 30), `${target}: ${blocks.map(b => b.minutes).join(',')}`);
+    const longest = Math.max(...out.map(s => cardioOf([s])));
+    assert.ok(longest >= 45, `${target}: longest cardio session ${longest}`);
+    assert.ok(blocks.filter(b => b.intensity === 'hard' || b.intensity === 'intervals').length <= 1);
+    const sum = weekPlanSummary(out, { weekStart: parseDs(MON), profile: p, now: NOW });
+    if (sum.cardioMinutes.planned < target - Math.max(10, target * 0.1)) assert.ok(sum.warnings.some(w => /^Cardio/.test(w) && /fits ~\d+/.test(w)), sum.warnings.join(' | '));
+  }
+  // Make room under 'longer' lengthens/adds cardio days, never lift-day finishers
+  const r = makeRoomProposal({ ...p0, cardioTargetMin: 225 });
+  assert.ok(r.changes.length && r.changes.every(c => c.to.kind === 'cardio'), r.changes.map(c => c.label).join(' | '));
+  assert.ok(r.changes.filter(c => c.from.kind === 'rest').every(c => c.to.minutes >= 30));
+});
+
+test("cardio style: 'balanced' finishers are ≥20 min; 'finishers' keeps short finishers; validation", () => {
+  const b = { ...defaultProfile(), bodyweight: 170, cardioTargetMin: 225, cardio: { style: 'balanced' } };
+  const out = planRange({ from: MON, days: 7, profile: b, sessions: [], now: NOW, seed: 1 });
+  assert.ok(out.flatMap(s => s.blocks.filter(x => x.kind === 'cardio')).every(x => x.minutes >= 20));
+  const f = prof({ cardioTargetMin: 225 });
+  const fo = planRange({ from: MON, days: 7, profile: f, sessions: [], now: NOW, seed: 1 });
+  assert.ok(fo.some(s => s.plan.kind === 'lift' && s.blocks.some(x => x.kind === 'cardio' && x.minutes < 20)), 'finishers style still uses short finishers');
+  const p = applyTargetChange(defaultProfile(), { cardio: { style: 'balanced' } });
+  assert.equal(p.cardio.style, 'balanced'); assert.equal(cardioPrefs(p).minSession, 20);
+  assert.equal(cardioPrefs(applyTargetChange(p, { cardio: { minSession: 3 } })).minSession, 5);
+  assert.equal(applyTargetChange(p, { cardio: { style: 'sprint' } }).cardio.style, 'balanced');
+  assert.equal(needsReplan(defaultProfile(), p), true);
+  assert.equal(suggestFinisher({ ...defaultProfile(), cardioTargetMin: 225 }, [], { now: NOW, minutes: 45 }), null, "'longer': no 15-min finisher nudge");
 });

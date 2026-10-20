@@ -12,6 +12,9 @@
 //   cardioCapacity(profile), cardioWeek(profile, sessions, { now }), suggestFinisher(...),
 //   describeChange(before, after), needsReplan(before, after), weekCardioCapacity(profile, sessions, { now, weekStart }),
 //   makeRoomProposal(profile, target) (availability changes so the week can hold the cardio target),
+//   CARDIO_STYLES/CARDIO_STYLE_NAMES/CARDIO_STYLE_WHY/MIN_SESSION_DEFAULT: profile.cardio.style
+//   ('longer' default | 'balanced' | 'finishers') + profile.cardio.minSession (default 30/20/10): no
+//   cardio block shorter than minSession is planned; capacity counts finishers only when ≥ minSession.
 //   volumePolicyOf(profile), weeklyMinimums(profile), volumeRoomOptions(profile, short), MINIMUMS_EVIDENCE.
 // CONTRACT-NOTE (weekly minimums, 2026-10-20): profile.volumePolicy = { mode:'extend'|'ask'|'fixed', maxMinutes }
 //   (default extend, 90). resolveTargets().training.volumePolicy and resolveTargets().minimums
@@ -34,7 +37,8 @@
 import { CARDIO, cardioOptions } from '../data/cardio.js';
 import { DEFAULT_LOCATIONS, expandEquipment } from '../data/equipment.js';
 import { sessionVolume, groupStatus } from './recovery.js';
-import { GROUPS } from '../data/muscles.js';
+import { GROUPS, REGIONS, VOLUME_UNITS, UNIT_ORDER } from '../data/muscles.js';
+import { SCULPT_GOALS } from '../data/sculpt.js';
 import { ds, parseDs, addDays, weekStart } from '../util.js';
 
 export const LIMITS = {
@@ -47,11 +51,18 @@ export const STYLES = ['hypertrophy', 'pump', 'strength', 'circuit'];
 export const GOALS = ['recomp', 'lean_bulk', 'cut'];
 export const MODES = ['off', 'simple', 'cycling'];
 export const VOLUME_MODES = ['extend', 'ask', 'fixed'];
+// Cardio distribution (profile.cardio.style): few long sessions, a mix, or short finishers on lift days.
+export const CARDIO_STYLES = ['longer', 'balanced', 'finishers'];
+export const CARDIO_STYLE_NAMES = { longer: 'Long sessions', balanced: 'Balanced', finishers: 'Short finishers' };
+export const MIN_SESSION_DEFAULT = { longer: 30, balanced: 20, finishers: 10 };
+export const CARDIO_STYLE_WHY = 'Separate or longer cardio sessions reduce interference with lifting (Wilson et al. 2012) and suit an endurance base.';
 export const MINIMUMS_EVIDENCE = [
-  { claim: 'About 10 or more hard sets per muscle per week maximizes growth for most people; fewer still works, just less (graded dose-response).', source: 'Schoenfeld, Ogborn & Krieger 2017, J Sports Sci (meta-analysis)' },
-  { claim: 'Indirect sets count partly: a bench press gives your triceps partial credit. Forge credits each exercise by how much it works each muscle.', source: 'Pelland et al. 2024, SportRxiv preprint (dose-response meta-regression)' },
-  { claim: 'Keeping muscle takes roughly a third of the volume it took to build it, so your legs (maintenance priority) have lower minimums on purpose.', source: 'Bickel, Cross & Bamman 2011, Med Sci Sports Exerc' },
-  { claim: 'Returns per session flatten past ~8-10 sets for one muscle, so extra sets are spread across the week before a session gets longer.', source: 'Same dose-response literature; per-session caps are a conservative planning rule' },
+  { claim: 'The minimum is the evidence floor: about 4 fractional sets/week is the minimum effective dose, gains rise steeply to about 10 and keep rising with diminishing returns to about 20. Floors here: ~10 for priority muscles, ~6 normal, 3-4 maintenance, 0 where other lifts already cover it.', source: 'Schoenfeld, Ogborn & Krieger 2017, J Sports Sci 35:1073; Pelland et al. 2025, Sports Med, doi:10.1007/s40279-025-02344-w' },
+  { claim: 'Trained lifters do best around 12-20 sets per muscle per week; more than 20 helped triceps. Your targets sit in that range and the caps are ~20 (24 for triceps and side delts).', source: 'Baz-Valle et al. 2022, J Hum Kinet 81:199' },
+  { claim: 'Indirect sets count half: presses give triceps 0.5 a set, rows and pulldowns give biceps 0.5. Each set counts once per muscle.', source: 'Pelland et al. 2025, Sports Med (fractional counting); Mannarino et al. 2021' },
+  { claim: 'Keeping muscle takes about a third of the volume that built it, so your legs (maintenance) have low floors on purpose.', source: 'Bickel, Cross & Bamman 2011, Med Sci Sports Exerc; Spiering et al. 2021, J Strength Cond Res' },
+  { claim: 'Per session, returns flatten past ~10-11 sets for one muscle, so sessions cap at 10 (big) / 8 (small) and spread the rest. Training a muscle 2x/week beats 1x unless volume is equal; small muscles can go on back-to-back days at moderate volume.', source: 'Remmert, Pelland et al. 2025 (preprint); Schoenfeld et al. 2016, Sports Med; Schoenfeld, Grgic & Krieger 2019' },
+  { claim: 'Side and rear delts are enforced separately: pressing works the front delts, not the width-building side delts. Back counts lats and upper back only (traps and lower back are tracked but don\'t count).', source: 'Weekly-volume audit (docs/research/weekly-volume-audit.md)' },
 ];
 const DEF_VOLUME = { mode: 'extend', maxMinutes: 90 };
 const DEF = { cardioMin: 120, hardPerWeek: 1, adherence: 0.85, defaultMinutes: 45, style: 'hypertrophy', proteinGPerLb: 1.0, fatPct: 25, goalBodyFatPct: 12, goal: 'recomp' };
@@ -70,7 +81,7 @@ const toDate = d => (d instanceof Date ? d : isDs(d) ? parseDs(d) : d ? new Date
 const prefCache = new WeakMap();
 // Light, cached cardio view for hot paths (planner): { minPerWeek, modalities, hardSessionsPerWeek, source }.
 export function cardioPrefs(profile) {
-  if (!profile || typeof profile !== 'object') return { minPerWeek: DEF.cardioMin, modalities: [], hardSessionsPerWeek: DEF.hardPerWeek, source: 'default' };
+  if (!profile || typeof profile !== 'object') return { minPerWeek: DEF.cardioMin, modalities: [], hardSessionsPerWeek: DEF.hardPerWeek, style: 'longer', minSession: MIN_SESSION_DEFAULT.longer, source: 'default' };
   const hit = prefCache.get(profile);
   if (hit && hit.k === profile.cardioTargetMin && hit.c === profile.cardio) return hit.v;
   const has = fin(profile.cardioTargetMin);
@@ -79,8 +90,11 @@ export function cardioPrefs(profile) {
     minPerWeek: has ? clamp(Math.round(num(profile.cardioTargetMin)), LIMITS.cardioMin) : DEF.cardioMin,
     modalities: Array.isArray(c.modalities) ? c.modalities.filter(m => CARDIO[m]) : [],
     hardSessionsPerWeek: fin(c.hardPerWeek) ? clamp(Math.round(num(c.hardPerWeek)), LIMITS.hardPerWeek) : DEF.hardPerWeek,
+    style: CARDIO_STYLES.includes(c.style) ? c.style : 'longer',
+    minSession: 0,
     source: has ? 'profile' : 'default',
   };
+  v.minSession = fin(c.minSession) ? clamp(Math.round(num(c.minSession)), [5, 90]) : MIN_SESSION_DEFAULT[v.style];
   prefCache.set(profile, { k: profile.cardioTargetMin, c: profile.cardio, v });
   return v;
 }
@@ -125,7 +139,7 @@ export function cardioCapacity(profile, schedule = profile?.schedule) {
       // add-on), the same estimate as a class slot; elsewhere the planner can make it all cardio.
       else if (d.kind === 'flex') { c = locFor(profile, d.location).hasClasses ? classCap(d.minutes) : d.minutes; flex += c; }
       else if (d.kind === 'class') { c = classCap(d.minutes); classes += c; }
-      else if (d.kind === 'lift' && canFinish(profile, d.location)) { c = finisherCap(d.minutes); finishers += c; }
+      else if (d.kind === 'lift' && canFinish(profile, d.location)) { const f = finisherCap(d.minutes); c = f >= cardioPrefs(profile).minSession ? f : 0; finishers += c; }
     }
     byDay[k] = c;
   }
@@ -154,7 +168,10 @@ export function weekCardioCapacity(profile, sessions = [], { now = new Date(), w
     if (plan) {
       const cm = plannedCardioMin(plan);
       const kind = plan.plan?.kind || ((plan.blocks || []).some(b => b.kind === 'lift') ? 'lift' : (plan.blocks || []).some(b => b.kind === 'class') ? 'class' : 'cardio');
-      total += doneMin + (kind === 'lift' ? Math.max(cm, finisherCap(plan.minutes)) : kind === 'cardio' ? Math.max(cm, Number(plan.minutes) || 0) : cm);
+      const fc = finisherCap(plan.minutes);
+      // a topped-up lift day's time belongs to the weekly set minimums: only its planned cardio counts
+      const liftCap = plan.plan?.topUp ? cm : Math.max(cm, fc >= cardioPrefs(profile).minSession ? fc : 0);
+      total += doneMin + (kind === 'lift' ? liftCap : kind === 'cardio' ? Math.max(cm, Number(plan.minutes) || 0) : cm);
       continue;
     }
     total += forcedRest ? doneMin : doneMin + (byDay[DOW[parseDs(date).getDay()]] || 0);
@@ -197,11 +214,12 @@ export function suggestFinisher(profile, sessions = [], { now = new Date(), minu
   if (!w.target) return null;
   const lacking = w.target - w.done - (w.planned - w.plannedToday);
   if (lacking < 5) return null;
+  const minS = cardioPrefs(profile).minSession;
   const cap = Math.max(10, finisherCap(minutes) || (Number(minutes) >= 25 ? 10 : 0));
-  if (!cap) return null;
+  if (!cap || cap < minS) return null;   // e.g. 'longer' style: no finishers shorter than minSession
   // Spread what's missing over the days left, but never less than 10 or more than the cap.
   const share = w.daysLeft > 1 ? Math.max(lacking / Math.max(1, Math.ceil(w.daysLeft / 2)), 10) : lacking;
-  const m = Math.min(cap, Math.max(10, round5(Math.min(lacking, share))));
+  const m = Math.min(cap, Math.max(10, minS, round5(Math.min(lacking, share))));
   return { minutes: m, lacking: Math.round(lacking), week: w,
     text: `Cardio ${w.done}${w.planned - w.plannedToday ? ` + ${w.planned - w.plannedToday} planned` : ''}/${w.target} min this week: a ${m}′ easy finisher today keeps you on track` };
 }
@@ -247,14 +265,16 @@ export function makeRoomProposal(profile, target = cardioPrefs(profile).minPerWe
   extendCardio();
   for (const d of DAYS) { if (target - cap <= tol) break; const x = cur[d]; if (x.kind === 'flex' && x.minutes >= 20) tryMove(d, { ...x, kind: 'cardio' }, ''); }
   extendCardio();
+  const cp = cardioPrefs(profile);
   const rests = DAYS.filter(d => cur[d].kind === 'rest');
   for (const d of [...rests].reverse()) {
     if (target - cap <= tol) break;
-    const m = rests.length <= 1 ? 20 : Math.min(45, Math.max(20, round5(target - cap)));
+    const lo = cp.style === 'finishers' ? 20 : Math.max(20, cp.minSession);
+    const m = rests.length <= 1 ? lo : Math.min(60, Math.max(lo, round5(target - cap)));
     tryMove(d, { kind: 'cardio', minutes: CHIPS.find(c => c >= m) || m, location: cur[d].location || 'home' }, '');
   }
   for (const d of DAYS) {
-    if (target - cap <= tol) break;
+    if (target - cap <= tol || cp.style !== 'finishers') break;   // 'longer'/'balanced': no finisher-only fixes
     const x = cur[d]; if (x.kind !== 'lift') continue;
     const n = nextChip(x.minutes); if (!n || n > 75) continue;
     tryMove(d, { ...x, minutes: n }, '');
@@ -277,7 +297,8 @@ export function makeRoomProposal(profile, target = cardioPrefs(profile).minPerWe
 // ---------------------------------------------------------------- weekly minimums
 export function volumePolicyOf(profile) {
   const v = profile?.volumePolicy && typeof profile.volumePolicy === 'object' ? profile.volumePolicy : {};
-  return { mode: VOLUME_MODES.includes(v.mode) ? v.mode : DEF_VOLUME.mode, maxMinutes: fin(v.maxMinutes) ? clamp(Math.round(num(v.maxMinutes)), [30, 180]) : DEF_VOLUME.maxMinutes };
+  return { mode: VOLUME_MODES.includes(v.mode) ? v.mode : DEF_VOLUME.mode, maxMinutes: fin(v.maxMinutes) ? clamp(Math.round(num(v.maxMinutes)), [30, 180]) : DEF_VOLUME.maxMinutes,
+    fillTargets: v.fillTargets === 'extend' ? 'extend' : 'time' };
 }
 const minCache = new WeakMap();
 // Resolved weekly set targets per muscle group ({min, max}), as the planner uses them.
@@ -292,6 +313,35 @@ export function weeklyMinimums(profile) {
   minCache.set(key, { sig, v });
   return v;
 }
+// Per enforcement unit (VOLUME_UNITS): min = evidence floor (fixed), target = base target × slider +
+// sculpt extras (clamped to [min, max]), max = cap. The ONE priority mechanism: sliders and sculpt
+// goals move only the target. → { [unit]: { min, target, max, base, slider, extra, name, group, tier } }
+export function unitTargets(profile) {
+  const key = profile && typeof profile === 'object' ? profile : unitCache;
+  const sig = JSON.stringify([profile?.groupPriority, profile?.sculptGoals]);
+  const hit = unitCache.get(key);
+  if (hit && hit.sig === sig) return hit.v;
+  const extraR = {};
+  for (const id of Array.isArray(profile?.sculptGoals) ? profile.sculptGoals : []) {
+    const g = SCULPT_GOALS[id]; if (!g || !(g.extraWeeklySets > 0)) continue;
+    const es = Object.entries(g.regions || {}).filter(([r, w]) => REGIONS[r] && w > 0);
+    const tot = es.reduce((a, [, w]) => a + w, 0); if (!tot) continue;
+    for (const [r, w] of es) extraR[r] = (extraR[r] || 0) + g.extraWeeklySets * w / tot;
+  }
+  const v = {};
+  for (const id of UNIT_ORDER) {
+    const u = VOLUME_UNITS[id];
+    const p = profile?.groupPriority?.[u.group];
+    const slider = typeof p === 'number' && p > 0 ? p : 1;
+    const extra = u.target > 0 ? Math.round(u.regions.reduce((a, r) => a + (extraR[r] || 0), 0) * 10) / 10 : 0;
+    const target = Math.round(Math.min(u.max, Math.max(u.min, u.target * slider + extra)) * 10) / 10;
+    v[id] = { min: u.min, target, max: u.max, base: u.target, slider, extra, name: u.name, group: u.group, tier: u.tier, big: u.big, sub: u.sub };
+  }
+  unitCache.set(key, { sig, v });
+  return v;
+}
+const unitCache = new WeakMap();
+
 // Ways to fit the weekly minimums when the cap/availability can't: raise the cap, add a lift day
 // (flex/rest → lift), lengthen short lift days. → [{ id, label, patch }] (patch for setTargets).
 export function volumeRoomOptions(profile) {
@@ -353,7 +403,7 @@ export function resolveTargets(profile = {}, { now = new Date(), sessions } = {}
       groupPriority: { ...(profile.groupPriority || {}) },
       volumePolicy: volumePolicyOf(profile),
     },
-    minimums: { groups: weeklyMinimums(profile), evidence: MINIMUMS_EVIDENCE },
+    minimums: { groups: weeklyMinimums(profile), units: unitTargets(profile), evidence: MINIMUMS_EVIDENCE },
     nutrition: nutritionOf(profile),
     adherence: fin(profile.adherence) ? clamp(num(profile.adherence), LIMITS.adherence) : DEF.adherence,
     stack: { active: stack, count: stack.length },
@@ -399,10 +449,12 @@ export function applyTargetChange(profile, patch = {}) {
   patch = patch || {};
   const c = patch.cardio || {};
   if ('minPerWeek' in c) { const v = vNum(c.minPerWeek, LIMITS.cardioMin, { step: 5 }); if (v !== undefined) p.cardioTargetMin = v; }
-  if ('modalities' in c || 'hardSessionsPerWeek' in c) {
+  if ('modalities' in c || 'hardSessionsPerWeek' in c || 'style' in c || 'minSession' in c) {
     const cur = p.cardio && typeof p.cardio === 'object' ? { ...p.cardio } : {};
     if (Array.isArray(c.modalities)) cur.modalities = [...new Set(c.modalities.filter(m => CARDIO[m]))];
     if ('hardSessionsPerWeek' in c) { const v = vNum(c.hardSessionsPerWeek, LIMITS.hardPerWeek); if (v !== undefined) cur.hardPerWeek = v; }
+    if ('style' in c && CARDIO_STYLES.includes(c.style)) { if (cur.style !== c.style && !('minSession' in c)) delete cur.minSession; cur.style = c.style; }
+    if ('minSession' in c) { if (c.minSession === null) delete cur.minSession; else { const v = vNum(c.minSession, [5, 90], { step: 5 }); if (v !== undefined) cur.minSession = v; } }
     p.cardio = cur;
   }
   const t = patch.training || {};
@@ -422,6 +474,7 @@ export function applyTargetChange(profile, patch = {}) {
     const cur = { ...volumePolicyOf(p) };
     if (VOLUME_MODES.includes(t.volumePolicy.mode)) cur.mode = t.volumePolicy.mode;
     if ('maxMinutes' in t.volumePolicy) { const v = vNum(t.volumePolicy.maxMinutes, [30, 180], { step: 5 }); if (v !== undefined) cur.maxMinutes = v; }
+    if (['time', 'extend'].includes(t.volumePolicy.fillTargets)) cur.fillTargets = t.volumePolicy.fillTargets;
     p.volumePolicy = cur;
   }
   if (t.groupPriority && typeof t.groupPriority === 'object') {
@@ -458,7 +511,7 @@ export function applyTargetChange(profile, patch = {}) {
 // Does the change affect what the planner would generate?
 export function needsReplan(before, after) {
   const a = resolveTargets(before), b = resolveTargets(after);
-  const k = t => JSON.stringify([t.cardio.minPerWeek, t.cardio.modalities, t.cardio.hardSessionsPerWeek, t.training.schedule, t.training.style,
+  const k = t => JSON.stringify([t.cardio.minPerWeek, t.cardio.modalities, t.cardio.hardSessionsPerWeek, t.cardio.style, t.cardio.minSession, t.training.schedule, t.training.style,
     t.training.defaultMinutes, t.training.groupPriority, t.training.volumePolicy, t.goals.sculptGoals]);
   return k(a) !== k(b);
 }
@@ -468,13 +521,16 @@ export function describeChange(before, after) {
   const a = resolveTargets(before), b = resolveTargets(after), out = [];
   if (a.cardio.minPerWeek !== b.cardio.minPerWeek) out.push(`${b.cardio.minPerWeek} min/wk cardio`);
   if (a.cardio.hardSessionsPerWeek !== b.cardio.hardSessionsPerWeek) out.push(`${b.cardio.hardSessionsPerWeek} hard cardio/wk`);
+  if (a.cardio.style !== b.cardio.style) out.push(`cardio as ${CARDIO_STYLE_NAMES[b.cardio.style].toLowerCase()}`);
+  else if (a.cardio.minSession !== b.cardio.minSession) out.push(`cardio sessions ≥${b.cardio.minSession}′`);
   if (JSON.stringify(a.cardio.modalities) !== JSON.stringify(b.cardio.modalities)) out.push(b.cardio.modalities.length ? `cardio: ${b.cardio.modalities.map(m => CARDIO[m]?.name || m).join(', ')}` : 'any cardio type');
   if (JSON.stringify(a.training.schedule) !== JSON.stringify(b.training.schedule)) out.push('your availability');
   if (a.training.defaultMinutes !== b.training.defaultMinutes) out.push(`${b.training.defaultMinutes}-min default sessions`);
   if (a.training.style !== b.training.style) out.push(`${b.training.style} style`);
   if (JSON.stringify(a.training.groupPriority) !== JSON.stringify(b.training.groupPriority)) out.push('muscle priorities');
   const va = a.training.volumePolicy, vb = b.training.volumePolicy;
-  if (va.mode !== vb.mode || va.maxMinutes !== vb.maxMinutes) out.push(vb.mode === 'fixed' ? 'fixed workout lengths' : `${vb.mode === 'ask' ? 'ask before lengthening' : 'lengthen workouts'} up to ${vb.maxMinutes}′`);
+  if (va.fillTargets !== vb.fillTargets) out.push(vb.fillTargets === 'extend' ? 'lengthen workouts to reach targets' : 'targets only in spare time');
+  else if (va.mode !== vb.mode || va.maxMinutes !== vb.maxMinutes) out.push(vb.mode === 'fixed' ? 'fixed workout lengths' : `${vb.mode === 'ask' ? 'ask before lengthening' : 'lengthen workouts'} up to ${vb.maxMinutes}′`);
   if (JSON.stringify(a.nutrition) !== JSON.stringify(b.nutrition)) out.push('nutrition targets');
   if (a.adherence !== b.adherence) out.push(`${Math.round(b.adherence * 100)}% adherence`);
   if (a.goals.goal !== b.goals.goal) out.push(`goal: ${b.goals.goal.replace('_', ' ')}`);
