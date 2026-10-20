@@ -22,7 +22,7 @@
 //   card; women see waist:hip (WHO 0.85) in the key numbers and table instead of the V-taper; energy availability
 //   below 30 kcal/kg lean mass is flagged on the end card.
 import { esc } from './components.js';
-import { BODY } from '../engine/sex.js';
+import { BODY, sexOf } from '../engine/sex.js';
 import { ds, fmtShort, parseDs, addDays, daysBetween } from '../util.js';
 import * as BC from '../engine/bodycomp.js';
 import * as PJ from '../engine/projection.js';
@@ -842,7 +842,7 @@ function outputs(D, o) {
   return `<div class="card bd-endcard"><div class="row between"><div class="label">In ${esc(horizonText(weeks))} · ${esc(fmtShort(sN.date))}${sN.date.slice(0, 4) !== s0.date.slice(0, 4) ? ' ' + sN.date.slice(0, 4) : ''}</div><span class="badge ${confCls}">${conf} confidence</span></div>${deltas}
       ${waterNote(S) ? `<p class="tiny muted" style="margin-top:10px">💧 ${waterNote(S)}</p>` : ''}
       ${res.bodyFatAssumed ? '<p class="tiny" style="color:var(--warn);margin-top:10px">Body fat was assumed (no height/neck/waist yet), so these numbers are very rough.</p>' : ''}
-      ${res.energyAvailability?.low ? `<p class="tiny" style="color:var(--warn);margin-top:10px" data-ea-warn>Energy availability drops to ≈${f1(res.energyAvailability.min)} kcal per kg of lean mass a day (food minus exercise). Under ~30 the hormones that run your cycle are disrupted (Loucks &amp; Thuma 2003; IOC REDs 2023): eat more around training or ease the deficit.</p>` : ''}
+      ${res.energyAvailability?.low ? `<p class="tiny" style="color:var(--warn);margin-top:10px" data-ea-warn>Energy availability drops to ≈${f1(res.energyAvailability.min)} kcal per kg of lean mass a day (food minus exercise). ${sexOf(D.b?.sex) === 'female' ? 'Under ~30 the hormones that run your cycle are disrupted (Loucks &amp; Thuma 2003; IOC REDs 2023)' : 'That is below ~30, where reproductive and metabolic hormones (testosterone included) start to suffer. The ~30 threshold comes from Loucks &amp; Thuma 2003 in women; no equivalent number has been established in men, so treat it as a flag, not a line (IOC REDs 2023)'}: eat more around training or ease the deficit.</p>` : ''}
       ${res.caution === 'postpartum' ? '<p class="tiny" style="color:var(--warn);margin-top:10px">Postpartum: this projection is very rough. Check with your provider before a deficit or hard training.</p>' : ''}</div>
     ${wl ? weightLossCard(wl, D) : ''}
     ${labCard(D, o)}
