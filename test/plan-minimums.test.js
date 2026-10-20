@@ -191,7 +191,13 @@ test('slider sweep: planned sets follow each slider 0.5 → 1 → 1.5 (monotonic
     const runs = [0.5, 1, 1.5].map(v => { const p = prof({ groupPriority: { [g]: v } }); const out = week(p); return { sum: summary(out, p), ex: explainWeek(out, { weekStart: parseDs(MON), profile: p, now: NOW }) }; });
     for (const u of units) {
       const t = runs.map(r => r.sum.units[u].total);
-      assert.ok(t[1] >= t[0] - 0.25 && t[2] >= t[1] - 0.25, `${g}/${u}: planned ${t.join(' → ')} is not monotonic`);
+      // monotonic, except when the lower setting sat above its target for a recorded reason (e.g. back
+      // kept up by pull ≥ push at slider 0.5) and the higher setting reaches its own target
+      for (let i = 0; i < 2; i++) {
+        if (t[i + 1] >= t[i] - 0.25) continue;
+        const lo = runs[i].sum.units[u], hi = runs[i + 1].sum.units[u];
+        assert.ok(lo.overWhy && hi.total >= hi.target - 0.25, `${g}/${u}: planned ${t.join(' → ')} is not monotonic`);
+      }
       assert.ok(runs[2].sum.units[u].target >= runs[0].sum.units[u].target);
       runs.forEach((r, i) => {
         const x = r.sum.units[u];
@@ -200,6 +206,29 @@ test('slider sweep: planned sets follow each slider 0.5 → 1 → 1.5 (monotonic
         assert.equal(e.target, x.target); assert.equal(e.planned, x.total);
         assert.ok(Math.abs(e.target - Math.min(e.max, Math.max(e.min, e.base * e.slider + e.extra))) < 0.06, `${u}: target = base × slider + extra (capped)`);
       });
+    }
+  }
+});
+
+// Overshoot: "track the target" from above. Across 6 weeks × 3 seeds of the default profile, no counted
+// muscle sits more than 1.5 sets over its target unless the summary records why (pull ≥ push, shared exercises).
+test('target band: no counted muscle more than 1.5 over target across 18 weeks unless explained', async () => {
+  const { explainWeek } = await import('../js/engine/planner.js');
+  const { addDays } = await import('../js/util.js');
+  for (const seed of [1, 2, 3]) {
+    const p = prof();
+    const out = planRange({ from: MON, days: 42, profile: p, sessions: [], now: NOW, seed });
+    for (let w = 0; w < 6; w++) {
+      const ws = addDays(parseDs(MON), w * 7);
+      const sum = weekPlanSummary(out, { weekStart: ws, profile: p, now: NOW });
+      const ex = explainWeek(out, { weekStart: ws, profile: p, now: NOW });
+      for (const [u, x] of Object.entries(sum.units)) {
+        if (!(x.target > 0)) { assert.ok(x.total <= x.max + 0.25, `${u} tracked but over max`); continue; }
+        if (x.total > x.target + 1.5) {
+          assert.ok(x.overWhy, `seed ${seed} week ${w + 1}: ${u} ${x.total}/${x.target} over target with no reason`);
+          assert.match(ex[u].reason, /^above target: /);
+        }
+      }
     }
   }
 });

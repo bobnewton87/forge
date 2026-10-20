@@ -52,7 +52,10 @@ test('time-saver weeks fit more sets and need fewer extensions to reach the week
   }
   assert.ok(eTot <= hTot * 0.7, `extensions ${eTot}′ vs ${hTot}′`);
   const sets = out => out.reduce((n, s) => n + (s.blocks || []).filter(b => b.kind === 'lift').reduce((a, b) => a + b.target.sets, 0), 0);
-  assert.ok(sets(week(prof({ defaultStyle: 'efficient' }))) > sets(week(prof())), 'more sets in the same week');
+  // INTEGRATOR (target band): with lengthening on, both styles plan ≈ the targets, so compare at fixed
+  // slot times (no lengthening), where Time-saver fits more sets into the same minutes.
+  const fixed = { volumePolicy: { mode: 'fixed', maxMinutes: 90 } };
+  assert.ok(sets(week(prof({ defaultStyle: 'efficient', ...fixed }))) > sets(week(prof(fixed))), 'more sets in the same week');
 });
 
 test('targets: custom styles validated + clamped, listed with the built-ins, references cleaned', () => {
