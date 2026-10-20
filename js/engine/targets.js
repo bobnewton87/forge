@@ -47,6 +47,11 @@ import { GROUPS, REGIONS, VOLUME_UNITS, UNIT_ORDER } from '../data/muscles.js';
 import { SCULPT_GOALS } from '../data/sculpt.js';
 import { ds, parseDs, addDays, weekStart } from '../util.js';
 import { BUILTIN_STYLES, STYLE_LIMITS, normalizeCustomStyle, styleOptions, isStyleId, resolveStyle } from './generator.js';
+import { sexOf, BODY } from './sex.js';
+// CONTRACT-NOTE (§20 Female mode): goals.goalBodyFatPct defaults to 22 for women (12 for men) and is clamped to the
+//   female limits [14, 35] (men keep LIMITS.goalBodyFatPct [5, 30]); goalBodyFatLimits(profile) exposes them for UI steppers.
+//   Weekly set targets are NOT sex-specific: no study supports different targets for women (Roberts 2020: same relative
+//   hypertrophy; Nuzzo 2024: little sex influence on reps at a given %1RM; women are, if anything, less fatigable, Hunter 2014).
 
 export const LIMITS = {
   cardioMin: [0, 900], cardioStep: 15, hardPerWeek: [0, 4], defaultMinutes: [10, 180],
@@ -75,6 +80,8 @@ export const MINIMUMS_EVIDENCE = [
 ];
 const DEF_VOLUME = { mode: 'extend', maxMinutes: 90 };
 const DEF = { cardioMin: 120, hardPerWeek: 1, adherence: 0.85, defaultMinutes: 45, style: 'hypertrophy', proteinGPerLb: 1.0, fatPct: 25, goalBodyFatPct: 12, goal: 'recomp' };
+export function goalBodyFatLimits(profile) { return sexOf(profile) === 'female' ? BODY.female.goalBfLimits : LIMITS.goalBodyFatPct; }
+const goalBfDefault = profile => (sexOf(profile) === 'female' ? BODY.female.goalBodyFat : DEF.goalBodyFatPct);
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const FINISHER_MODS = ['bike', 'walk_incline', 'elliptical', 'row', 'treadmill', 'run', 'walk', 'spin', 'stairmaster'];
@@ -448,7 +455,7 @@ export function resolveTargets(profile = {}, { now = new Date(), sessions } = {}
     goals: {
       goal: GOALS.includes(profile.goal) ? profile.goal : DEF.goal,
       sculptGoals: Array.isArray(profile.sculptGoals) ? [...profile.sculptGoals] : [],
-      goalBodyFatPct: Number.isFinite(goalBf) && goalBf > 0 ? clamp(goalBf, LIMITS.goalBodyFatPct) : DEF.goalBodyFatPct,
+      goalBodyFatPct: Number.isFinite(goalBf) && goalBf > 0 ? clamp(goalBf, goalBodyFatLimits(profile)) : goalBfDefault(profile),
     },
     capacity: { cardio: cap.cardio, total: cap.total, finishers: cap.finishers, cardioDays: cap.cardioDays, flex: cap.flex, classes: cap.classes },
     warnings: [],
@@ -561,7 +568,7 @@ export function applyTargetChange(profile, patch = {}) {
   const g = patch.goals || {};
   if ('goal' in g && GOALS.includes(g.goal)) p.goal = g.goal;
   if (Array.isArray(g.sculptGoals)) p.sculptGoals = [...new Set(g.sculptGoals.filter(x => typeof x === 'string'))];
-  if ('goalBodyFatPct' in g) { const v = vNum(g.goalBodyFatPct, LIMITS.goalBodyFatPct, { round: 1 }); if (v !== undefined) p.body = { ...(p.body || {}), goalBodyFat: v }; }
+  if ('goalBodyFatPct' in g) { const v = vNum(g.goalBodyFatPct, goalBodyFatLimits(p), { round: 1 }); if (v !== undefined) p.body = { ...(p.body || {}), goalBodyFat: v }; }
   return p;
 }
 

@@ -744,3 +744,62 @@ bodyGeometry({ ...girths, lengths: { upperArmL, upperArmR, forearmL, forearmR, t
 // Landmark-to-joint-centre conversions are documented (surface landmarks sit slightly off the joint centres).
 // Standing height stays fixed (it's measured), so leg-length differences shift the pelvis tilt/hip heights per side within limits.
 ```
+
+## 20. Female mode (2026-10-20)
+Bob (shipping to the App Store): "female metabolic and biology modeling and info. I just want this to be scientific."
+Every female-specific number comes from a study, cited in code comments and in `docs/research/female-physiology.md`.
+Male results are unchanged (male constants are the engines' originals; verified by a golden comparison of male outputs).
+
+Ownership: `js/engine/sex.js` (new), the female branches of `js/engine/{bodycomp,projection,metabolic,nutrition,targets}.js`,
+`js/data/{supplements,sculpt}.js`, `js/ui/female.js` (new) and targeted edits to `js/ui/{measure,settings,supplements,nutrition,projection,body}.js`,
+`test/female.test.js`, e2e test `X1` → **FEMALE**. The female 3D body (`anthro.js`, `body3d*`, `silhouette.js`, mesh assets) belongs to FEMALE-3D.
+
+**Profile** (`profile.body`, all optional; `store.defaultProfile({ sex })`):
+```js
+sex: 'male' | 'female'
+menopause: null | 'pre' | 'peri' | 'post'            // null → inferred from age (<45 pre, 45–54 peri, ≥55 post), flagged as assumed
+contraception: null | 'none' | 'combined' | 'progestin' | 'hormonal_iud' | 'copper_iud' | 'other'
+hormoneTherapy: null | 'none' | 'estrogen' | 'estrogen_progestogen'   // menopausal hormone therapy
+pregnancy: null | 'none' | 'pregnant' | 'postpartum' | 'breastfeeding'
+```
+No cycle-phase field: the evidence doesn't support changing training by phase (McNulty 2020; Colenso-Semple 2023).
+`defaultProfile({ sex: 'female' })` starts with `FEMALE_DEFAULT_SCULPT_GOALS`; `migrate()` gives them only to a female profile
+that has no `sculptGoals` key. Existing goals are never changed silently: switching to female offers the set (Measure/Settings).
+
+**One helper module** (`js/engine/sex.js`, pure):
+```js
+sexOf(profile | body | baseline | string) → 'male' | 'female'      // default male
+femaleStatus(profile, { age }) → { female, menopause, menopauseAssumed, contraception, hormoneTherapy, pregnancy,
+                                   cycling, combinedHormonal, mht, pregnant, postpartum, breastfeeding }
+BODY.{male,female} → { defaultBf, essentialBf, defendedBf, ffmiCeiling, ffmiCeilSd, goalBodyFat, goalBfLimits, ffmiScoreLo, ffmiScoreHi, smmFracOfLean }
+FAT_COEF, SMM_SHARE_RAW_{MALE,FEMALE}, FEMALE_RATE_REF_LEAN_FRAC (0.8)
+bodyFatCategory(bf, { sex, age }), ffmiBand(ffmi, sex), averageTotalTFemale(age, { contraception }), FEMALE_LABS, FEMALE_T_RANGE
+energyAvailability({ intakeKcal, exerciseKcal, leanLb }) → kcal/kg FFM/day; EA_LOW 30, EA_ADEQUATE 45; ironRda(); FEMALE_MODE_INFO
+```
+
+**Engine behaviour for women:**
+- bodycomp: female Navy/RFM/Deurenberg/Mifflin (already present); `baseline` adds `bodyFatCategory` (Gallagher 2000), `femaleStatus`,
+  female missing-info wording; `ratios.waistToHip` for both sexes.
+- projection: lean-rate basis = lean ÷ 0.8 (same relative rate: Roberts 2020, Refalo 2025); female muscle shares (Janssen 2000,
+  `FEMALE_MUSCLE_SHARE`); skeletal-muscle fraction 0.51; natural FFMI ceiling 22 ± 1.5 (+ metabolic `ffmiCeilingDelta`); defended 13 %,
+  floor 10 %; goal default 22 %; female tape coefficients; muscle scores on a female FFMI scale (11.5–20.5); female milestones (abs
+  ~20/~16 rule of thumb, `whr_085`, `wht_05`, `ffmi_185`, `ffmi_20`, `near_ceiling`; no V-taper, no race weight unless she sets both
+  numbers); female assumption text. Extra result fields (women only): `energyAvailability:{ start, min, low, threshold }`,
+  `caution:'postpartum'`; pregnancy returns the empty result with `paused:'pregnancy'`. `energy.exerciseKcal` (both sexes, additive).
+- metabolic: `averageTotalT(age, 'female', { contraception })`; `testosteroneEffect(T, { sex:'female', baselineT, weeksOn })` = Huang 2014
+  slope (+0.6 kg lean per +100 ng/dL, 24 wk) with trans-men checks (Klaver 2016), flat above ~600, plateau past 1,555, fat only above
+  ~230; natural female T never limits the ceiling; `testosteroneFromDose(mg, 'female')`; endogenous-T items and male HPG therapies
+  model nothing for women (`model.femaleNote`); female hormone-panel notes; info factors for contraception, MHT, menopause stage,
+  pregnancy; low-energy-availability warning in a deficit; `modifiersAt()` returns `ffmiCeilingDelta` (women only); `levels.sex`.
+- supplements data: `itemFor(item, sex)` merges per-item `female` overrides (creatine 1.024 / 1.0 lb water; testosterone text, dose
+  mapping and level risks; booster/therapy notes).
+- nutrition: `dailyTargets(profile, { …, leanLb, exerciseKcal })` → `energyAvailability` + warning < 30; pregnancy never plans a
+  deficit; postpartum/breastfeeding caution; `female:{ status, ironMgPerDay }`. `tipsFor(profile)`, `supplementsFor(profile)`.
+  Protein targets unchanged (Morton 2018: no sex effect).
+- targets: women's goal body fat defaults to 22 %, clamped to [14, 35] (`goalBodyFatLimits(profile)`); weekly set targets are not
+  sex-specific (no study supports different targets).
+- sculpt: new goal `glute_shelf`; `goalFor(goal, sex)` (female wording); `FEMALE_DEFAULT_SCULPT_GOALS`, `defaultSculptGoals(sex)`.
+
+**UI:** sex selector + female fields + "what changes" sheet (`ui/female.js`) on Measure's body profile and Settings → Profile. Women see
+female FFMI bands, the Gallagher range, waist:hip instead of the golden ratio, female lab ranges and testosterone chart, female
+nutrition tips (iron, energy availability) and no Bob-specific Adderall prompts. 3D/silhouette options carry `sex` for the renderer.

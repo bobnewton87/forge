@@ -5,8 +5,12 @@
 //   useStack:false (and supplements:[] as a belt-and-braces fallback for engines without that option). If the
 //   two runs are identical while the stack clearly changes the modifiers, it says the engine isn't using the stack yet.
 import { esc } from './components.js';
-import { SUPPLEMENTS, NOT_MODELED, CATEGORIES, EVIDENCE, isUnapproved, isModeled } from '../data/supplements.js';
-import { modifiersAt, testosteroneEffect, averageTotalT, resolveDose, stackAt, T_MODEL } from '../engine/metabolic.js';
+import { SUPPLEMENTS, NOT_MODELED, CATEGORIES, EVIDENCE, isUnapproved, isModeled, itemFor } from '../data/supplements.js';
+import { modifiersAt, testosteroneEffect, averageTotalT, resolveDose, stackAt, T_MODEL, T_MODEL_F } from '../engine/metabolic.js';
+import { sexOf, femaleStatus, FEMALE_LABS, FEMALE_T_RANGE } from '../engine/sex.js';
+// CONTRACT-NOTE (§20 Female mode): for women the catalogue reads through itemFor(item, 'female'), labs show female
+//   reference ranges, the testosterone chart is on a female scale (Huang 2014 + trans-men fit, 24-week lean change),
+//   placeholders use female population averages, and the "You take Adderall" hint (Bob-specific) is not shown.
 import * as BC from '../engine/bodycomp.js';
 import * as PJ from '../engine/projection.js';
 import { ds, fmtShort, daysBetween } from '../util.js';
@@ -61,7 +65,8 @@ export function render(ctx) {
   const p = I.profile;
   const list = Array.isArray(p.supplements) ? p.supplements : [];
   const { mods, off, activeIds } = computeMods(I);
-  const hasAdderall = list.some(e => e && e.id === 'adderall' && e.active !== false && !e.end);
+  const sex = sexOf(p);
+  const hasAdderall = sex === 'female' || list.some(e => e && e.id === 'adderall' && e.active !== false && !e.end);
 
   return `<div class="page-head"><h1>Stack & metabolism</h1><p class="sub">Supplements, therapies and lab values, modeled from the published studies.</p></div>
   <div class="card sp-note"><div class="sp-note-ic">ⓘ</div><div class="small">
@@ -70,7 +75,7 @@ export function render(ctx) {
   ${hasAdderall ? '' : `<div class="card tight sp-hint row"><div class="grow small">You take Adderall. Add it so its appetite effect shows up in projections.</div><button class="btn btn-sm" data-quickadd="adderall">Add</button></div>`}
 
   <div class="section-title">Your stack <button class="link" data-jump="sp-add">+ Add</button></div>
-  ${stackList(list, mods, I.today)}
+  ${stackList(list, mods, I.today, sex)}
 
   <div class="section-title">What this does to your projection</div>
   <div id="sp-impact-wrap">${impactCard(I, mods, off, activeIds)}</div>
@@ -80,7 +85,7 @@ export function render(ctx) {
 
   <div class="section-title" id="sp-add">Add to stack</div>
   <div class="hscroll sp-cats">${CATEGORIES.map(c => `<button type="button" class="chip sm ${ui.cat === c.id ? 'active' : ''}" data-cat="${c.id}">${esc(c.icon)} ${esc(c.short || c.label)}</button>`).join('')}</div>
-  <div class="list mt">${Object.values(SUPPLEMENTS).filter(s => s.category === ui.cat).map(s => browseRow(s, activeIds.has(s.id))).join('')}</div>
+  <div class="list mt">${Object.values(SUPPLEMENTS).filter(s => s.category === ui.cat).map(s => browseRow(itemFor(s, sex), activeIds.has(s.id))).join('')}</div>
   <div class="sp-legend">${['strong', 'moderate', 'weak', 'refuted', 'preclinical', 'none'].map(k => `<div><span class="badge ${EV_CLS[k]}">${esc(EVIDENCE[k].short)}</span><span class="tiny muted">${esc({ strong: 'meta-analyses agree', moderate: 'trials support it', weak: 'small or inconsistent', refuted: 'trials found nothing', preclinical: 'animals only', none: 'no human data' }[k])}</span></div>`).join('')}</div>
 
   <div class="section-title">Not modeled</div>
@@ -91,8 +96,8 @@ export function render(ctx) {
   <p class="tiny muted center mt2">Not medical advice. Effects are averages from the cited trials; individual responses vary widely.</p>`;
 }
 
-function stackList(list, mods, today) {
-  const rows = list.map((e, i) => ({ e, i, s: SUPPLEMENTS[e?.id] })).filter(x => x.s);
+function stackList(list, mods, today, sex = 'male') {
+  const rows = list.map((e, i) => ({ e, i, s: itemFor(SUPPLEMENTS[e?.id], sex) })).filter(x => x.s);
   const current = rows.filter(x => x.e.active !== false && !(x.e.end && x.e.end <= today));
   const stopped = rows.filter(x => !current.includes(x));
   const contrib = new Map((mods?.contributions || []).filter(c => c.kind === 'stack').map(c => [c.id, c]));
@@ -157,7 +162,7 @@ function impactCard(I, mods, off, activeIds) {
   const stackItems = mods.contributions.filter(c => c.kind === 'stack');
   const metaItems = mods.contributions.filter(c => c.kind === 'metabolic');
   const tiles = [];
-  tiles.push(['Muscle-gain ceiling', mult(mods.leanCeilingMult), `${mult(off?.leanCeilingMult ?? 1)} without stack · vs average lifter`]);
+  tiles.push(['Muscle-gain ceiling', mult(mods.leanCeilingMult), `${mult(off?.leanCeilingMult ?? 1)} without stack · vs average ${mods.levels?.sex === 'female' ? 'female ' : ''}lifter`]);
   tiles.push(['Lean loss in a deficit', mult(mods.leanRetentionMult), mods.leanRetentionMult > 1.005 ? 'more muscle lost when cutting' : mods.leanRetentionMult < 0.995 ? 'better muscle protection' : 'baseline protection']);
   if (Math.abs(mods.leanDirectLbPerWeek) >= 0.005) tiles.push(['Lean without training', `${sgn(mods.leanDirectLbPerWeek, 2)} lb/wk`, 'right now; tapers over time']);
   if (Math.abs(mods.fatDirectLbPerWeek) >= 0.005) tiles.push(['Direct fat change', `${sgn(mods.fatDirectLbPerWeek, 2)} lb/wk`, 'independent of calories']);
@@ -187,9 +192,10 @@ function impactCard(I, mods, off, activeIds) {
   const tMoved = t && t.source !== 'natural' && Math.abs(t.level - t.natural) >= 5;
   const tShow = activeIds.has('trt') || tMoved || (I.profile.metabolic?.totalT != null);
   const tLevel = activeIds.has('trt') || tMoved ? t?.level : null;
-  const tBlock = tShow && t ? `<div class="sp-sub">Testosterone dose–response (Bhasin 1996/2001 fit)</div>
-    <div class="sp-chart" data-tchart='${esc(JSON.stringify({ natural: t.natural, level: tLevel, age: mods.levels?.age }))}'>${tChart({ natural: t.natural, level: tLevel, age: mods.levels?.age })}<div class="sp-readout small muted">Drag across the chart to read values.</div></div>
-    <p class="tiny muted">Lean change over 20 weeks without training, vs serum total T, relative to your natural ${Math.round(t.natural)} ng/dL${t.naturalSource === 'assumed' ? ' (assumed average)' : ''}. Flat past ~${T_MODEL.studiedMax.toLocaleString()}: beyond the studied range Forge doesn't extrapolate. </p>` : '';
+  const fem = mods.levels?.sex === 'female';
+  const tBlock = tShow && t ? `<div class="sp-sub">Testosterone dose–response (${fem ? 'Huang 2014 in women + trans-men cohorts' : 'Bhasin 1996/2001 fit'})</div>
+    <div class="sp-chart" data-tchart='${esc(JSON.stringify({ natural: t.natural, level: tLevel, age: mods.levels?.age, sex: fem ? 'female' : 'male' }))}'>${tChart({ natural: t.natural, level: tLevel, age: mods.levels?.age, sex: fem ? 'female' : 'male' })}<div class="sp-readout small muted">Drag across the chart to read values.</div></div>
+    <p class="tiny muted">${fem ? `Lean change over 24 weeks without training, vs serum total T, relative to your natural ${Math.round(t.natural)} ng/dL${t.naturalSource === 'assumed' ? ' (assumed average)' : ''}. Women's natural range is about ${FEMALE_T_RANGE[0]}–${FEMALE_T_RANGE[1]} ng/dL; the effect is held flat above ~${T_MODEL_F.leanPlateau} and Forge doesn't extrapolate past ~${T_MODEL_F.studiedMax.toLocaleString()}.` : `Lean change over 20 weeks without training, vs serum total T, relative to your natural ${Math.round(t.natural)} ng/dL${t.naturalSource === 'assumed' ? ' (assumed average)' : ''}. Flat past ~${T_MODEL.studiedMax.toLocaleString()}: beyond the studied range Forge doesn't extrapolate. `}</p>` : '';
 
   return `<div class="card sp-impact">
     <div class="sp-tiles">${tiles.map(([l, v, s]) => `<div class="stat"><div class="l">${esc(l)}</div><div class="v">${esc(v)}</div><div class="tiny muted">${esc(s)}</div></div>`).join('')}</div>
@@ -210,41 +216,49 @@ function impactCard(I, mods, off, activeIds) {
 
 // Testosterone curve: x = serum total T (log scale), y = 20-week direct lean change (lb) vs the natural level.
 const TC = { W: 340, H: 186, L: 34, R: 12, T: 24, B: 30, lo: 200, hi: 3000 };
-function tScale(natural, age) {
+// Female chart (§20): log axis from below the female range to beyond the trans-men levels.
+const TCF = { lo: 8, hi: 2000, ticks: [20, 60, 200, 600, 1500], max: () => T_MODEL_F.studiedMax };
+const tcOf = sex => (sex === 'female' ? { ...TC, lo: TCF.lo, hi: TCF.hi } : TC);
+function tScale(natural, age, sex = 'male') {
+  const C = tcOf(sex);
   const xs = [], N = 60;
-  for (let i = 0; i <= N; i++) xs.push(Math.exp(Math.log(TC.lo) + (Math.log(TC.hi) - Math.log(TC.lo)) * i / N));
-  const pts = xs.map(t => ({ t, y: testosteroneEffect(t, { baselineT: natural, weeksOn: 0, age }).lean20Lb }));
+  for (let i = 0; i <= N; i++) xs.push(Math.exp(Math.log(C.lo) + (Math.log(C.hi) - Math.log(C.lo)) * i / N));
+  const pts = xs.map(t => ({ t, y: testosteroneEffect(t, { baselineT: natural, weeksOn: 0, age, sex }).lean20Lb }));
   let yMin = Math.min(0, ...pts.map(p => p.y)), yMax = Math.max(1, ...pts.map(p => p.y));
   const step = yMax - yMin > 16 ? 5 : yMax - yMin > 6 ? 2 : 1;
   yMin = Math.floor(yMin / step) * step; yMax = Math.ceil(yMax / step) * step;
-  const X = t => TC.L + (Math.log(t) - Math.log(TC.lo)) / (Math.log(TC.hi) - Math.log(TC.lo)) * (TC.W - TC.L - TC.R);
-  const Y = y => TC.T + (yMax - y) / (yMax - yMin) * (TC.H - TC.T - TC.B);
+  const X = t => C.L + (Math.log(t) - Math.log(C.lo)) / (Math.log(C.hi) - Math.log(C.lo)) * (C.W - C.L - C.R);
+  const Y = y => C.T + (yMax - y) / (yMax - yMin) * (C.H - C.T - C.B);
   return { pts, X, Y, yMin, yMax, step };
 }
-export function tChart({ natural, level = null, age = null }) {
-  const nat = Number(natural) || averageTotalT(age);
-  const { pts, X, Y, yMin, yMax, step } = tScale(nat, age);
-  const studied = pts.filter(p => p.t <= T_MODEL.studiedMax), beyond = pts.filter(p => p.t >= T_MODEL.studiedMax);
+export function tChart({ natural, level = null, age = null, sex = 'male' }) {
+  const fem = sex === 'female';
+  const C = tcOf(sex), maxT = fem ? T_MODEL_F.studiedMax : T_MODEL.studiedMax;
+  const nat = Number(natural) || averageTotalT(age, sex);
+  const { pts, X, Y, yMin, yMax, step } = tScale(nat, age, sex);
+  const studied = pts.filter(p => p.t <= maxT), beyond = pts.filter(p => p.t >= maxT);
   const path = arr => arr.map((p, i) => `${i ? 'L' : 'M'}${X(p.t).toFixed(1)},${Y(p.y).toFixed(1)}`).join('');
   const grid = [];
-  for (let y = yMin; y <= yMax + 1e-9; y += step) grid.push(`<line x1="${TC.L}" x2="${TC.W - TC.R}" y1="${Y(y).toFixed(1)}" y2="${Y(y).toFixed(1)}" class="${y === 0 ? 'sp-g0' : 'sp-g'}"/><text x="${TC.L - 6}" y="${(Y(y) + 3.5).toFixed(1)}" text-anchor="end">${y > 0 ? '+' : ''}${y}</text>`);
-  const xt = [250, 500, 1000, 2400].map(t => `<line x1="${X(t).toFixed(1)}" x2="${X(t).toFixed(1)}" y1="${TC.H - TC.B}" y2="${TC.H - TC.B + 4}" class="sp-g"/><text x="${X(t).toFixed(1)}" y="${TC.H - TC.B + 15}" text-anchor="middle">${t.toLocaleString()}</text>`);
+  for (let y = yMin; y <= yMax + 1e-9; y += step) grid.push(`<line x1="${C.L}" x2="${C.W - C.R}" y1="${Y(y).toFixed(1)}" y2="${Y(y).toFixed(1)}" class="${y === 0 ? 'sp-g0' : 'sp-g'}"/><text x="${C.L - 6}" y="${(Y(y) + 3.5).toFixed(1)}" text-anchor="end">${y > 0 ? '+' : ''}${y}</text>`);
+  const xt = (fem ? TCF.ticks : [250, 500, 1000, 2400]).map(t => `<line x1="${X(t).toFixed(1)}" x2="${X(t).toFixed(1)}" y1="${C.H - C.B}" y2="${C.H - C.B + 4}" class="sp-g"/><text x="${X(t).toFixed(1)}" y="${C.H - C.B + 15}" text-anchor="middle">${t.toLocaleString()}</text>`);
   const dot = (t, cls, label, above) => {
-    const e = testosteroneEffect(t, { baselineT: nat, weeksOn: 0, age });
-    const x = X(Math.min(TC.hi, Math.max(TC.lo, e.levelUsed))), y = Y(e.lean20Lb);
-    const anchor = x > TC.W - 90 ? 'end' : x < TC.L + 60 ? 'start' : 'middle';
+    const e = testosteroneEffect(t, { baselineT: nat, weeksOn: 0, age, sex });
+    const x = X(Math.min(C.hi, Math.max(C.lo, e.levelUsed))), y = Y(e.lean20Lb);
+    const anchor = x > C.W - 90 ? 'end' : x < C.L + 60 ? 'start' : 'middle';
     return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5.5" class="sp-dot ${cls}"/><text x="${x.toFixed(1)}" y="${(above ? y - 11 : y + 19).toFixed(1)}" text-anchor="${anchor}" class="sp-lbl">${esc(label)}</text>`;
   };
-  const onE = level ? testosteroneEffect(level, { baselineT: nat, weeksOn: 0, age }) : null;
-  return `<svg viewBox="0 0 ${TC.W} ${TC.H}" class="sp-tsvg" role="img" aria-label="Testosterone level versus 20-week lean change">
+  const onE = level ? testosteroneEffect(level, { baselineT: nat, weeksOn: 0, age, sex }) : null;
+  const wk = fem ? 24 : 20;
+  return `<svg viewBox="0 0 ${C.W} ${C.H}" class="sp-tsvg" role="img" aria-label="Testosterone level versus ${wk}-week lean change">
     ${grid.join('')}${xt.join('')}
-    <text x="${TC.W - TC.R}" y="${TC.H - 3}" text-anchor="end" class="sp-ax">serum total T, ng/dL (log)</text>
-    <text x="4" y="10" class="sp-ax">lean, lb / 20 wk</text>
-    <rect x="${X(T_MODEL.studiedMax).toFixed(1)}" y="${TC.T}" width="${(TC.W - TC.R - X(T_MODEL.studiedMax)).toFixed(1)}" height="${TC.H - TC.T - TC.B}" class="sp-beyond"/>
+    <text x="${C.W - C.R}" y="${C.H - 3}" text-anchor="end" class="sp-ax">serum total T, ng/dL (log)</text>
+    <text x="4" y="10" class="sp-ax">lean, lb / ${wk} wk</text>
+    ${fem ? `<rect x="${X(FEMALE_T_RANGE[0]).toFixed(1)}" y="${C.T}" width="${(X(FEMALE_T_RANGE[1]) - X(FEMALE_T_RANGE[0])).toFixed(1)}" height="${C.H - C.T - C.B}" class="sp-beyond" style="opacity:.35"><title>female range</title></rect>` : ''}
+    <rect x="${X(maxT).toFixed(1)}" y="${C.T}" width="${(C.W - C.R - X(maxT)).toFixed(1)}" height="${C.H - C.T - C.B}" class="sp-beyond"/>
     <path d="${path(studied)}" class="sp-line"/><path d="${path(beyond)}" class="sp-line sp-line-flat"/>
     ${dot(nat, 'nat', `natural ${Math.round(nat)}`, !onE || onE.lean20Lb < 0)}
     ${onE && Math.abs(onE.levelUsed - nat) > 5 ? dot(level, 'on', `you ${Math.round(onE.levelUsed)}: ${sgn(onE.lean20Lb)} lb`, true) : ''}
-    <line class="sp-cross" x1="0" x2="0" y1="${TC.T}" y2="${TC.H - TC.B}" visibility="hidden"/>
+    <line class="sp-cross" x1="0" x2="0" y1="${C.T}" y2="${C.H - C.B}" visibility="hidden"/>
     <circle class="sp-cross-dot" r="4.5" cx="0" cy="0" visibility="hidden"/>
   </svg>`;
 }
@@ -252,19 +266,20 @@ function bindTChart(host) {
   const svg = host.querySelector('svg'), tip = host.querySelector('.sp-readout');
   if (!svg || !tip) return;
   let cfg; try { cfg = JSON.parse(host.dataset.tchart); } catch (e) { return; }
-  const nat = Number(cfg.natural) || averageTotalT(cfg.age);
-  const { X, Y } = tScale(nat, cfg.age);
+  const sex = cfg.sex === 'female' ? 'female' : 'male', C = tcOf(sex);
+  const nat = Number(cfg.natural) || averageTotalT(cfg.age, sex);
+  const { X, Y } = tScale(nat, cfg.age, sex);
   const line = svg.querySelector('.sp-cross'), cd = svg.querySelector('.sp-cross-dot');
   const show = ev => {
     const r = svg.getBoundingClientRect();
-    const vx = (ev.clientX - r.left) / r.width * TC.W;
-    const frac = Math.min(1, Math.max(0, (vx - TC.L) / (TC.W - TC.L - TC.R)));
-    const t = Math.exp(Math.log(TC.lo) + frac * (Math.log(TC.hi) - Math.log(TC.lo)));
-    const e = testosteroneEffect(t, { baselineT: nat, weeksOn: 0, age: cfg.age });
+    const vx = (ev.clientX - r.left) / r.width * C.W;
+    const frac = Math.min(1, Math.max(0, (vx - C.L) / (C.W - C.L - C.R)));
+    const t = Math.exp(Math.log(C.lo) + frac * (Math.log(C.hi) - Math.log(C.lo)));
+    const e = testosteroneEffect(t, { baselineT: nat, weeksOn: 0, age: cfg.age, sex });
     const x = X(t), y = Y(e.lean20Lb);
     line.setAttribute('x1', x); line.setAttribute('x2', x); line.setAttribute('visibility', 'visible');
     cd.setAttribute('cx', x); cd.setAttribute('cy', y); cd.setAttribute('visibility', 'visible');
-    tip.innerHTML = `<b class="sp-rv">${Math.round(t).toLocaleString()} ng/dL</b> → ${sgn(e.lean20Lb)} lb lean in 20 wk without training · training ceiling ${mult(e.leanCeilingMult)}${e.beyondStudied ? ' · beyond studied range (plateau)' : ''}`;
+    tip.innerHTML = `<b class="sp-rv">${Math.round(t).toLocaleString()} ng/dL</b> → ${sgn(e.lean20Lb)} lb lean in ${sex === 'female' ? 24 : 20} wk without training · training ceiling ${mult(e.leanCeilingMult)}${e.beyondStudied ? ' · beyond studied range (plateau)' : ''}`;
   };
   const hide = () => { line.setAttribute('visibility', 'hidden'); cd.setAttribute('visibility', 'hidden'); };
   svg.addEventListener('pointermove', show);
@@ -305,6 +320,28 @@ const PANEL = [
   { k: 'ferritin', label: 'Ferritin', unit: 'ng/mL', step: '1', ref: 'Typical ≈30–300. Low is common in endurance athletes; very high can mean iron overload, a cause of low T.',
     status: v => v < 30 ? ['Low', 'warn'] : v <= 300 ? ['Normal', 'good'] : ['High', 'warn'] },
 ];
+// Female reference values (§20): Haring 2012 (T 10–57 ng/dL, free T 0.7–7.3 pg/mL), Stanczyk 2022 (postmenopausal SHBG
+// 43–68), Zimmerman 2014 (combined pill: SHBG +99, free T −61 %), STRAW+10 (FSH > 25), Clénin 2015 / Mei 2021 (ferritin).
+const F = FEMALE_LABS;
+const LABS_F = {
+  totalT: { label: 'Total testosterone (natural)', ref: `Women ≈${FEMALE_T_RANGE[0]}–${FEMALE_T_RANGE[1]} ng/dL (LC-MS/MS, Haring 2012); lower on the combined pill. Doesn't change the projection.`,
+    status: v => v < FEMALE_T_RANGE[0] ? ['Below female range', 'warn'] : v <= FEMALE_T_RANGE[1] ? ['Female range', 'good'] : ['Above female range', 'warn'] },
+  freeT: { ref: 'Women ≈0.7–7.3 pg/mL (calculated; Haring 2012). Assays vary a lot.', status: v => v < 0.7 ? ['Low', 'warn'] : v <= 7.3 ? ['Female range', 'good'] : ['High', 'warn'] },
+  onTrtT: { ref: 'Only if you take testosterone (trough draw). A measured lab always beats the model.',
+    status: v => v > T_MODEL_F.studiedMax ? ['Beyond studied', 'warn'] : v > 300 ? ['Male range', 'warn'] : v > FEMALE_T_RANGE[1] ? ['Above female range', 'warn'] : ['Female range', 'good'] },
+  tsh: { ref: 'Typical ≈0.4–4.5. Underactive thyroid is more common in women and lowers calorie burn.' },
+};
+const PANEL_F = {
+  lh: { ref: 'Varies across the cycle (surges mid-cycle) and is high after menopause. Draw on day 2–5 of a cycle with FSH.', status: v => v > 15 ? ['High (outside mid-cycle)', 'warn'] : ['Typical', 'good'] },
+  fsh: { ref: `Over ~${F.fshPost} with irregular or absent periods fits the late menopause transition (STRAW+10).`, status: v => v > F.fshPost ? ['Menopausal range', 'warn'] : ['Premenopausal range', 'good'] },
+  shbg: { ref: 'Postmenopausal women average ≈43–68 (Stanczyk 2022); the combined pill adds ~100 (Zimmerman 2014).', status: v => v > 200 ? ['Very high', 'warn'] : v < 20 ? ['Low', 'warn'] : ['Typical', 'good'] },
+  estradiol: { ref: 'Before menopause it swings ~30–400 across the cycle; after menopause typically ~10–20. Low with missed periods can mean under-fuelling (IOC REDs).', status: v => v < F.estradiolLow ? ['Low (if premenopausal)', 'warn'] : ['Typical', 'good'] },
+  prolactin: { ref: `Typical under ~${F.prolactinHigh} for women (assay-dependent). High prolactin can disturb periods.`, status: v => v > F.prolactinHigh ? ['High', 'bad'] : ['Normal', 'good'] },
+  zinc: { ref: `Under ~${F.zincLow} is deficient for women (morning, fasting; Hotz 2003).`, status: v => v < F.zincLow ? ['Low', 'warn'] : ['Normal', 'good'] },
+  ferritin: { ref: `Under ~${F.ferritinLow} is low (common in menstruating women and female athletes); above ~${F.ferritinHigh} is high for a woman (WHO 2020).`, status: v => v < F.ferritinLow ? ['Low', 'warn'] : v <= F.ferritinHigh ? ['Normal', 'good'] : ['High', 'warn'] },
+};
+const labsFor = (list, over, sex) => (sex === 'female' ? list.map(L => ({ ...L, ...(over[L.k] || {}) })) : list);
+
 function labRow(L, v, placeholder) {
   return `<div class="sp-lab"><div class="grow"><div class="t">${esc(L.label)} <span data-badge="${L.k}">${labBadge(L, v)}</span></div><div class="s">${esc(L.ref)}</div></div>
     <label class="sp-inwrap"><input type="number" inputmode="decimal" step="${L.step}" min="0" data-met="${L.k}" value="${v ?? ''}" placeholder="${esc(placeholder || '—')}" class="sp-in"><span class="sp-unit">${esc(L.unit)}</span></label></div>`;
@@ -318,17 +355,18 @@ const stressNoteFor = stress => stress >= 4 ? 'High stress modestly slows streng
 function metabolicForm(p, I) {
   const m = p.metabolic || {};
   const age = I.b?.age ?? (p.body?.birthYear ? new Date().getFullYear() - p.body.birthYear : null);
-  const placeholders = { totalT: `avg ≈${averageTotalT(age)}`, vitD: 'avg ≈27' };
+  const sex = sexOf(p);
+  const placeholders = { totalT: `avg ≈${averageTotalT(age, sex, { contraception: sex === 'female' ? femaleStatus(p, { age }).contraception : null })}`, vitD: 'avg ≈27' };
   const sleep = m.sleepHours ?? 7, stress = m.stress ?? 3;
   const sleepNote = sleepNoteFor(sleep);
   return `<div class="card sp-form">
     <p class="small muted">Blank values use population averages for your age (flagged as "assumed average"). Testosterone and vitamin D are modeled by level.</p>
     <div class="sp-lab"><div class="grow"><div class="t">Lab date</div><div class="s">When these were drawn</div></div>
       <input type="date" data-met="labDate" value="${esc(m.labDate || '')}" class="sp-in sp-date"></div>
-    ${LABS.map(L => labRow(L, m[L.k], placeholders[L.k])).join('')}
-    <details class="sp-panel"><summary class="small">Hormone panel (optional) — decides which therapies could even apply to you</summary>
-      <p class="tiny muted">Morning, fasted, and repeated before anyone acts on them. These don't change the projection by themselves; they tell Forge whether the endogenous-testosterone items apply.</p>
-      ${PANEL.map(L => labRow(L, m[L.k])).join('')}
+    ${labsFor(LABS, LABS_F, sex).map(L => labRow(L, m[L.k], placeholders[L.k])).join('')}
+    <details class="sp-panel"><summary class="small">${sex === 'female' ? 'Hormone panel (optional) — female reference values' : 'Hormone panel (optional) — decides which therapies could even apply to you'}</summary>
+      <p class="tiny muted">${sex === 'female' ? 'Morning, fasted, and repeated before anyone acts on them. LH, FSH and estradiol depend on the day of your cycle. These don\'t change the projection; Forge adds notes (menopause stage, iron, under-fuelling).' : 'Morning, fasted, and repeated before anyone acts on them. These don\'t change the projection by themselves; they tell Forge whether the endogenous-testosterone items apply.'}</p>
+      ${labsFor(PANEL, PANEL_F, sex).map(L => labRow(L, m[L.k])).join('')}
     </details>
     <div class="sp-lab sp-col"><div class="row between"><div class="t">Typical sleep</div><div class="num bold"><span data-sleepv>${f1(sleep)}</span> h</div></div>
       <input type="range" min="4" max="10" step="0.25" value="${sleep}" data-met="sleepHours" style="--pct:${(sleep - 4) / 6 * 100}%">
@@ -340,7 +378,8 @@ function metabolicForm(p, I) {
 }
 
 // ------------------------------------------------------------------ detail / edit sheet
-function detailSheet(s, entry, today) {
+function detailSheet(s, entry, today, sex = 'male') {
+  s = itemFor(s, sex);
   const modeled = isModeled(s);
   const md = s.model || {};
   const d = modeled && md.dose ? resolveDose(entry?.dose, md) : null;
@@ -353,7 +392,7 @@ function detailSheet(s, entry, today) {
     <p class="mt">${esc(s.summary)}</p>
     <h3 class="sp-h">How it works</h3><p class="small">${esc(s.mechanism)}</p>
     <h3 class="sp-h">What the evidence shows</h3><ul class="tip-list">${s.effects.map(x => `<li class="small">${esc(x)}</li>`).join('')}</ul>
-    ${s.id === 'trt' ? `<div class="sp-chart mt" data-tchart='${esc(JSON.stringify({ natural: null, level: null, age: null }))}'>${tChart({ natural: null })}<div class="sp-readout small muted">Drag across the chart to read values.</div></div><p class="tiny muted">Lean change over 20 weeks without training vs serum T, for an average 39-year-old (natural ≈${averageTotalT(39)}). Your own curve is on the projection card once T is in your stack or labs.</p>` : ''}
+    ${s.id === 'trt' ? `<div class="sp-chart mt" data-tchart='${esc(JSON.stringify({ natural: null, level: null, age: null, sex }))}'>${tChart({ natural: null, sex })}<div class="sp-readout small muted">Drag across the chart to read values.</div></div><p class="tiny muted">Lean change over ${sex === 'female' ? 24 : 20} weeks without training vs serum T, for an average 39-year-old ${sex === 'female' ? 'woman' : 'man'} (natural ≈${averageTotalT(39, sex)}). Your own curve is on the projection card once T is in your stack or labs.</p>` : ''}
     ${s.risks.length ? `<h3 class="sp-h">Risks</h3><ul class="tip-list sp-risks">${s.risks.map(x => `<li class="small">${esc(x)}</li>`).join('')}${(md.levelRisks || []).map(r => `<li class="small"><span class="muted">At ≥${r.min.toLocaleString()} ${esc(s.id === 'trt' ? 'ng/dL' : md.dose?.unit || '')}:</span> ${esc(r.text)}</li>`).join('')}</ul>` : ''}
     ${s.typicalUse ? `<h3 class="sp-h">Typical use</h3><p class="small">${esc(s.typicalUse)}</p>` : modeled && md.dose ? `<h3 class="sp-h">Studied dose</h3><p class="small">${esc(studied)} in the cited trials. Shown for context, not as a recommendation; it's what the model uses when you leave the dose blank.</p>` : ''}
     <div class="sp-addform">
@@ -382,7 +421,7 @@ function openDetail(ctx, id, index = null) {
   if (idx == null) { const i = list.findIndex(e => e && e.id === id && e.active !== false && !e.end); idx = i >= 0 ? i : null; }
   const entry = idx != null ? list[idx] : null;
   const today = ds();
-  ctx.openSheet(detailSheet(s, entry, today), (el, close) => {
+  ctx.openSheet(detailSheet(s, entry, today, sexOf(p)), (el, close) => {
     el.querySelectorAll('[data-tchart]').forEach(bindTChart);
     const read = () => {
       const start = el.querySelector('[data-f=start]')?.value || today;
@@ -418,7 +457,8 @@ export function bind(root, ctx) {
     const wrap = root.querySelector('#sp-impact-wrap');
     if (wrap) { wrap.innerHTML = impactCard(I, mods, off, activeIds); wrap.querySelectorAll('[data-tchart]').forEach(bindTChart); }
     const m = I.profile.metabolic || {};
-    for (const L of [...LABS, ...PANEL]) { const el = root.querySelector(`[data-badge="${L.k}"]`); if (el) el.innerHTML = labBadge(L, m[L.k]); }
+    const sx = sexOf(I.profile);
+    for (const L of [...labsFor(LABS, LABS_F, sx), ...labsFor(PANEL, PANEL_F, sx)]) { const el = root.querySelector(`[data-badge="${L.k}"]`); if (el) el.innerHTML = labBadge(L, m[L.k]); }
     const sn = root.querySelector('[data-sleepn]'); if (sn) sn.textContent = sleepNoteFor(m.sleepHours ?? 7);
     const tn = root.querySelector('[data-stressn]'); if (tn) tn.textContent = stressNoteFor(m.stress ?? 3);
     root.querySelectorAll('[data-stress] button').forEach(b => b.classList.toggle('active', Number(b.dataset.v) === Number(m.stress ?? 3)));

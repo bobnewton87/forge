@@ -28,7 +28,13 @@
 // CONTRACT-NOTE: tdee() returns extra { neatFactor, days, sessions } and sessionCalories() counts
 //   GROSS kcal; tdee() subtracts the resting calories already covered by BMR+NEAT during the
 //   session minutes so exercise calories are not double-counted.
+// CONTRACT-NOTE (§20 Female mode): baseline() reads sex through sex.js sexOf(); ratios gain waistToHip (both sexes,
+//   additive), and female profiles get female-specific missingInfo wording (no V-taper, hips for waist:hip) plus
+//   baseline.bodyFatCategory (Gallagher 2000 healthy range for her age) and baseline.femaleStatus (sex.femaleStatus).
+//   The formulas were already sex-aware (Navy, Mifflin-St Jeor, RFM, Deurenberg); Katch-McArdle is sex-neutral
+//   because it runs on lean mass.
 import { estimateCalories } from '../data/cardio.js';
+import { sexOf, bodyFatCategory, femaleStatus } from './sex.js';
 import { ds, parseDs, addDays, daysBetween } from '../util.js';
 
 const LB_PER_KG = 2.20462;
@@ -128,6 +134,13 @@ const MISSING_INFO = {
   thigh: ['Thigh', 'Draws the silhouette and tracks leg size.'],
   bodyFat: ['Body fat %', 'Without a measured or Navy body fat, a waist- or BMI-based estimate is used, which can be off by 4-6 points for muscular or very lean people.'],
 };
+// Female wording where the male text assumes a V-taper physique (§20).
+const MISSING_INFO_FEMALE = {
+  hips: ['Hips', 'Needed for the female Navy body-fat formula and your waist-to-hip ratio (a WHO health marker: under 0.85 for women).'],
+  shoulders: ['Shoulders (around, widest point)', 'Tracks shoulder and upper-back growth on the tape.'],
+  chest: ['Chest (bust)', 'Tracks upper-body change. Breast tissue is mostly fat, so this one also moves with fat loss.'],
+  arm: ['Arms (flexed)', 'Tracks arm muscle (triceps and biceps) and draws the silhouette.'],
+};
 
 function latest(list, key) {
   let best = null;
@@ -163,7 +176,7 @@ export function bmiBodyFat({ sex = 'male', weightLb, heightIn, age } = {}) {
 export function baseline({ profile = {}, bodyLog = [], measurements = [], now = new Date() } = {}) {
   const today = ds(toDate(now));
   const body = profile?.body || {};
-  const sex = body.sex === 'female' ? 'female' : 'male';
+  const sex = sexOf(body);
   const log = (Array.isArray(bodyLog) ? bodyLog : []).filter(e => e && e.d && e.d <= today && pos(e.w) != null);
   const meas = (Array.isArray(measurements) ? measurements : []).filter(e => e && e.d && e.d <= today);
 
@@ -263,6 +276,7 @@ export function baseline({ profile = {}, bodyLog = [], measurements = [], now = 
     chestToWaist: ratio(m.chest, m.waist),
     waistToHeight: ratio(m.waist, heightIn),
     armToWaist: ratio(m.arm, m.waist),
+    waistToHip: ratio(m.waist, m.hips),
   };
 
   const missing = [];
@@ -277,7 +291,9 @@ export function baseline({ profile = {}, bodyLog = [], measurements = [], now = 
   if (!m.arm) missing.push('arm');
   if (!m.thigh) missing.push('thigh');
   if (bodyFatSource !== 'manual' && bodyFatSource !== 'navy') missing.push('bodyFat');
-  const missingInfo = missing.map(f => ({ field: f, label: MISSING_INFO[f][0], why: MISSING_INFO[f][1] }));
+  const info = f => (sex === 'female' && MISSING_INFO_FEMALE[f]) || MISSING_INFO[f];
+  const missingInfo = missing.map(f => ({ field: f, label: info(f)[0], why: info(f)[1] }));
+  const femaleExtra = sex === 'female' ? { bodyFatCategory: bodyFatCategory(bodyFatPct, { sex, age }), femaleStatus: femaleStatus(profile, { age }) } : {};
 
   return {
     date: today, weightLb: weightLb != null ? r1(weightLb) : null, weightDate, heightIn: heightIn ?? null, age, sex,
@@ -285,6 +301,7 @@ export function baseline({ profile = {}, bodyLog = [], measurements = [], now = 
     bodyFatMethod, bodyFatSources, bodyFatUncertainty, bodyFatSpread, bodyFatRange, bodyFatNote,
     measurements: measurementsOut, measuredOn, asymmetry, lengthAsymmetry, comp, ratios, missing, missingInfo,
     weighIns30: log.filter(e => e.d >= ds(addDays(parseDs(today), -30))).length, weighInCount: log.length, measurementCount: meas.length,
+    ...femaleExtra,
   };
 }
 

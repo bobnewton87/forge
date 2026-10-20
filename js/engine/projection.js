@@ -65,6 +65,16 @@
 //   progressionRealism: false (default) | true (= 0.1) | 0..0.5 → training beyond the planned days fades by that fraction
 //     over ~1.5 years (life happens). Result extras: phases (timeline), ceiling, horizon, series[i].phase.
 //   Exported helpers: PHASE_PRESETS, ceilingFactor, testosteroneCeilingShift, FFMI_NATURAL_CEILING, MAX_WEEKS, sampleWeeks.
+// CONTRACT-NOTE (§20 Female mode): every sex-specific constant comes from sex.js (male values unchanged). For women:
+//   lean-rate basis = lean ÷ 0.80 (same relative rate, Roberts 2020/Refalo 2025), female muscle shares (Janssen 2000),
+//   skeletal-muscle fraction 0.51, natural FFMI ceiling 22 (body.ffmiCeiling still overrides) + metabolic's
+//   ffmiCeilingDelta, 3D muscle scores on a female FFMI scale, female fat/measurement coefficients, defended 13 % /
+//   floor 10 %, goal body fat default 22, female milestones (abs heuristics, waist:hip 0.85 + waist:height 0.5 instead of
+//   shoulder:waist, FFMI 18.5/20), female assumption text. Extra result fields for women: energyAvailability
+//   ({ start, min, low, threshold } kcal/kg FFM/day) and, when pregnant, an empty result with paused:'pregnancy';
+//   postpartum adds caution:'postpartum'. energy.exerciseKcal (avg net exercise kcal/day, weeks 1-12) is returned for
+//   both sexes (additive). MUSCLE_SHARE stays the male table; FEMALE_MUSCLE_SHARE is exported.
+import { sexOf, BODY, FAT_COEF as SEX_FAT_COEF, SMM_SHARE_RAW_MALE, SMM_SHARE_RAW_FEMALE, FEMALE_RATE_REF_LEAN_FRAC, femaleStatus, EA_LOW } from './sex.js';
 import { sessionVolume } from './recovery.js';
 import { dailyTargets, macrosFor, adaptiveTdee } from './nutrition.js';
 import { _sessionDetail, NEAT_FACTORS, tdee as formulaTdee } from './bodycomp.js';
@@ -80,8 +90,8 @@ const KCAL_PER_LB_FAT = 3500;     // adipose tissue, first approximation
 const KCAL_PER_LB_LEAN = 1250;    // energy stored in new lean tissue (~800) + cost of synthesising it
 const KCAL_LEAN_RELEASED = 800;   // energy released when lean tissue is lost
 const DAYS_PER_MONTH = 30.44;
-const DEFAULT_BF = { male: 20, female: 28 };
-const ESSENTIAL_BF = { male: 5, female: 13 };
+const DEFAULT_BF = { male: BODY.male.defaultBf, female: BODY.female.defaultBf };
+const ESSENTIAL_BF = { male: BODY.male.essentialBf, female: BODY.female.essentialBf };
 // Max lean gain, % bodyweight per month, by months of consistent training. Anchors sit at the conservative end of
 // the Aragon guideline (year 1 ≈ 1-1.5 %, year 2 ≈ 0.5-1 %, year 3+ ≈ 0.25-0.5 %) and the McDonald model (≈ 20-25,
 // 10-12, 5-6, then 2-3 lb of muscle per year), averaging ≈ 1.07 / 0.69 / 0.44 / 0.27 / 0.18 % in years 1-5.
@@ -108,7 +118,7 @@ const ADH_DECAY_TAU = 78;        // weeks, adherence drift for progressionRealis
 export const MAX_WEEKS = 418;   // 8 years
 // Body fat the body defends: below it a fixed diet isn't sustainable (hunger, adaptive thermogenesis), so the
 // projection assumes intake rises to maintenance instead of burning into essential fat or muscle.
-const DEFENDED_BF = { male: 6, female: 14 };
+const DEFENDED_BF = { male: BODY.male.defendedBf, female: BODY.female.defendedBf };
 // Band: maintenance-estimate error fades as weigh-ins re-calibrate it (~6 months), leaving a residual 35 %.
 const ENERGY_ERR_TAU = 26, ENERGY_ERR_RESID = 0.35;
 // Energy availability → fraction of the ceiling realised. Maintenance ≈ 70 %; a surplus saturates
@@ -141,16 +151,15 @@ const TYPICAL_SHARE = Object.fromEntries(GROUP_ORDER.map(g => [g, (GROUPS[g]?.we
 // Measurement response (inches). FAT: per lb of whole-body fat change (male pattern: waist first,
 // limbs least). LEAN: per lb of whole-body lean change when volume is split like the default weekly
 // targets; scaled by the actual share of volume.
-const FAT_COEF = {
-  male: { waist: 0.12, hips: 0.09, chest: 0.06, shoulders: 0.05, thigh: 0.06, arm: 0.03, forearm: 0.01, calf: 0.015, neck: 0.03 },
-  female: { waist: 0.10, hips: 0.11, chest: 0.05, shoulders: 0.04, thigh: 0.08, arm: 0.035, forearm: 0.01, calf: 0.015, neck: 0.025 },
-};
+const FAT_COEF = SEX_FAT_COEF;    // sex.js (male row = the original constants; female direction from Kuk & Ross 2009)
 // Approximate share of trainable skeletal muscle per group for an adult male (legs/glutes ≈ 45 %,
 // back ≈ 17 %, the rest upper body/core; after Janssen 2000-style SMM distributions). Normalized below.
-const SMM_SHARE_RAW = { chest: 0.08, back: 0.17, shoulders: 0.07, biceps: 0.04, triceps: 0.06, forearms: 0.04, core: 0.08,
-  glutes: 0.11, quads: 0.19, hamstrings: 0.09, calves: 0.05 };
+const SMM_SHARE_RAW = SMM_SHARE_RAW_MALE;
 const SMM_SUM = Object.values(SMM_SHARE_RAW).reduce((a, b) => a + b, 0);
 export const MUSCLE_SHARE = Object.fromEntries(GROUP_ORDER.map(g => [g, (SMM_SHARE_RAW[g] || 0) / SMM_SUM]));
+// Women: relatively more muscle in the legs (Janssen 2000; see sex.js).
+const SMM_SUM_F = Object.values(SMM_SHARE_RAW_FEMALE).reduce((a, b) => a + b, 0);
+export const FEMALE_MUSCLE_SHARE = Object.fromEntries(GROUP_ORDER.map(g => [g, (SMM_SHARE_RAW_FEMALE[g] || 0) / SMM_SUM_F]));
 const LEG_GROUPS = new Set(['glutes', 'quads', 'hamstrings', 'calves']);
 const SMM_FRAC_OF_LEAN = 0.55;   // skeletal muscle ≈ 55 % of lean mass in men (rest: organs, bone, water)
 // Weekly fractional sets → stimulus, normalized so 10 sets = 1.0. A fast component (the first few sets
@@ -363,10 +372,10 @@ function sanitizeMods(m) {
   if (!m || typeof m !== 'object') return NEUTRAL_MODS;
   const t = m.testosterone && typeof m.testosterone === 'object' ? m.testosterone : null;
   const tLevel = t && t.source && t.source !== 'natural' && pos(t.level) ? Number(t.level) : null;
-  const labT = m.levels && m.levels.totalTSource === 'lab' && pos(m.levels.totalT) ? Number(m.levels.totalT) : null;
+  const labT = m.levels && m.levels.sex !== 'female' && m.levels.totalTSource === 'lab' && pos(m.levels.totalT) ? Number(m.levels.totalT) : null;
   return {
     // FFMI ceiling shift: metabolic may provide it directly; otherwise derived from an on-therapy testosterone level.
-    ffmiShift: fin(Number(m.ffmiCeilingDelta)) && m.ffmiCeilingDelta !== null ? clamp(Number(m.ffmiCeilingDelta), -3, 6) : tLevel ? testosteroneCeilingShift(tLevel) : 0,
+    ffmiShift: fin(Number(m.ffmiCeilingDelta)) && m.ffmiCeilingDelta !== null ? clamp(Number(m.ffmiCeilingDelta), -3, 6) : tLevel && !(m.levels && m.levels.sex === 'female') ? testosteroneCeilingShift(tLevel) : 0,
     tLevel,
     // Natural lab testosterone (not on therapy): metabolic keeps it fixed, so projection ages it (no double count).
     tLabNatural: labT && (!t || !t.source || t.source === 'natural') ? labT : null,
@@ -399,7 +408,10 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   phases = undefined, phasesRepeat = true, progressionRealism = false, stopAtGoal = false } = {}) {
   profile = profile && typeof profile === 'object' ? profile : {};
   const body = profile.body || {};
-  const sex = (b?.sex || body.sex) === 'female' ? 'female' : 'male';
+  const sex = sexOf(b?.sex || body.sex);
+  const BC = BODY[sex];
+  const share = sex === 'female' ? FEMALE_MUSCLE_SHARE : MUSCLE_SHARE;
+  const smmFrac = sex === 'female' ? BC.smmFracOfLean : SMM_FRAC_OF_LEAN;
   const nowD = toDate(now);
   const today = ds(nowD);
   const W = clamp(Math.round(Number(weeks) || 12), 1, MAX_WEEKS);
@@ -409,6 +421,14 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   if (!b || !pos(b.weightLb)) {
     if (!missing.includes('weight')) { missing.unshift('weight'); missingInfo.unshift({ field: 'weight', label: 'Bodyweight', why: 'The projection needs a starting weight.' }); }
     return { empty: true, result: emptyResult(missing, missingInfo) };
+  }
+  // §20: pregnancy pauses the projection (body changes in pregnancy aren't modelled, and no deficit is planned).
+  const fstat = sex === 'female' ? femaleStatus(profile, { age: b.age }) : null;
+  if (fstat?.pregnant) {
+    const r = emptyResult(missing, missingInfo);
+    r.assumptions = ['Projection paused during pregnancy. Weight gain in pregnancy is healthy and expected, Forge doesn\'t model it, and it won\'t plan a calorie deficit (Kominiarek & Rajan 2016; ACOG 2020). Set pregnancy to "Postpartum" or "No" in your body profile when you\'re ready.'];
+    r.paused = 'pregnancy';
+    return { empty: true, result: r };
   }
 
   // ---------------- starting state
@@ -424,7 +444,7 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   const goal = GOAL_OFFSET[profile.goal] != null ? profile.goal : 'recomp';
   const nut = profile.nutrition && typeof profile.nutrition === 'object' ? profile.nutrition : {};
   const nutritionOn = !!(nut.mode && nut.mode !== 'off');
-  const goalBf = pos(body.goalBodyFat) || 12;
+  const goalBf = pos(body.goalBodyFat) || BC.goalBodyFat;
   const age = pos(b.age) ?? (pos(body.birthYear) ? nowD.getFullYear() - Number(body.birthYear) : null);
 
   // ---------------- intake spec
@@ -567,7 +587,7 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   const horizonGroups = {};
   let horizonGroupSets = 0;
   for (const wk of weekDrivers.slice(0, W)) for (const [g, v] of Object.entries(wk.groups)) { horizonGroups[g] = (horizonGroups[g] || 0) + v; horizonGroupSets += v; }
-  const smm0 = L0 * SMM_FRAC_OF_LEAN;    // starting skeletal muscle (lb), for relative per-group growth
+  const smm0 = L0 * smmFrac;    // starting skeletal muscle (lb), for relative per-group growth
 
   // ---------------- energy helpers
   const bmrOf = L => 370 + 21.6 * (L / LB_PER_KG);                     // Katch-McArdle on current lean mass
@@ -650,7 +670,7 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
     return f;
   };
   // Genetic ceiling (normalized FFMI) and the lean mass it corresponds to at this height.
-  const ffmiCeil = pos(body.ffmiCeiling) && Number(body.ffmiCeiling) >= 18 && Number(body.ffmiCeiling) <= 30 ? Number(body.ffmiCeiling) : FFMI_NATURAL_CEILING;
+  const ffmiCeil = pos(body.ffmiCeiling) && Number(body.ffmiCeiling) >= (sex === 'female' ? 15 : 18) && Number(body.ffmiCeiling) <= 30 ? Number(body.ffmiCeiling) : (sex === 'female' ? BC.ffmiCeiling : FFMI_NATURAL_CEILING);
   const leanAtFfmi = C => (C - 6.1 * (1.8 - hM)) * hM * hM * LB_PER_KG;
   const PA0 = neatFactor * bmrOf(L0);                        // daily-movement burn, scales with body weight (Hall 2011)
   const gammaFatLb = GAMMA_FAT_KG / LB_PER_KG;
@@ -670,7 +690,7 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   // Set responses per week (the expensive part of the lean model), reused by every simulation of this context.
   const weekResp = weekDrivers.slice(0, W).map(wk => {
     const R = GROUP_ORDER.map(g => setResponse(wk.groups[g] || 0));
-    return { R, respW: GROUP_ORDER.reduce((a, g, i) => a + MUSCLE_SHARE[g] * R[i], 0) };
+    return { R, respW: GROUP_ORDER.reduce((a, g, i) => a + share[g] * R[i], 0) };
   });
 
   return {
@@ -680,7 +700,7 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
     smm0, bmrOf, exNetPerDay, avgEx, tdeeFormula, calib, tdeeStart, stackUsed, modsAt, water0,
     intakeMode, intakeSource, userSet, goalIntake, fixedIntake, specSurplus,
     midDates, endDates, ageMid, rmrAge, leanAgeFactor, ffmiCeil, leanAtFfmi, PA0, gammaFatLb, phasePlan, realism, modsWeek, waterWeek,
-    weekResp, stopAtGoal: !!stopAtGoal,
+    weekResp, stopAtGoal: !!stopAtGoal, share, smmFrac, fstat,
   };
 }
 
@@ -780,7 +800,8 @@ function nutritionIntake(ctx, wk, Wt, maint) {
 //   true maintenance is below the estimate), leanMult (lean-rate multiplier), ceilShift (FFMI points vs the ceiling),
 //   adhDecay (fraction of training lost asymptotically, τ = 78 weeks) }
 function simulate(ctx, opts = {}) {
-  const { W, W0, L0, F0, sex, goal, goalBf, months0, weekDrivers, bmrOf, exNetPerDay, calib, ffmiOf, today, PA0, gammaFatLb } = ctx;
+  const { W, W0, L0, F0, sex, goal, goalBf, months0, weekDrivers, bmrOf, exNetPerDay, calib, ffmiOf, today, PA0, gammaFatLb, share } = ctx;
+  const femaleRate = sex === 'female';
   const labFixed = opts.fixedIntake != null;
   const fixedIntake = labFixed ? opts.fixedIntake : ctx.fixedIntake;
   const proteinBase = opts.proteinGPerLb ?? ctx.proteinGPerLb, fatBase = opts.fatPct ?? ctx.fatPct;
@@ -876,7 +897,7 @@ function simulate(ctx, opts = {}) {
     // ---- lean model per muscle group
     let respW = 0;
     if (sAdh === 1) { const wr = ctx.weekResp[k]; respW = wr.respW; GROUP_ORDER.forEach((g, i) => { R[g] = wr.R[i]; }); }
-    else for (const g of GROUP_ORDER) { R[g] = setResponse((wk.groups[g] || 0) * sAdh); respW += MUSCLE_SHARE[g] * R[g]; }
+    else for (const g of GROUP_ORDER) { R[g] = setResponse((wk.groups[g] || 0) * sAdh); respW += share[g] * R[g]; }
     // Training age advances with consistent training (a missed/empty week doesn't use up "newbie gains").
     const adv = (7 / DAYS_PER_MONTH) * Math.min(1, respW / TA_FULL_RESP);
     const months = tAge + adv / 2;
@@ -890,7 +911,8 @@ function simulate(ctx, opts = {}) {
     const ff = ceilingFactor(Ceff - ffmiOf(L));
     const bff = raw > 0 ? bfSurplusFactor(bfNow) : 1;
     // Rate basis scales with lean mass (not fat), equal to today's bodyweight at the start.
-    const wholeRate = W0 * (L / L0) * leanRatePctPerMonth(months) / 100 * (7 / DAYS_PER_MONTH);
+    // Women: same relative rate applied to lean mass (sex.js FEMALE_RATE_REF_LEAN_FRAC); men: unchanged.
+    const wholeRate = (femaleRate ? L / FEMALE_RATE_REF_LEAN_FRAC : W0 * (L / L0)) * leanRatePctPerMonth(months) / 100 * (7 / DAYS_PER_MONTH);
     const ageF = ctx.leanAgeFactor(k, mods);
     const common = pf * cf * ff * bff * mods.leanCeilingMult * leanMult * ageF;
     let fE = energyFactor(raw);
@@ -902,7 +924,7 @@ function simulate(ctx, opts = {}) {
     }
     let ceiling = 0, gainTrain = 0;
     for (const g of GROUP_ORDER) {
-      const cap = Math.max(0, wholeRate * MUSCLE_SHARE[g] * R[g] * common * (LEG_GROUPS.has(g) ? itf : itfUpper));
+      const cap = Math.max(0, wholeRate * share[g] * R[g] * common * (LEG_GROUPS.has(g) ? itf : itfUpper));
       ceiling += cap;
       gG[g] = cap * fE;
       gainTrain += gG[g];
@@ -910,7 +932,7 @@ function simulate(ctx, opts = {}) {
     // Training-independent lean accrual (e.g. supraphysiologic testosterone), spread by muscle share; it also
     // slows near the (raised) ceiling.
     const leanDirect = mods.leanDirectLbPerWeek * leanMult * (mods.leanDirectLbPerWeek > 0 ? ff : 1);
-    for (const g of GROUP_ORDER) gG[g] += leanDirect * MUSCLE_SHARE[g];
+    for (const g of GROUP_ORDER) gG[g] += leanDirect * share[g];
     let gain = gainTrain + leanDirect;
     // Lean loss in a deficit: Forbes partition, mostly prevented by lifting + protein.
     let loss = 0;
@@ -943,7 +965,7 @@ function simulate(ctx, opts = {}) {
     // Direct fat change from the stack (e.g. high testosterone): burned, not funding anything else.
     const fatDirect = mods.fatDirectLbPerWeek;
     dF += fatDirect;
-    for (const g of GROUP_ORDER) G[g] += gG[g] - loss * MUSCLE_SHARE[g];
+    for (const g of GROUP_ORDER) G[g] += gG[g] - loss * share[g];
     L = L + gain - loss;
     F = F + dF;
     const minF = (L + F) * essential;
@@ -1019,7 +1041,7 @@ export function project(args = {}) {
   // Relative gain of the muscles under a weighted set of groups (vs their starting mass).
   const relGain = (G, groups) => {
     let num = 0, den = 0;
-    for (const [g, w] of Object.entries(groups)) { num += w * (G?.[g] || 0); den += w * MUSCLE_SHARE[g] * smm0; }
+    for (const [g, w] of Object.entries(groups)) { num += w * (G?.[g] || 0); den += w * ctx.share[g] * smm0; }
     return den > 0 ? num / den : 0;
   };
   // §16c: measured bone lengths are static; every series point's shape carries them for the 3D model.
@@ -1042,11 +1064,12 @@ export function project(args = {}) {
   const ffmi0 = ffmiOf(L0);
   // Score = normalized FFMI the whole body would have if every muscle grew like this region did.
   const ffmiRaw0 = (L0 / LB_PER_KG) / (ctx.hM * ctx.hM);
+  const [scoreLo, scoreHi] = sex === 'female' ? [BODY.female.ffmiScoreLo, BODY.female.ffmiScoreHi] : [FFMI_SCORE_LO, FFMI_SCORE_HI];
   const muscleAt = G => {
     const out = {};
     for (const [k, groups] of Object.entries(MUSCLE_GROUPS)) {
-      const eff = ffmi0 + ffmiRaw0 * SMM_FRAC_OF_LEAN * relGain(G, groups);
-      out[k] = r2(clamp((eff - FFMI_SCORE_LO) / (FFMI_SCORE_HI - FFMI_SCORE_LO), 0.02, 0.98));
+      const eff = ffmi0 + ffmiRaw0 * ctx.smmFrac * relGain(G, groups);
+      out[k] = r2(clamp((eff - scoreLo) / (scoreHi - scoreLo), 0.02, 0.98));
     }
     return out;
   };
@@ -1093,7 +1116,7 @@ export function project(args = {}) {
       weightLb: r1(Wt), bodyFatPct, leanLb: r1(p.L), fatLb: r1(p.F), waterLb: r1(p.water),
       measurements, shape, limbs, muscle: muscleAt(p.G), muscleLb: Object.fromEntries(GROUP_ORDER.map(g => [g, r2(p.G[g])])), ffmi: heightIn ? r1(ffmiOf(p.L)) : null,
       ratios: { shoulderToWaist: ratio('shoulders', 'waist'), chestToWaist: ratio('chest', 'waist'),
-        waistToHeight: pos(m0.waist) && heightIn ? r2(shape.waist / heightIn) : null },
+        waistToHeight: pos(m0.waist) && heightIn ? r2(shape.waist / heightIn) : null, ...(sex === 'female' ? { waistToHip: ratio('waist', 'hips') } : {}) },
       low, high,
     };
     if (blocks) { const bi = p.ph >= 0 ? p.ph : likely.pts[Math.min(k + 1, W)].ph; pt.phase = { index: bi, goal: blocks[bi]?.goal, label: blocks[bi]?.label, atMaintenance: !!likely.pts[Math.min(k + 1, W)]?.track }; }
@@ -1104,11 +1127,13 @@ export function project(args = {}) {
     const T = p.L + p.F;
     const sh = shapeAt(p.L, p.F, p.G);
     return { week: k, date: ds(addDays(start, 7 * k)), bodyFatPct: r1(100 * p.F / T), leanLb: r1(p.L), ffmi: r1(ffmiOf(p.L)),
-      ratios: { shoulderToWaist: pos(m0.shoulders) && pos(m0.waist) ? r2(sh.shoulders / sh.waist) : null } };
+      ratios: { shoulderToWaist: pos(m0.shoulders) && pos(m0.waist) ? r2(sh.shoulders / sh.waist) : null,
+        ...(sex === 'female' ? { waistToHip: pos(m0.waist) && pos(m0.hips) ? r2(sh.waist / sh.hips) : null, waistToHeight: pos(m0.waist) && heightIn ? r2(sh.waist / heightIn) : null } : {}) } };
   });
 
   // ---------------- milestones
-  const milestones = buildMilestones({ series: weeklyLite, W, goalBf, L0, body, sex, m0, heightIn, ffmiCeil: ctx.ffmiCeil });
+  const milestones = sex === 'female' ? buildFemaleMilestones({ series: weeklyLite, W, goalBf, L0, body, m0, heightIn, ffmiCeil: ctx.ffmiCeil })
+    : buildMilestones({ series: weeklyLite, W, goalBf, L0, body, sex, m0, heightIn, ffmiCeil: ctx.ffmiCeil });
   const phaseWeeks = ctx.phasePlan ? ctx.phasePlan.instances.flatMap(x => [x.startWeek, x.startWeek - 1]) : [];
   const keep = sampleWeeks(W, [...milestones.map(m => m.week).filter(k => k != null), ...phaseWeeks]);
   const series = keep.map(pointAt);
@@ -1204,7 +1229,11 @@ export function project(args = {}) {
   assumptions.push(`The body pushes back on any imbalance. Eating more: ~10% of the extra calories is burned digesting it and up to ~42% more by extra fidgeting, movement and metabolic rate (phased in over ${SURPLUS_RAMP_WEEKS} weeks, capped at ${SURPLUS_ADAPT_CAP} kcal/day). In Levine's 1999 overfeeding study about half of a +1,000 kcal/day surplus was burned off on average, but it ranged from almost none to most of it between people. Eating less: digestion burns less, plus adaptive thermogenesis of ~10% of the cut and ~10 kcal/day per lb lost (capped at ${AT_CAP} kcal/day); it fades over ~${AT_DECAY_WEEKS} weeks once you are back at maintenance (Martins 2020 found it largely disappears after weight stabilizes).`);
   assumptions.push(`Weight levels off at a fixed intake (Hall et al. 2011, Lancet): a heavier body burns more (fat tissue ≈ ${GAMMA_FAT_KG} kcal/kg/day, lean ≈ 22, and everyday movement costs more at a higher weight), so eating the same amount every day moves you toward a new steady weight, about half-way in the first year and nearly all the way within ~3 years, instead of gaining or losing forever. Rule of thumb from Hall: each 10 kcal/day changes steady-state weight by about 1 lb.${age != null ? ` Resting burn also drifts down ~1%/decade with age beyond what lean mass explains (low end of published estimates; Pontzer 2021 finds little change before 60).` : ''}`);
   const respTxt = weekly.groupSetsPerWeek > 0 ? GROUP_ORDER.map(g => `${GROUPS[g]?.name || g} ${weekly.setsByGroup[g] ?? 0} sets → ${Math.round(100 * weekly.responseByGroup[g])}%`).join(', ') : '';
-  assumptions.push(`Muscle has a speed limit. The whole-body limit comes from training age (you start at ${r1(months0)} months): about ${LEAN_RATE_ANCHORS.filter(([m]) => [0, 12, 24, 36, 60].includes(m)).map(([m, r]) => `${r}%`).join(' → ')} of bodyweight/month at 0, 1, 2, 3 and 5 years of consistent training, still shrinking after that (the conservative end of the Aragon and McDonald guideline models, which are rules of thumb with ±30-50% individual spread). Training age only advances in weeks you actually train. It is split across muscle groups by their share of your muscle (legs and glutes ≈ 45%, back ≈ 17%, arms ≈ 14%, chest ≈ 8%, shoulders ≈ 7%, core ≈ 8%), so each group can only grow as fast as its own training allows.`);
+  const rateTxt = LEAN_RATE_ANCHORS.filter(([m]) => [0, 12, 24, 36, 60].includes(m)).map(([m, r]) => `${r}%`).join(' → ');
+  if (sex === 'female') {
+    const pct = g => Math.round(100 * GROUP_ORDER.filter(x => g.includes(x)).reduce((a, x) => a + ctx.share[x], 0));
+    assumptions.push(`Muscle has a speed limit. The limit comes from training age (you start at ${r1(months0)} months): about ${rateTxt} per month at 0, 1, 2, 3 and 5 years of consistent training, still shrinking after that (the conservative end of the Aragon and McDonald guideline models, which are rules of thumb with ±30-50% individual spread). Those rates were written for men as % of bodyweight; women build muscle at the same rate RELATIVE to their muscle (Roberts 2020 meta-analysis: no sex difference in relative hypertrophy; Refalo 2025: relative gains equal, absolute gains slightly larger in men), so Forge applies them to your lean mass (lean ÷ 0.8, the lean share of the reference man) rather than your bodyweight: your absolute gains come out smaller than a man's, your progress relative to your size the same. Training age only advances in weeks you actually train. It is split across muscle groups by their share of a woman's muscle (women carry relatively more in the legs, Janssen 2000: legs and glutes ≈ ${pct(['glutes', 'quads', 'hamstrings', 'calves'])}%, back ≈ ${pct(['back'])}%, arms ≈ ${pct(['biceps', 'triceps', 'forearms'])}%, chest ≈ ${pct(['chest'])}%, shoulders ≈ ${pct(['shoulders'])}%, core ≈ ${pct(['core'])}%), so each group can only grow as fast as its own training allows.`);
+  } else assumptions.push(`Muscle has a speed limit. The whole-body limit comes from training age (you start at ${r1(months0)} months): about ${rateTxt} of bodyweight/month at 0, 1, 2, 3 and 5 years of consistent training, still shrinking after that (the conservative end of the Aragon and McDonald guideline models, which are rules of thumb with ±30-50% individual spread). Training age only advances in weeks you actually train. It is split across muscle groups by their share of your muscle (legs and glutes ≈ 45%, back ≈ 17%, arms ≈ 14%, chest ≈ 8%, shoulders ≈ 7%, core ≈ 8%), so each group can only grow as fast as its own training allows.`);
   assumptions.push(`Sets per muscle drive growth: each group's weekly sets (indirect work counted fractionally, e.g. triceps get partial credit from pressing; Pelland 2024 found this fits the research best) go through a curve where 10 sets/week = 100%, the first few sets do the most, 20 sets ≈ 121%, 30 ≈ 130%, and it levels off around 135% (Schoenfeld, Ogborn & Krieger 2017; Pelland 2024; no drop-off at high volume is modelled). 0 sets = no training growth for that muscle. Your plan: ${respTxt || 'no lifting found'}.`);
   assumptions.push(`Each group's growth is then scaled by protein (${r2(ctx.proteinGPerLb)} g/lb${ctx.proteinAssumed ? ', ASSUMED because protein is not tracked' : ''}: ${Math.round(partition.proteinFactor * 100)}%), cardio interference (${Math.round(partition.interferenceFactor * 100)}% on legs, half that effect on the upper body), closeness to your natural limit (FFMI: ${Math.round(partition.ffmiFactor * 100)}%)${ctx.stackUsed && Math.abs(partition.stackFactor - 1) > 0.005 ? `, your supplement/therapy stack (${Math.round(partition.stackFactor * 100)}%)` : ''} and energy availability (below). Over ${W} weeks that ceiling is about ${r1(partition.leanCeilingLb)} lb of lean mass.`);
   assumptions.push(`How much of that ceiling you reach depends on food: about 70% at maintenance, ~93% at +250 kcal/day, ~98% at +500, and no more beyond that; a 300 kcal deficit gives ~45% and a 1,000 kcal deficit ~13% (newer lifters and people above 20% body fat recomp a bit better; very lean or veteran lifters worse). Leaner people put a bit more of a surplus into muscle (Forbes). This plan reaches ${partition.ceilingUsedPct}% of the ceiling. Calories beyond what muscle can use are stored as fat: that is why a huge surplus adds fat much faster than muscle (Iraki 2019; Garthe 2013 found the same in elite athletes).`);
@@ -1220,7 +1249,7 @@ export function project(args = {}) {
     none: `No planned sessions, recent workouts or schedule were found, so no training effect is included (expect little or no muscle gain in this projection).`,
   }[driverSource] || '';
   assumptions.push(`${drvText} Planned sessions count at ${Math.round(adh * 100)}% (adherence)${useTemplateBeyond && lastPlanned ? `, and weeks after ${lastPlanned} repeat the average planned/recent week` : useTemplateBeyond ? '' : ', and nothing is assumed after the last planned day'}. Average: ${r1(weekly.liftSetsPerWeek)} lift sets and ${weekly.cardioMinPerWeek} cardio min per week.`);
-  assumptions.push(`Tape measurements are rough: waist ≈ ${fc.waist} in per lb of fat (≈0.6-1.0 in per 5-8 lb; men gain and lose belly fat first, limbs least), hips ${fc.hips}, chest ${fc.chest}, thighs ${fc.thigh}, arms ${fc.arm}. Muscle adds size only where it grows: each tape site follows the muscles under it (arms = biceps + triceps, shoulders = delts + upper back, thighs = quads + hamstrings…), so more triceps sets show up on the arm tape. Left and right limbs are averaged for the model.`);
+  assumptions.push(sex === 'female' ? `Tape measurements are rough: per lb of fat, waist ≈ ${fc.waist} in, hips ${fc.hips}, thighs ${fc.thigh}, chest/bust ${fc.chest}, arms ${fc.arm}. Women lose less waist and relatively more hip and thigh fat than men for the same fat loss (Kuk & Ross 2009), and hip/thigh fat is the slowest to go (Karpe & Pinnick 2015); only that direction is from studies, the exact inches per lb are estimates. Spot-reducing doesn't work: training one area didn't take fat off it (Kostek 2007; Ramírez-Campillo 2013).` + ` Muscle adds size only where it grows: each tape site follows the muscles under it (arms = biceps + triceps, hips = glutes, thighs = quads + hamstrings…). Left and right limbs are averaged for the model.` : `Tape measurements are rough: waist ≈ ${fc.waist} in per lb of fat (≈0.6-1.0 in per 5-8 lb; men gain and lose belly fat first, limbs least), hips ${fc.hips}, chest ${fc.chest}, thighs ${fc.thigh}, arms ${fc.arm}. Muscle adds size only where it grows: each tape site follows the muscles under it (arms = biceps + triceps, shoulders = delts + upper back, thighs = quads + hamstrings…), so more triceps sets show up on the arm tape. Left and right limbs are averaged for the model.`);
   if (shapeEstimated.length) assumptions.push(`Silhouette: ${shapeEstimated.join(', ')} ${shapeEstimated.length === 1 ? 'was' : 'were'} not measured, so ${shapeEstimated.length === 1 ? 'it is' : 'they are'} drawn from a typical ${sex} build scaled to your ${heightIn ? 'height and ' : ''}weight. Measure them to make the picture yours.`);
   if (!heightIn) assumptions.push('Height is missing, so BMI, FFMI and the Navy body-fat estimate are unavailable and the silhouette uses an average height.');
   if (ctx.stackUsed && (stack.contributions.length || stack.warnings.length)) {
@@ -1231,13 +1260,37 @@ export function project(args = {}) {
     }).filter(Boolean);
     assumptions.push(`Supplements, therapies and metabolic values: ${parts.length ? parts.join(' ') : 'included.'}${stack.warnings.length ? ` Warnings: ${stack.warnings.join(' ')}` : ''}${series.some(p => Math.abs(p.waterLb) >= 0.1) ? ' Water weight from the stack is added to the scale weight only, never counted as muscle or fat.' : ''}`);
     if (stack.direct.lean || stack.direct.fat || Math.abs(partition.stackFactor - 1) > 0.005) {
-      assumptions.push(`How the stack combines with training: it can raise the training-driven ceiling (×${r2(partition.stackFactor)} on average) and add lean mass that does not need training (${r2(stack.direct.lean)} lb total here), as in Bhasin 1996 (10 weeks: exercise alone +1.9 kg fat-free mass, testosterone alone +3.2 kg, both +6.1 kg). Those effects are treated as roughly additive. No study has varied testosterone level and set volume at the same time, so additivity is an assumption. Bhasin's subjects were 19-35; ${stack.ageNote || 'age effects come from your metabolic profile.'} Lean built this way still costs ~${KCAL_PER_LB_LEAN} kcal/lb, so at a fixed intake it comes out of fat.`);
+      assumptions.push(sex === 'female'
+        ? `How the stack combines with training: it can raise the training-driven ceiling (×${r2(partition.stackFactor)} on average) and add lean mass that does not need training (${r2(stack.direct.lean)} lb total here). For testosterone in women that direct effect comes from Huang 2014 (no training) and trans-men cohorts (mostly untrained), and Forge adds it on top of training. No study in women has tested testosterone and training together, so additivity is an assumption. Lean built this way still costs ~${KCAL_PER_LB_LEAN} kcal/lb, so at a fixed intake it comes out of fat.`
+        : `How the stack combines with training: it can raise the training-driven ceiling (×${r2(partition.stackFactor)} on average) and add lean mass that does not need training (${r2(stack.direct.lean)} lb total here), as in Bhasin 1996 (10 weeks: exercise alone +1.9 kg fat-free mass, testosterone alone +3.2 kg, both +6.1 kg). Those effects are treated as roughly additive. No study has varied testosterone level and set volume at the same time, so additivity is an assumption. Bhasin's subjects were 19-35; ${stack.ageNote || 'age effects come from your metabolic profile.'} Lean built this way still costs ~${KCAL_PER_LB_LEAN} kcal/lb, so at a fixed intake it comes out of fat.`);
     }
   } else if (!ctx.stackUsed) assumptions.push('Supplements, therapies and metabolic values are switched off for this projection (neutral defaults), for comparison.');
-  assumptions.push(`Genetic ceiling: muscle gain slows as you approach a natural limit of about FFMI ${r1(ctx.ffmiCeil)} (fat-free mass index normalized to 1.8 m; Kouri et al. 1995 found drug-free athletes rarely exceed ~25, and individual limits vary by about ±1.5). Gains start easing ~4 points below it and stop at it. You start at FFMI ${r1(ctx.ffmiOf(L0))}${heightIn ? '' : ' (height missing, so an average height is assumed)'}, so the ceiling is about ${r1(ctx.leanAtFfmi(ctx.ffmiCeil))} lb of lean mass.${ceilInfo.tShift > 0.05 ? ` Your testosterone level raises the reachable ceiling by about ${r1(ceilInfo.tShift)} FFMI (Kouri's steroid users averaged ~3 points above non-users; Forge maps 1,000 → 2,400 ng/dL to +0 → +2.0 and does not extrapolate; this mapping is an estimate, not a measured dose-response).` : ''}`);
-  if (age != null) assumptions.push(`Age: you are ${Math.round(age)} now and ${r1(age + W / 52.18)} at the end; age is recomputed every week. Muscle-building potential eases ~0.4%/yr past 35 (gentle; older lifters still gain well, Peterson 2011)${ctx.stackUsed ? ', and testosterone follows your metabolic profile (an assumed average declines ~1%/yr with age; a lab value is aged ~1%/yr past 40 per the Massachusetts Male Aging Study, which only matters if it falls into the low range)' : ''}.`);
+  if (sex === 'female') assumptions.push(`Genetic ceiling: muscle gain slows as you approach a natural limit of about FFMI ${r1(ctx.ffmiCeil)} (fat-free mass index normalized to 1.8 m, ±1.5). No study defines a natural limit for women the way Kouri 1995 does for men (~25), so Forge takes the ~3.5-point sex gap in typical FFMI (15.4 vs 18.9, Schutz 2002; 17.9 vs 21.5 in athletes, Magee 2024) off the male limit, which fits the female athlete data (college athletes average 18.8 and their 97.5th percentile is 23.9, Harty 2019). Gains start easing ~4 points below it and stop at it. You start at FFMI ${r1(ctx.ffmiOf(L0))}${heightIn ? '' : ' (height missing, so an average height is assumed)'}, so the ceiling is about ${r1(ctx.leanAtFfmi(ctx.ffmiCeil))} lb of lean mass.${ceilInfo.tShift > 0.05 ? ` Testosterone therapy raises the reachable ceiling by about ${r1(ceilInfo.tShift)} FFMI: exactly the lean mass the female and trans-men studies show it adds, so that gain isn't cut off at the natural limit.` : ''}`);
+  else assumptions.push(`Genetic ceiling: muscle gain slows as you approach a natural limit of about FFMI ${r1(ctx.ffmiCeil)} (fat-free mass index normalized to 1.8 m; Kouri et al. 1995 found drug-free athletes rarely exceed ~25, and individual limits vary by about ±1.5). Gains start easing ~4 points below it and stop at it. You start at FFMI ${r1(ctx.ffmiOf(L0))}${heightIn ? '' : ' (height missing, so an average height is assumed)'}, so the ceiling is about ${r1(ctx.leanAtFfmi(ctx.ffmiCeil))} lb of lean mass.${ceilInfo.tShift > 0.05 ? ` Your testosterone level raises the reachable ceiling by about ${r1(ceilInfo.tShift)} FFMI (Kouri's steroid users averaged ~3 points above non-users; Forge maps 1,000 → 2,400 ng/dL to +0 → +2.0 and does not extrapolate; this mapping is an estimate, not a measured dose-response).` : ''}`);
+  if (age != null && sex === 'female') assumptions.push(`Age: you are ${Math.round(age)} now and ${r1(age + W / 52.18)} at the end; age is recomputed every week. Muscle-building potential eases ~0.4%/yr past 35 (gentle: postmenopausal women still gain lean mass with training, regardless of age, Thomas 2021). Across the menopause transition fat gain tends to speed up and lean mass to slip until ~2 years after the final period (SWAN, Greendale 2019); Forge doesn't add a separate drift, so intake, training and age drive the projection. Natural testosterone in the female range isn't modelled to limit muscle gain.`);
+  else if (age != null) assumptions.push(`Age: you are ${Math.round(age)} now and ${r1(age + W / 52.18)} at the end; age is recomputed every week. Muscle-building potential eases ~0.4%/yr past 35 (gentle; older lifters still gain well, Peterson 2011)${ctx.stackUsed ? ', and testosterone follows your metabolic profile (an assumed average declines ~1%/yr with age; a lab value is aged ~1%/yr past 40 per the Massachusetts Male Aging Study, which only matters if it falls into the low range)' : ''}.`);
   if (ctx.realism) assumptions.push(`Long-term realism is on: weeks after the planned days fade toward ${Math.round((1 - ctx.realism) * 100)}% of the planned training over ~1.5 years (missed weeks, travel, life).`);
   assumptions.push(`Band: low/high combine, as independent errors, ±${sigmaE} kcal/day of maintenance-estimate error${calib.applied ? ' (narrowed by your food-log calibration)' : ''}, ${Math.round(lmLo * 100)}-${Math.round(lmHi * 100)}% of the expected muscle response, a genetic ceiling ±${FFMI_CEIL_SD} FFMI, and (low side) training adherence slipping ~20% over the years. It widens with the horizon and is wider when there is less real data (confidence: ${confidence}). Re-measuring narrows it: the projection re-anchors to your real numbers.`);
+
+  // ---------------- female mode extras (§20)
+  let energyAvailability = null, caution = null;
+  if (sex === 'female') {
+    // EA = (intake − net exercise kcal) / kg lean mass / day, per simulated week (weeks at maintenance included).
+    const eaAt = k => { const w = likely.wkOut[k], p = likely.pts[k]; const Wt = p.L + p.F;
+      return (w.kcalIn - ctx.exNetPerDay(weekDrivers[k], Wt, p.L)) / (p.L / LB_PER_KG); };
+    const eas = likely.wkOut.map((_, k) => eaAt(k)).filter(fin);
+    if (eas.length) {
+      const start = r1(eas[0]), min = r1(Math.min(...eas));
+      energyAvailability = { start, min, low: min < EA_LOW, threshold: EA_LOW };
+      if (min < EA_LOW && !(ctx.fstat?.menopause === 'post')) assumptions.push(`Energy availability (food minus exercise, per kg of lean mass) drops to about ${min} kcal/kg/day in this projection${start < EA_LOW ? ' from the start' : ''}. Below ~30, the hormone pulses that drive the menstrual cycle were disrupted within 5 days (Loucks & Thuma 2003); missed or irregular periods, bone loss and stalled progress follow (IOC REDs consensus 2023). Forge doesn't model those effects, so treat this plan as a warning: eat more around training or ease the deficit.`);
+      else if (min < EA_LOW) assumptions.push(`Energy availability (food minus exercise, per kg of lean mass) drops to about ${min} kcal/kg/day. Low energy availability costs bone and recovery at any age (IOC REDs 2023); Forge doesn't model those effects.`);
+    }
+    if (ctx.fstat?.postpartum) {
+      caution = 'postpartum';
+      assumptions.unshift(`Postpartum: weight, fluid and hormones change fast for months after birth${ctx.fstat.breastfeeding ? ' and breastfeeding burns roughly 500 kcal/day' : ''}, which this model doesn't capture, so treat the projection as very rough. A slow loss of about 0.5-1 kg a month after the first month is compatible with breastfeeding (Kominiarek & Rajan 2016). Check with your provider before a deficit or hard training.`);
+    }
+    if (ctx.fstat?.cycling) assumptions.push('Your scale weight can swing 1-3 lb across your cycle from water; the projection is your trend. Resting burn runs slightly higher in the luteal phase (Benton 2020 meta-analysis), which averages out over a month. Menstrual-cycle phase has at most a trivial effect on performance (McNulty 2020), so the plan doesn\'t change with your cycle.');
+  }
 
   const outMissing = [...missing], outMissingInfo = [...missingInfo];
   if (!plannedCount && !hist.length && !outMissing.includes('sessions')) {
@@ -1251,9 +1304,10 @@ export function project(args = {}) {
     horizon: { weeks: W, years: r2(W / 52.18), label: horizonLabel(W), sampled: series.length < W + 1 },
     energy: { intakeSource, intakeMode, intakeStart: Math.round(intakeStart), tdeeStart: Math.round(tdeeStart), tdeeFormula: Math.round(ctx.tdeeFormula),
       surplusStart: Math.round(intakeStart - tdeeStart), goal, proteinGPerLb: r2(ctx.proteinGPerLb), proteinAssumed: ctx.proteinAssumed, fatPct: ctx.fatPct,
-      cardioDeltaMin: ctx.cdMin, cardioModality: ctx.cdMod, cardioIntensity: ctx.cdInt },
+      cardioDeltaMin: ctx.cdMin, cardioModality: ctx.cdMod, cardioIntensity: ctx.cdInt, exerciseKcal: Math.round(ctx.avgEx) },
     macros, partition, tdeeCalibration: calib, startBodyFat: sb, stack,
     driverSource, bodyFatAssumed: bfAssumed, shapeEstimated, missing: outMissing, missingInfo: outMissingInfo,
+    ...(sex === 'female' ? { energyAvailability, ...(caution ? { caution } : {}) } : {}),
   };
 }
 
@@ -1323,6 +1377,67 @@ function buildMilestones({ series, W, goalBf, L0, body, sex, m0, heightIn = null
       target: r1(raceLean + 1), value: endPt.leanLb, already,
       note: already ? `Already about ${r1(series[0].leanLb - raceLean)} lb more lean mass than at marathon race weight. At the same ${raceBf}% you would weigh about ${r1(series[0].leanLb / (1 - raceBf / 100))} lb.`
         : `Marathon-era lean mass is a useful benchmark: beating it by 1+ lb means the lifting has added real muscle.` }, hit);
+  }
+  return milestones;
+}
+
+// Female milestones (§20). Same mechanics as buildMilestones; female thresholds and notes.
+function buildFemaleMilestones({ series, W, goalBf, L0, body, m0, heightIn = null, ffmiCeil = BODY.female.ffmiCeiling }) {
+  const milestones = [];
+  const endPt = series[series.length - 1];
+  const span = W >= 78 ? `${r1(W / 52)} years` : `${W} weeks`;
+  const when = hit => `Projected around ${hit.date} (${hit.week >= 78 ? `year ${r1(hit.week / 52)}` : `week ${hit.week}`}).`;
+  const add = (m, hit) => milestones.push({ ...m, date: hit ? hit.date : null, week: hit ? hit.week : null, reached: !!hit });
+  const down = (id, label, thr, val, note) => {
+    const v0 = val(series[0]); if (v0 == null) return;
+    const already = v0 <= thr, hit = series.find(p => val(p) != null && val(p) <= thr), vN = val(endPt);
+    add({ id, label, target: thr, value: vN, already,
+      note: already ? `Already there (${v0}). ${note}` : hit ? `${when(hit)} ${note}` : `Not reached within ${span} at this pace (projected ${vN} at the end). ${note}` }, hit);
+  };
+  const absNote = 'No study has measured where abs show (for either sex), so this is a rough rule of thumb; it depends a lot on where you store fat. Female physique competitors average ~13% on stage (DXA, Hulmi 2017), and getting that lean usually costs regular periods and needs a long recovery.';
+  down('abs_upper', 'Ab outline visible (~20% BF, rough)', 20, p => p.bodyFatPct, absNote);
+  down('six_pack', 'Defined abs (~16% BF, rough)', 16, p => p.bodyFatPct, absNote);
+  {
+    const already = series[0].bodyFatPct <= goalBf;
+    const hit = series.find(p => p.bodyFatPct <= goalBf);
+    const atGoal = endPt.leanLb / (1 - goalBf / 100);
+    add({ id: 'goal_bf', label: `Goal body fat (${goalBf}%)`, target: goalBf, value: endPt.bodyFatPct, already,
+      note: `With your projected lean mass (${r1(endPt.leanLb)} lb), ${goalBf}% body fat is about ${r1(atGoal)} lb on the scale. The healthy range for women 20-39 is about 21-33% (Gallagher 2000).` +
+        (hit ? '' : ` Not reached within ${span} at this pace.`) }, hit);
+  }
+  if (pos(m0.waist) && pos(m0.hips)) down('whr_085', 'Waist:hip under 0.85 (WHO cut-off for women)', 0.85, p => p.ratios?.waistToHip ?? null,
+    'WHO links a waist-to-hip ratio of 0.85 or more in women with higher metabolic risk (WHO expert consultation 2008). Rough estimate from tape measures.');
+  if (pos(m0.waist) && heightIn) down('wht_05', 'Waist under half your height', 0.5, p => p.ratios?.waistToHeight ?? null,
+    'Waist-to-height under 0.5 is a simple health marker that works for both sexes (Ashwell 2012 meta-analysis).');
+  const leanSteps = W >= 52 ? [5, 10, 15, 20] : [5, 10];
+  for (const gainLb of leanSteps) {
+    const thr = L0 + gainLb;
+    const hit = series.find(p => p.leanLb >= r1(thr));
+    add({ id: `lean_${gainLb}`, label: `Lean mass +${gainLb} lb`, target: r1(thr), value: endPt.leanLb, already: false,
+      note: hit ? `${when(hit)} Lean mass includes muscle plus its water; the scale will not show it cleanly.`
+        : `Not within ${span} (projected ${endPt.leanLb - L0 >= 0 ? '+' : ''}${r1(endPt.leanLb - L0)} lb lean at the end).` }, hit);
+  }
+  if (heightIn) {
+    const near = r1(ffmiCeil - 1);
+    for (const [id, thr, label, note] of [
+      ['ffmi_185', 18.5, 'FFMI 18.5 (athletic)', 'FFMI = lean kg ÷ height² (normalized to 1.8 m). Women average ~15.4 (Schutz 2002); female college athletes average ~18.8 (Harty 2019).'],
+      ['ffmi_20', 20, 'FFMI 20 (very muscular, still natural)', 'Female Ranger School graduates averaged 20.0 (McClung 2022) and drug-tested female bodybuilders ~18.3 (Graybeal 2020). Takes years of consistent training.'],
+      ['near_ceiling', near, `Within 1 FFMI of your natural ceiling (~${r1(ffmiCeil)})`, 'No study defines a natural limit for women; Forge uses ~22 ± 1.5 from the female athlete data (97.5th percentile of female college athletes: 23.9, Harty 2019). Gains slow a lot in this zone.']]) {
+      if (id !== 'near_ceiling' && thr >= ffmiCeil) continue;
+      const already = series[0].ffmi >= thr;
+      const hit = series.find(p => p.ffmi >= thr);
+      add({ id, label, target: thr, value: endPt.ffmi, already,
+        note: already ? `Already there (FFMI ${series[0].ffmi}). ${note}` : hit ? `${when(hit)} ${note}` : `Not within ${span} (projected FFMI ${endPt.ffmi} at the end). ${note}` }, hit);
+    }
+  }
+  // A personal benchmark only when she sets both numbers (no sex default; the male default is Bob's marathon weight).
+  const raceW = pos(body.raceWeightLb), raceBf = pos(body.raceBodyFat);
+  if (raceW && raceBf) {
+    const raceLean = r1(raceW * (1 - raceBf / 100));
+    const already = series[0].leanLb >= raceLean + 1;
+    const hit = series.find(p => p.leanLb >= raceLean + 1);
+    add({ id: 'lean_vs_race', label: `More lean mass than your benchmark (${raceW} lb at ~${raceBf}% = ${raceLean} lb lean)`, target: r1(raceLean + 1), value: endPt.leanLb, already,
+      note: already ? `Already about ${r1(series[0].leanLb - raceLean)} lb more lean mass than your benchmark.` : 'Beating your benchmark lean mass by 1+ lb means the lifting has added real muscle.' }, hit);
   }
   return milestones;
 }
@@ -1448,7 +1563,9 @@ export function nutritionLab({ baseline, profile, sessions, weeks = 12, now = ne
   if (hi >= 750 && s500.surplus < big.surplus) explanation.push(`Going from ${sgn(s500.surplus)}${s500.surplus} to ${sgn(big.surplus)}${big.surplus} kcal/day adds only ${r1(Math.max(0, big.leanLb - s500.leanLb))} lb more lean but ${r1(big.fatLb - s500.fatLb)} lb more fat. "Eat a lot" builds muscle only up to the speed limit; after that it is mostly fat you will later have to diet off.`);
   explanation.push(`The body burns off part of any surplus (digestion, fidgeting, more movement): roughly half of a big one on average in Levine's 1999 overfeeding study, with huge differences between people. So the scale moves less than the calories suggest, but most of what is stored past the sweet spot is fat. A practical target is gaining about 0.25-0.5% of bodyweight a week (${r1(ctx.W0 * 0.0025)}-${r1(ctx.W0 * 0.005)} lb), in line with Iraki 2019's off-season bodybuilding review.`);
   if (p05 && p10) explanation.push(`Protein is the one macro that clearly matters: at 0.5 g/lb you would gain ~${p05.leanLb} lb of lean vs ~${p10.leanLb} lb at 1.0 g/lb (same calories). Benefits level off around 0.7-1.0 g/lb (Morton 2018), so ~1 g/lb (${Math.round(ctx.W0)} g/day for you) is plenty; more is safe but adds nothing.`);
-  explanation.push(`Carbs vs fat barely matters for body composition when calories and protein are equal. Carbs fuel hard training, so keep them at 150 g+ on lifting days; keep fat at 20%+ of calories for hormones. With Adderall blunting appetite, calorie-dense foods and shakes make a surplus far easier than eating more volume.`);
+  const adderallLine = ' With Adderall blunting appetite, calorie-dense foods and shakes make a surplus far easier than eating more volume.';
+  const femaleOnAdderall = (Array.isArray(ctx.profile.supplements) ? ctx.profile.supplements : []).some(e => e && e.id === 'adderall' && e.active !== false && !e.end);
+  explanation.push(`Carbs vs fat barely matters for body composition when calories and protein are equal. Carbs fuel hard training, so keep them at 150 g+ on lifting days; keep fat at 20%+ of calories for hormones.${ctx.sex !== 'female' || femaleOnAdderall ? adderallLine : ''}`);
   explanation.push(`Cardio: it burns calories, so at the same intake more cardio means less fat. It only trims muscle gain modestly once you pass ~150 min/week, and running costs more than cycling (Wilson 2012). If you add cardio but want the same muscle gain, eat back roughly what it burns.${ctx.cdMin ? ` This sweep includes ${sgn(ctx.cdMin)}${Math.round(ctx.cdMin)} min/week of extra ${ctx.cdInt} ${CARDIO[ctx.cdMod]?.name || ctx.cdMod}.` : ''}`);
   if (ctx.calib.applied) explanation.push(`Maintenance here is calibrated from your food log and weight trend (${ctx.calib.note})`);
   else explanation.push(`Maintenance (~${maint} kcal/day) is a formula estimate that can be off by 10-15%. Log food and weigh in daily for 2+ weeks and the lab will calibrate it to your real burn.`);
