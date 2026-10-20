@@ -22,6 +22,15 @@
 //         50th pct), used for breadth:depth sanity ranges.
 //   [NY]  Nyffeler et al. (2006) JBJS 88-B:800 (acromion index: lateral acromion ≈ 0.6 cm lateral of
 //         the glenohumeral centre's projection) — used for the acromion vs shoulder-joint offset.
+//   [AN2F] ANSUR II public FEMALE file (n = 1,986): every female table (CONTRACT §21), see "female proportions".
+//
+// CONTRACT-NOTE (§21, female): sex = 'female' selects the female table set (HEIGHTS_FEMALE, SEGMENT_RATIOS_FEMALE,
+//   BONE_RATIOS_FEMALE, female head / pelvis / ranges / buddy ratios / length norms / landmark offsets) and the
+//   female tape sites: `chest` = BUST (fullest, over the bust point), `waist` = NATURAL waist (WHO midpoint, ≈ 1.8 in
+//   above the navel; heights.navel is reported separately), `hips` = widest, `thigh` = just below the gluteal fold.
+//   Extras: landmarks.underbust is the ribcage at the inframammary fold (model value, or an optional `underbust` tape;
+//   derived.underbustSource / underbustY), proportions(sex) returns the tables, boneFromTape / tapeFromBone take an
+//   optional sex. With sex omitted or 'male' every output is identical to the pre-female module.
 //
 // CONTRACT-NOTE (extras beyond §16b, all additive):
 //   bodyGeometry() also accepts { weightLb, limbs:{armL,armR,thighL,thighR,calfL,calfR}, shape } (shape is
@@ -196,6 +205,141 @@ const BUDDY = { forearm: ['arm', 11 / 13], arm: ['forearm', 13 / 11], calf: ['th
   chest: ['shoulders', 1 / 1.18] };   // [AN] shoulder circ / chest circ ≈ 1.17–1.18
 // (a missing shoulders tape is not scaled from chest: it is rebuilt from a skeletal biacromial prior, see below)
 
+// ------------------------------------------------------------------ female proportions (CONTRACT §21)
+// [AN2F] = computed from the ANSUR II public FEMALE file (Gordon CC et al. 2014, NATICK/TR-15/007; data via Penn
+//   State OPEN Lab, tools.openlab.psu.edu/publicData/ANSUR_II_FEMALE_Public.csv), n = 1,986, median stature 1626 mm
+//   (64.0 in), with exactly the method of the male [AN2] numbers (median of each subject's length / stature, and the
+//   0.1–99.9 pct of that ratio; the same script reproduces every male [AN2] value above from the male file, n = 4,082).
+// Method: every male table value v (D&C / de Leva / ANSUR conventions above) becomes v × RoR, the ratio of ratios
+//   RoR = median(X / stature | female) ÷ median(X / stature | male) of the ANSUR II measurement X that defines it, so
+//   the female skeleton keeps the male model's calibrated joint-centre conventions and only the sex difference in
+//   proportion is imported. Heights that are differences (elbow = acromion − upper arm, …) are rebuilt from scaled
+//   parts. RoR used (F/M):
+//     acromial height 0.9991, cervicale+suprasternale (neck tape level) 0.9942, axilla height 1.0056, omphalion 1.0006,
+//     buttock height 1.0131, trochanterion 1.0135, crotch height 0.9972, tibiale 1.0081, lateral malleolus 0.9306,
+//     wrist height 1.0099, shoulder-elbow length 0.9905, radiale-stylion 0.9713, trochanterion−tibiale 1.0198,
+//     tibiale−lateral malleolus 1.0234, hand length 1.0086, foot length 0.9802, foot breadth 0.9822, hand breadth
+//     0.9547, head height (tragion-top of head + menton-sellion) 1.0171, head breadth 1.0317, head length 1.0251,
+//     bicristal (pelvic) breadth 1.0668, biacromial 0.9490, (bideltoid − biacromial)/2 0.9423, neck base / neck
+//     circumference 1.0306, wrist / forearm circumference 1.0353, wrist circ / stature 0.948, ankle / calf 0.989,
+//     ankle circ / stature 1.013, shoulder circ / chest circ 0.9776; section aspects (depth / breadth): chest at the
+//     bust 1.0449 (F 0.916 vs M 0.876), waist 0.9774, buttock depth / hip breadth 0.9207 (F 0.654 vs M 0.710).
+//   Direct female values (soft-tissue landmarks with no male-convention equivalent):
+//     bust point (ANSUR "chest height", taken at the bustpoint in women) 0.719 H;
+//     natural waist = WHO midpoint between the lowest rib and the iliac crest (WHO 2008, Waist circumference and
+//       waist-hip ratio, report of a WHO expert consultation): (tenth-rib height + iliocristale height) / 2 =
+//       0.6299 H in [AN2F] (0.6208 H in men) → the model's 0.600 H navel × 0.6299 / 0.6016 (male omphalion) =
+//       0.628 H, ≈ 1.8 in above the navel at 64 in. Women tape the waist there (also the US Navy female site).
+//   Segment-length tapes ([AN2F], 0.1–99.9 pct, widened like the male ranges):
+//     shoulder-elbow length   median 334 mm (13.15 in) = 0.2050 H, 0.186–0.223 H   (male 0.2070)
+//     radiale-stylion length  median 240.5 mm = 0.1478 H, 0.129–0.169 H  → olecranon–ulnar styloid 0.1550 H
+//     trochanterion − tibiale median 407 mm (16.02 in) = 0.2505 H, 0.217–0.286 H     (male 0.2456: women's legs are
+//     tibiale − lat. malleolus median 374 mm (14.72 in) = 0.2300 H, 0.201–0.259 H   proportionally longer)
+//   Landmark → joint-centre offsets: same anatomy, recomputed as tape median − the female model bone (≈ the male ones).
+// Female reference girths (REF.female, shared with projection.js REF_BODY) stay a typical civilian woman (64 in,
+//   140 lb, 28 % BF); the Army sample's medians (bust 37.0, omphalion waist 33.5, hips 40.1, neck 12.9, shoulders 40.4,
+//   flexed biceps 12.0, flexed forearm 10.4, thigh 24.1, calf 14.6 in, 147 lb) are heavier and more muscular.
+// Underbust (bra band, at the inframammary fold) is not in ANSUR II, so it is a model value unless a tape is given
+//   (`underbust`): bust × (0.862 + 0.0035 × (28 − BF%)), clamped 0.78–0.95 × bust — bust/underbust ≈ 1.16 for the
+//   reference woman (cup ≈ 4.8 in), smaller cups when leaner (breast volume is mostly fat). The fold sits
+//   0.030 H + 0.22 × (bust − underbust) below the bust point (≈ 3 in for the reference woman).
+const RoR = {
+  acromion: 0.9991, neckLevel: 0.9942, axilla: 1.0056, omphalion: 1.0006, buttock: 1.0131, trochanterion: 1.0135,
+  crotch: 0.9972, tibiale: 1.0081, malleolus: 0.9306, wrist: 1.0099, upperArm: 0.9905, forearm: 0.9713, thigh: 1.0198,
+  shank: 1.0234, hand: 1.0086, foot: 0.9802, footBreadth: 0.9822, handBreadth: 0.9547, headHeight: 1.0171,
+  headBreadth: 1.0317, headLength: 1.0251, bicristal: 1.0668, biacromial: 0.9490, deltoidReach: 0.9423,
+};
+const r4 = x => Math.round(x * 10000) / 10000;
+const F_ELBOW = r4(0.818 * RoR.acromion - 0.188 * RoR.upperArm), F_WRIST = r4(0.485 * RoR.wrist), F_KNEE = r4(0.285 * RoR.tibiale);
+export const HEIGHTS_FEMALE = {
+  vertex: 1.0,
+  chin: r4(1 - 0.130 * RoR.headHeight),
+  headCenter: r4(1 - 0.063 * RoR.headHeight),
+  neck: r4(0.848 * RoR.neckLevel),
+  acromion: r4(0.818 * RoR.acromion),
+  shoulderJoint: r4(F_ELBOW + 0.1618 * RoR.upperArm),
+  deltoid: r4(F_ELBOW + 0.1618 * RoR.upperArm + 0.0062),
+  axilla: r4(0.755 * RoR.axilla),
+  chest: 0.719,         // bust point, [AN2F] chest height 0.7194 H (direct)
+  underbust: 0.672,     // inframammary fold for the reference woman (per body: chest − fold drop, see above)
+  elbow: F_ELBOW,
+  waist: 0.628,         // natural waist (WHO site), see above
+  navel: r4(0.600 * RoR.omphalion),
+  forearm: r4(F_ELBOW - 0.036 * RoR.forearm),
+  hipJoint: r4(0.530 * RoR.trochanterion),
+  hip: r4(0.505 * RoR.buttock),
+  wrist: F_WRIST,
+  crotch: r4(0.472 * RoR.crotch),
+  thigh: r4(0.472 * RoR.crotch - 0.017),
+  fingertip: r4(F_WRIST - 0.108 * RoR.hand),
+  knee: F_KNEE,
+  calf: r4(F_KNEE - 0.080 * RoR.shank),
+  ankle: r4(0.039 * RoR.malleolus),
+};
+export const SEGMENT_RATIOS_FEMALE = {
+  upperArm: r4(0.186 * RoR.upperArm), forearm: r4(0.146 * RoR.forearm), hand: r4(0.108 * RoR.hand),
+  thigh: r4(0.245 * RoR.thigh), shank: r4(0.246 * RoR.shank), foot: r4(0.152 * RoR.foot),
+  footBreadth: r4(0.055 * RoR.footBreadth), footHeight: HEIGHTS_FEMALE.ankle,
+  torso: r4(HEIGHTS_FEMALE.acromion - HEIGHTS_FEMALE.hipJoint), head: r4(0.130 * RoR.headHeight),
+  neck: r4(HEIGHTS_FEMALE.chin - HEIGHTS_FEMALE.acromion),
+  handBreadth: r4(0.051 * RoR.handBreadth), handThickness: r4(0.017 * RoR.handBreadth),
+};
+export const BONE_RATIOS_FEMALE = { upperArm: r4(0.1618 * RoR.upperArm), forearm: r4(0.1545 * RoR.forearm), thigh: r4(0.2425 * RoR.thigh), shank: r4(0.2493 * RoR.shank) };
+const HEAD_FEMALE = { rx: r4(0.0447 * RoR.headBreadth), rz: r4(0.0567 * RoR.headLength), ry: r4(0.065 * RoR.headHeight) };
+const JOINT_X_FEMALE = { hip: r4(0.0505 * RoR.bicristal), knee: 0.043, ankle: 0.045 };   // wider pelvis, same stance at knee/ankle (→ valgus)
+// bust: the extra depth is in front (breasts), so its centre follows the front more than the male chest does
+const ZC_FEMALE = { chest: [0.0050, 0.95], underbust: [0.0070, 0.75], waist: [0.0150, 0.8], hip: [-0.0125, -0.5] };
+// ANSUR II female 0.1–99.9 pct (in), widened for muscular / obese like the male ranges
+const RANGE_FEMALE = { neck: [9.5, 19], shoulders: [30, 58], chest: [26, 58], waist: [20, 58], hips: [28, 66], arm: [7.5, 21], forearm: [7, 16],
+  thigh: [14, 38], calf: [10, 22] };
+const BUDDY_FEMALE = { forearm: ['arm', 9.5 / 11.5], arm: ['forearm', 11.5 / 9.5], calf: ['thigh', 14 / 22], thigh: ['calf', 22 / 14],
+  chest: ['shoulders', 1 / r4(1.18 * 0.9776)] };   // shoulder circ / bust ≈ 1.15 ([AN2F] median 1.091 vs male 1.116, × the male 1.18)
+const LANDMARK_OFFSETS_FEMALE = { upperArm: 0.0447, forearm: 0.0129, thigh: 0.0006, shank: -0.0210 };
+const LENGTH_NORMS_FEMALE = {
+  upperArm: { median: 0.2050, range: [0.184, 0.225] },
+  forearm: { median: 0.1550, range: [0.135, 0.178] },
+  thigh: { median: 0.2505, range: [0.215, 0.288] },
+  shank: { median: 0.2300, range: [0.199, 0.261] },
+};
+
+// Per-sex table set used by bodyGeometry(). The male set is the original tables (so male output is unchanged).
+// fy / fyArm move a male height fraction used inside the model (taper samples between landmarks, joint helpers)
+// onto the female skeleton by piecewise-linear interpolation between corresponding landmarks.
+const plMapFrac = knots => x => {
+  let k = 0; while (k < knots.length - 2 && x > knots[k + 1][0]) k++;
+  const [x0, y0] = knots[k], [x1, y1] = knots[k + 1];
+  return y0 + (y1 - y0) * (x - x0) / (x1 - x0);
+};
+const SEX_TABLES = {
+  male: { sex: 'male', HT: null, SR: null, HEAD: null, JX: null, ZC: null, RANGE: null, BUDDY: null, LO: null, LN: null, hipRange: null,
+    fy: x => x, fyArm: x => x,
+    k: { chestAsp: 1, waistAsp: 1, hipAsp: 1, biac: 0.229, biacRef: 69.1, cMin: 0.100, cMax: 0.1275, delt: 1, hipJointLerp: 0.3,
+      neckBase: 1, wristFore: 0.60, wristH: 0.0995, ankleCalf: 0.59, ankleH: 0.131 } },
+  female: { sex: 'female', HT: HEIGHTS_FEMALE, SR: SEGMENT_RATIOS_FEMALE, HEAD: HEAD_FEMALE, JX: JOINT_X_FEMALE, ZC: ZC_FEMALE, RANGE: RANGE_FEMALE,
+    BUDDY: BUDDY_FEMALE, LO: LANDMARK_OFFSETS_FEMALE, LN: LENGTH_NORMS_FEMALE, hipRange: [0.493, 0.585],
+    fy: null, fyArm: null,
+    // hipJointLerp: the female hip stays wide up to the hip joint (gynoid fat over the trochanters), then curves in
+    k: { chestAsp: 1.0449, waistAsp: 0.9774, hipAsp: 0.9207, biac: r4(0.229 * RoR.biacromial), biacRef: 64.0, cMin: r4(0.100 * RoR.biacromial),
+      cMax: r4(0.1275 * RoR.biacromial), delt: RoR.deltoidReach, hipJointLerp: 0.15, neckBase: 1.0306,
+      wristFore: r4(0.60 * 1.0353), wristH: r4(0.0995 * 0.948), ankleCalf: r4(0.59 * 0.989), ankleH: r4(0.131 * 1.013) } },
+};
+function sexTables(sex) {
+  const T = SEX_TABLES[sex === 'female' ? 'female' : 'male'];
+  if (!T.HT) Object.assign(T, { HT: HEIGHTS, SR: SEGMENT_RATIOS, HEAD, JX: JOINT_X, ZC, RANGE, BUDDY, LO: LANDMARK_OFFSETS, LN: LENGTH_NORMS, hipRange: HIP_RANGE });
+  if (!T.fy) {
+    const M = HEIGHTS, F = T.HT;
+    T.fy = plMapFrac([[0, 0], ...['ankle', 'calf', 'knee', 'thigh', 'crotch', 'hip', 'hipJoint'].map(k => [M[k], F[k]]), [M.waist, F.navel],
+      ...['chest', 'axilla', 'shoulderJoint', 'acromion', 'neck', 'chin', 'headCenter'].map(k => [M[k], F[k]]), [1, 1]]);
+    T.fyArm = plMapFrac(['fingertip', 'wrist', 'forearm', 'elbow', 'shoulderJoint', 'acromion'].map(k => [M[k], F[k]]));
+  }
+  return T;
+}
+/** Proportion tables for a sex (fractions of stature): { heights, segments, bones, lengthNorms, landmarkOffsets }. */
+export function proportions(sex = 'male') {
+  const T = sexTables(sex);
+  return { sex: T.sex, heights: T.HT, segments: T.SR, bones: T.sex === 'female' ? BONE_RATIOS_FEMALE : BONE_RATIOS, lengthNorms: T.LN, landmarkOffsets: T.LO };
+}
+
 // ------------------------------------------------------------------ helpers
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const pos = x => { const v = Number(x); return x != null && x !== '' && Number.isFinite(v) && v > 0 ? v : null; };
@@ -333,7 +477,7 @@ function interpProfile(prof, y) {
 
 // ------------------------------------------------------------------ missing measurements
 function fillGirths(a, sex, H, bf, estimated) {
-  const ref = REF[sex];
+  const ref = REF[sex], BUD = sexTables(sex).BUDDY;
   const given = {};
   for (const s of SITES) { const v = pos(a[s]); if (v) given[s] = v; }
   const W = pos(a.weightLb);
@@ -347,7 +491,7 @@ function fillGirths(a, sex, H, bf, estimated) {
   const g = { ...given };
   for (const s of SITES) {
     if (g[s]) continue;
-    const b = BUDDY[s];
+    const b = BUD[s];
     let v;
     if (b && given[b[0]]) v = given[b[0]] * b[1];
     else {
@@ -361,9 +505,10 @@ function fillGirths(a, sex, H, bf, estimated) {
   return { g, given };
 }
 
-function sanity(g, given, H, bf, warnings) {
+function sanity(g, given, H, bf, warnings, sex = 'male') {
+  const F = sex === 'female', RG = sexTables(sex).RANGE;
   for (const s of SITES) {
-    const [lo, hi] = RANGE[s];
+    const [lo, hi] = RG[s];
     if (given[s] && (given[s] < lo || given[s] > hi)) warnings.push(`${s} ${given[s]} in is outside the usual adult range (${lo}–${hi} in). Check the tape and units.`);
   }
   // Only compare pairs where at least one value came from the tape (estimates follow typical ratios anyway).
@@ -373,10 +518,15 @@ function sanity(g, given, H, bf, warnings) {
   if (any('arm', 'thigh') && g.arm > g.thigh) warnings.push(`Arm (${g.arm}) is bigger than thigh (${g.thigh}). That is very unusual; check the thigh is measured at the top, just below the glute fold.`);
   if (any('calf', 'thigh') && g.calf > g.thigh) warnings.push(`Calf (${g.calf}) is bigger than thigh (${g.thigh}). Check the thigh site.`);
   if (any('forearm', 'arm') && g.forearm > g.arm) warnings.push(`Forearm (${g.forearm}) is bigger than the flexed arm (${g.arm}). Check both tapes.`);
-  if (given.shoulders && g.shoulders < g.chest * 1.06) warnings.push(`Shoulders (${g.shoulders}) should be about 1.12–1.25× chest (${g.chest}): the shoulder tape goes around both delts with the arms down, outside the arms.`);
-  if (given.shoulders && g.shoulders > g.chest * 1.45) warnings.push(`Shoulders (${g.shoulders}) are over 1.45× chest (${g.chest}). Check the shoulder tape is horizontal.`);
-  if (any('hips', 'waist') && g.hips < g.waist * 0.8) warnings.push(`Hips (${g.hips}) are much smaller than waist (${g.waist}). Check the hip tape goes around the widest part of the glutes.`);
-  if (any('hips', 'waist') && g.hips > g.waist * 1.45) warnings.push(`Hips (${g.hips}) are over 1.45× waist (${g.waist}). Check both tapes.`);
+  if (!F && given.shoulders && g.shoulders < g.chest * 1.06) warnings.push(`Shoulders (${g.shoulders}) should be about 1.12–1.25× chest (${g.chest}): the shoulder tape goes around both delts with the arms down, outside the arms.`);
+  if (!F && given.shoulders && g.shoulders > g.chest * 1.45) warnings.push(`Shoulders (${g.shoulders}) are over 1.45× chest (${g.chest}). Check the shoulder tape is horizontal.`);
+  if (!F && any('hips', 'waist') && g.hips < g.waist * 0.8) warnings.push(`Hips (${g.hips}) are much smaller than waist (${g.waist}). Check the hip tape goes around the widest part of the glutes.`);
+  if (!F && any('hips', 'waist') && g.hips > g.waist * 1.45) warnings.push(`Hips (${g.hips}) are over 1.45× waist (${g.waist}). Check both tapes.`);
+  // women ([AN2F]): shoulders ≈ 1.0–1.2 × bust (median 1.09); hips (widest) ≈ 1.1–1.6 × natural waist
+  if (F && given.shoulders && g.shoulders < g.chest * 0.95) warnings.push(`Shoulders (${g.shoulders}) are smaller than the bust (${g.chest}). The shoulder tape goes around both delts with the arms down (typically 1.0–1.2× the bust); check it.`);
+  if (F && given.shoulders && g.shoulders > g.chest * 1.4) warnings.push(`Shoulders (${g.shoulders}) are over 1.4× bust (${g.chest}). Check the shoulder tape is horizontal and the bust tape goes over the fullest part.`);
+  if (F && any('hips', 'waist') && g.hips < g.waist * 0.85) warnings.push(`Hips (${g.hips}) are much smaller than waist (${g.waist}). Check the hip tape goes around the widest part of the hips and glutes.`);
+  if (F && any('hips', 'waist') && g.hips > g.waist * 1.75) warnings.push(`Hips (${g.hips}) are over 1.75× waist (${g.waist}). Check both tapes (waist at the narrowest point, hips at the widest).`);
   if (any('neck', 'chest') && g.neck > g.chest * 0.5) warnings.push(`Neck (${g.neck}) is over half the chest (${g.chest}). Check the neck tape.`);
   if (any('thigh', 'hips') && g.thigh > g.hips * 0.75) warnings.push(`Thigh (${g.thigh}) is over 0.75× hips (${g.hips}). Check both tapes.`);
   if (H < 55 || H > 86) warnings.push(`Height ${H} in is outside 55–86 in. Check units (inches).`);
@@ -403,11 +553,12 @@ const SEG_TEXT = {
 };
 const MAX_OBLIQUITY = 0.8;   // in at 69.1 in stature (≈ 2 cm): clinically significant leg-length difference
 const HIP_RANGE = [0.49, 0.585];   // hip-joint height / stature
-export function boneFromTape(segment, tapeIn, heightIn) { return Number(tapeIn) - (LANDMARK_OFFSETS[segment] || 0) * Number(heightIn); }
-export function tapeFromBone(segment, boneIn, heightIn) { return Number(boneIn) + (LANDMARK_OFFSETS[segment] || 0) * Number(heightIn); }
+export function boneFromTape(segment, tapeIn, heightIn, sex = 'male') { return Number(tapeIn) - (sexTables(sex).LO[segment] || 0) * Number(heightIn); }
+export function tapeFromBone(segment, boneIn, heightIn, sex = 'male') { return Number(boneIn) + (sexTables(sex).LO[segment] || 0) * Number(heightIn); }
 const fmtIn = x => String(+(Math.round(x * 100) / 100).toFixed(2));
 
-function resolveLengths(raw, H, warnings, estimated) {
+function resolveLengths(raw, H, warnings, estimated, sex = 'male') {
+  const LN = sexTables(sex).LN;
   const src = raw && typeof raw === 'object' ? raw : {};
   const given = {};
   for (const k of LENGTH_FIELDS) {
@@ -419,7 +570,7 @@ function resolveLengths(raw, H, warnings, estimated) {
   const any = Object.keys(given).length > 0;
   const tape = {}, source = {};
   for (const seg of LENGTH_SEGMENTS) {
-    const [lo, hi] = LENGTH_NORMS[seg].range.map(f => f * H);
+    const [lo, hi] = LN[seg].range.map(f => f * H);
     for (const S of ['L', 'R']) {
       const k = seg + S, o = seg + (S === 'L' ? 'R' : 'L');
       let v = given[k], s = 'measured';
@@ -457,8 +608,9 @@ function lengthAsymmetry(LEN) {
 export function bodyGeometry(input = {}) {
   const a = { ...((input && input.shape) || {}), ...(input || {}) };
   const warnings = [], estimated = [];
-  const sex = a.sex === 'female' ? 'female' : 'male';
-  if (sex === 'female') warnings.push('Female proportions use the male segment ratios scaled by height (approximate).');
+  const sex = a.sex === 'female' ? 'female' : 'male', FEM = sex === 'female';
+  // per-sex proportion tables (female: ANSUR II female, see "female proportions" above)
+  const TB = sexTables(sex), HT = TB.HT, SR = TB.SR, K = TB.k, fy = TB.fy, fyA = TB.fyArm, JX = TB.JX;
   let H = pos(a.heightIn);
   if (!H) { H = REF[sex].h; estimated.push('heightIn'); }
   const s = H / 69.1;   // skeletal scale vs the ANSUR median stature (1756 mm)
@@ -472,17 +624,17 @@ export function bodyGeometry(input = {}) {
     mu[k] = Number.isFinite(v) ? clamp(v, 0, 1) : 0.5;
   }
   const { g, given } = fillGirths(a, sex, H, bf, estimated);
-  sanity(g, given, H, bfRaw, warnings);
+  sanity(g, given, H, bfRaw, warnings, sex);
 
   // ---- segment lengths (§16c): per-side leg chain from the floor up, stature kept fixed.
-  const LEN = resolveLengths(a.lengths || input?.shape?.lengths, H, warnings, estimated);
-  const ankleY0 = HEIGHTS.ankle * H, kneeY0 = HEIGHTS.knee * H, hipY0 = HEIGHTS.hipJoint * H, chinY = HEIGHTS.chin * H;
-  const LX = { hip: JOINT_X.hip * H, knee: JOINT_X.knee * H, ankle: JOINT_X.ankle * H }, LZ = { hip: 0, knee: Z.knee * H, ankle: Z.ankle * H };
+  const LEN = resolveLengths(a.lengths || input?.shape?.lengths, H, warnings, estimated, sex);
+  const ankleY0 = HT.ankle * H, kneeY0 = HT.knee * H, hipY0 = HT.hipJoint * H, chinY = HT.chin * H;
+  const LX = { hip: JX.hip * H, knee: JX.knee * H, ankle: JX.ankle * H }, LZ = { hip: 0, knee: Z.knee * H, ankle: Z.ankle * H };
   const vdrop = (B, dx, dz) => Math.sqrt(Math.max(1e-6, B * B - dx * dx - dz * dz));
   const defLegBone = { shank: Math.hypot(LX.knee - LX.ankle, kneeY0 - ankleY0, LZ.knee - LZ.ankle), thigh: Math.hypot(LX.hip - LX.knee, hipY0 - kneeY0, LZ.hip - LZ.knee) };
   const legGiven = ['thighL', 'thighR', 'shankL', 'shankR'].some(k => LEN.tape[k] != null);
   const legBone = {};
-  for (const k of ['thighL', 'thighR', 'shankL', 'shankR']) { const sg = k.slice(0, -1); legBone[k] = LEN.tape[k] != null ? boneFromTape(sg, LEN.tape[k], H) : defLegBone[sg]; }
+  for (const k of ['thighL', 'thighR', 'shankL', 'shankR']) { const sg = k.slice(0, -1); legBone[k] = LEN.tape[k] != null ? boneFromTape(sg, LEN.tape[k], H, sex) : defLegBone[sg]; }
   const chainY = (S, kz = 0) => {
     const kneeZ = LZ.knee + kz, ky = ankleY0 + vdrop(legBone['shank' + S], LX.knee - LX.ankle, kneeZ - LZ.ankle);
     return { knee: ky, hip: ky + vdrop(legBone['thigh' + S], LX.hip - LX.knee, LZ.hip - kneeZ), kneeZ, kneeFlex: kz };
@@ -493,7 +645,7 @@ export function bodyGeometry(input = {}) {
     const solve = () => { legS.L = chainY('L'); legS.R = chainY('R'); };
     solve();
     // Standing height is measured: the hip joints must leave room for a plausible trunk + neck + head.
-    const hip0 = (legS.L.hip + legS.R.hip) / 2, lo = HIP_RANGE[0] * H, hi = HIP_RANGE[1] * H;
+    const hip0 = (legS.L.hip + legS.R.hip) / 2, lo = TB.hipRange[0] * H, hi = TB.hipRange[1] * H;
     if (hip0 < lo || hip0 > hi) {
       const target = clamp(hip0, lo, hi);
       for (let i = 0; i < 4; i++) {
@@ -522,7 +674,7 @@ export function bodyGeometry(input = {}) {
   const kT = (chinY - hipAvgY) / (chinY - hipY0);
   // Trunk + neck between the hip joints and the chin stretch/compress; the pelvis below translates.
   const tMap = y => (!torsoMap || y >= chinY ? y : y >= hipY0 ? chinY - (chinY - y) * kT : y + dHip);
-  const hy = k => tMap(HEIGHTS[k] * H);
+  const hy = k => tMap(HT[k] * H);
   const LJ = {};
   for (const S of ['L', 'R']) LJ[S] = { id: !legGiven, hip: { x: LX.hip, y: legS[S].hip, z: 0 }, knee: { x: LX.knee, y: legS[S].knee, z: legS[S].kneeZ }, ankle: { x: LX.ankle, y: ankleY0, z: LZ.ankle } };
   LJ.avg = { id: !legGiven, hip: { x: LX.hip, y: hipAvgY, z: 0 }, knee: { x: LX.knee, y: (legS.L.knee + legS.R.knee) / 2, z: (legS.L.kneeZ + legS.R.kneeZ) / 2 }, ankle: LJ.L.ankle };
@@ -543,11 +695,11 @@ export function bodyGeometry(input = {}) {
   // rounded rectangle (n > 2); n is set so breadths land on ANSUR medians for median girths.
   const aspect = {
     neck: 0.93,                                                                        // [AN] neck depth ≈ breadth
-    chest: clamp(0.75 + 0.003 * (bf - 15) + 0.05 * (mu.chest - 0.5) - 0.03 * (mu.lats - 0.5), 0.62, 0.95),
+    chest: clamp(K.chestAsp * (0.75 + 0.003 * (bf - 15) + 0.05 * (mu.chest - 0.5) - 0.03 * (mu.lats - 0.5)), 0.62, 0.95),
     underbust: clamp(0.76 + 0.004 * (bf - 15) - 0.08 * (mu.lats - 0.5), 0.62, 0.98),
     // [AN] waist depth/breadth ≈ 0.73 at the survey's typical ≈ 22 % BF; lean ≈ 0.65, obese ≥ 0.85 (belly grows forward).
-    waist: clamp(0.66 + 0.006 * (bf - 10) + 0.0003 * Math.max(0, bf - 20) ** 2 - 0.02 * (mu.abs - 0.5), 0.6, 1.0),
-    hip: clamp(0.70 + 0.003 * (bf - 15) + 0.06 * (mu.quads - 0.5), 0.6, 0.9),         // glutes (quads score as proxy) → deeper
+    waist: clamp(K.waistAsp * (0.66 + 0.006 * (bf - 10) + 0.0003 * Math.max(0, bf - 20) ** 2 - 0.02 * (mu.abs - 0.5)), 0.6, 1.0),
+    hip: clamp(K.hipAsp * (0.70 + 0.003 * (bf - 15) + 0.06 * (mu.quads - 0.5)), 0.6, 0.9),         // glutes (quads score as proxy) → deeper
     thigh: clamp(0.95 + 0.04 * (mu.quads - 0.5), 0.88, 1.05),
     knee: 0.95, calf: clamp(1.02 + 0.06 * (mu.calves - 0.5), 0.95, 1.1), ankle: 0.95,
     arm: clamp(1.08 + 0.08 * (mu.arms - 0.5), 1.0, 1.2),          // upper arm deeper front-to-back (biceps/triceps)
@@ -561,7 +713,14 @@ export function bodyGeometry(input = {}) {
     thigh: 2.0, knee: 2.2, calf: 2.0, ankle: 2.2, arm: 2.0, elbow: 2.2, forearm: 2.0, wrist: 2.3,
   };
   // Underbust (lower chest, lats): between chest and waist; wider lats keep it closer to chest.
-  const underbustG = g.waist + (g.chest - g.waist) * clamp(0.62 + 0.16 * (mu.lats - 0.5), 0.5, 0.75);
+  // Female: the chest tape is the BUST (fullest, over the bust point) and the underbust is the ribcage at the
+  // inframammary fold (bra band): a model value from the bust and body fat, or an optional `underbust` tape.
+  const ubTape = FEM ? pos(a.underbust) : null;
+  const underbustG = FEM ? clamp(ubTape || g.chest * clamp(0.862 + 0.0035 * (28 - bf), 0.78, 0.95), g.chest * 0.7, g.chest - 0.25)
+    : g.waist + (g.chest - g.waist) * clamp(0.62 + 0.16 * (mu.lats - 0.5), 0.5, 0.75);
+  if (FEM && ubTape && ubTape >= g.chest - 0.25) warnings.push(`Underbust (${ubTape}) should be smaller than the bust (${g.chest}): measure it snug under the breasts, the bust over the fullest part.`);
+  // inframammary fold height (female): 0.030 H + 0.22 × (bust − underbust) below the bust point
+  const ubY = FEM ? tMap(HT.chest * H - (0.030 * H + 0.22 * (g.chest - underbustG))) : null;
   const sec = {
     neck: solveSection(g.neck, aspect.neck, N.neck),
     chest: solveSection(g.chest, aspect.chest, N.chest),
@@ -574,18 +733,20 @@ export function bodyGeometry(input = {}) {
   // Lateral reach of the deltoid beyond the acromion: [AN] (bideltoid − biacromial)/2 ≈ (49.0 − 39.7)/2 cm
   // ≈ 1.83 in for the median man; more with bigger delts and more fat. The acromion's lateral tip sits
   // ≈ 0.35 in lateral of the GH centre [NY], so the arm's lateral reach from the GH centre = offset + 0.35.
-  const delOffset = 1.83 * s * clamp(1 + 0.35 * (mu.delts - 0.5) + 0.012 * (bf - 20), 0.75, 1.35);
+  const delOffset = 1.83 * s * K.delt * clamp(1 + 0.35 * (mu.delts - 0.5) + 0.012 * (bf - 20), 0.75, 1.35);
   const acrGH = 0.35 * s;
   const ax = delOffset + acrGH, az = ax * clamp(1.05 + 0.08 * (mu.delts - 0.5), 0.95, 1.15);
-  const Tz = sec.chest.rz * 0.93, Tn = 2.8;
+  // (female: the loop passes above the breasts, so the torso depth there is the ribcage's, ≈ 0.9 × underbust depth;
+  //  this reproduces [AN2F] median biacromial / shoulder circumference with the same relative error as the male loop)
+  const Tz = FEM ? sec.underbust.rz * 0.9 : sec.chest.rz * 0.93, Tn = 2.8;
   const loopAt = c => shoulderLoop(c, c + 0.3 * acrGH, Tz, Tn, ax, az);
   // Skeletal plausibility: biacromial ≈ 0.20–0.255 H ([AN] 1st–99th pct ≈ 36–44.5 cm at 175 cm).
-  const cMin = 0.100 * H - acrGH, cMax = 0.1275 * H - acrGH;
+  const cMin = K.cMin * H - acrGH, cMax = K.cMax * H - acrGH;
   let c;
   if (!given.shoulders) {
     // No shoulders tape: biacromial from stature ([AN] median 39.7–40.9 cm at 175.6 cm ≈ 0.229 H; it grows less
     // than proportionally with height, exponent ≈ 0.75), wider with traps/delts development; tape = the loop.
-    const biac = 0.229 * 69.1 * Math.pow(H / 69.1, 0.75) * (1 + 0.03 * (mu.delts - 0.5) + 0.02 * (mu.traps - 0.5));
+    const biac = K.biac * K.biacRef * Math.pow(H / K.biacRef, 0.75) * (1 + 0.03 * (mu.delts - 0.5) + 0.02 * (mu.traps - 0.5));
     c = biac / 2 - acrGH;
     g.shoulders = Math.round(loopAt(c).perimeter * 10) / 10;
   } else {
@@ -620,12 +781,12 @@ export function bodyGeometry(input = {}) {
   // Reference depth per site: the reference body's tape scaled to this height, at reference fat/muscle.
   const refR = REF[sex], hs = H / refR.h;
   const refRz = {
-    chest: solveSection(refR.chest * hs, 0.75, N.chest).rz,
-    underbust: solveSection((refR.waist + (refR.chest - refR.waist) * 0.62) * hs, 0.76 + 0.004 * (refR.bf - 15), N.underbust).rz,
-    waist: solveSection(refR.waist * hs, 0.66 + 0.006 * (refR.bf - 10), N.waist).rz,
-    hip: solveSection(refR.hips * hs, 0.70 + 0.003 * (refR.bf - 15), N.hip).rz,
+    chest: solveSection(refR.chest * hs, K.chestAsp * 0.75, N.chest).rz,
+    underbust: solveSection((FEM ? refR.chest * 0.862 : refR.waist + (refR.chest - refR.waist) * 0.62) * hs, 0.76 + 0.004 * (refR.bf - 15), N.underbust).rz,
+    waist: solveSection(refR.waist * hs, K.waistAsp * (0.66 + 0.006 * (refR.bf - 10)), N.waist).rz,
+    hip: solveSection(refR.hips * hs, K.hipAsp * (0.70 + 0.003 * (refR.bf - 15)), N.hip).rz,
   };
-  const czOf = Object.fromEntries(Object.entries(ZC).map(([k, [c0, bias]]) => [k, c0 * H + bias * (sec[k].rz - refRz[k])]));
+  const czOf = Object.fromEntries(Object.entries(TB.ZC).map(([k, [c0, bias]]) => [k, c0 * H + bias * (sec[k].rz - refRz[k])]));
 
   // ---- legs (per side). Joint line: hip → knee → ankle (LJ.L / LJ.R / LJ.avg above).
   // Interior samples between tape sites (girth as a fraction of the nearest tape). Knee, ankle, wrist and
@@ -639,20 +800,20 @@ export function bodyGeometry(input = {}) {
       const t = (A.y - y) / (A.y - B.y);
       return { x: lerp(A.x, B.x, t), z: lerp(A.z, B.z, t) };
     };
-    const kneeG = 0.5 * (0.99 * calfG + 0.63 * thighG), ankleG = 0.5 * (0.59 * calfG + 0.131 * H);
+    const kneeG = 0.5 * (0.99 * calfG + 0.63 * thighG), ankleG = 0.5 * (K.ankleCalf * calfG + K.ankleH * H);
     const qd = 0.03 * (mu.quads - 0.5), cv = 0.03 * (mu.calves - 0.5);
     const rows = [   // [name, y/H, girth, aspect, n]
-      ['legTop', 0.505, thighG * 1.07, aspect.thigh, 2.0],
-      ['thigh', HEIGHTS.thigh, thighG, aspect.thigh, N.thigh],
-      ['midThigh', 0.400, thighG * (0.885 + qd), aspect.thigh, 2.0],      // ≈ [AN] mid-thigh / upper-thigh ≈ 0.88
-      ['lowerThigh', 0.345, thighG * (0.765 + qd), 0.97, 2.0],
-      ['aboveKnee', 0.312, Math.max(kneeG * 1.02, thighG * 0.66), 0.95, 2.1],
-      ['knee', HEIGHTS.knee, kneeG, aspect.knee, N.knee],
-      ['upperCalf', 0.250, calfG * (0.93 - cv), aspect.calf, 2.0],
-      ['calf', HEIGHTS.calf, calfG, aspect.calf, N.calf],
-      ['lowerCalf', 0.150, calfG * (0.84 + cv), 1.0, 2.0],
-      ['shin', 0.100, calfG * 0.70, 0.98, 2.1],
-      ['ankle', HEIGHTS.ankle, ankleG, aspect.ankle, N.ankle],
+      ['legTop', fy(0.505), thighG * 1.07, aspect.thigh, 2.0],
+      ['thigh', HT.thigh, thighG, aspect.thigh, N.thigh],
+      ['midThigh', fy(0.400), thighG * (0.885 + qd), aspect.thigh, 2.0],      // ≈ [AN] mid-thigh / upper-thigh ≈ 0.88
+      ['lowerThigh', fy(0.345), thighG * (0.765 + qd), 0.97, 2.0],
+      ['aboveKnee', fy(0.312), Math.max(kneeG * 1.02, thighG * 0.66), 0.95, 2.1],
+      ['knee', HT.knee, kneeG, aspect.knee, N.knee],
+      ['upperCalf', fy(0.250), calfG * (0.93 - cv), aspect.calf, 2.0],
+      ['calf', HT.calf, calfG, aspect.calf, N.calf],
+      ['lowerCalf', fy(0.150), calfG * (0.84 + cv), 1.0, 2.0],
+      ['shin', fy(0.100), calfG * 0.70, 0.98, 2.1],
+      ['ankle', HT.ankle, ankleG, aspect.ankle, N.ankle],
     ];
     const out = rows.map(([name, f, G, k, n]) => {
       const y = mapY(f * H), ss = solveSection(G, k, n), L = legLine(Math.min(y, legJ.hip.y));
@@ -692,27 +853,28 @@ export function bodyGeometry(input = {}) {
   const torso = [
     T('crotch', hy('crotch'), crotchSec, Z.crotch * H),
     T('hip', hy('hip'), sec.hip, czOf.hip),
-    T('hipJoint', hy('hipJoint'), { rx: lerp(sec.hip.rx, sec.waist.rx, 0.3), rz: lerp(sec.hip.rz, sec.waist.rz, 0.3), n: lerp(N.hip, N.waist, 0.3) }, lerp(czOf.hip, czOf.waist, 0.3)),
+    T('hipJoint', hy('hipJoint'), { rx: lerp(sec.hip.rx, sec.waist.rx, K.hipJointLerp), rz: lerp(sec.hip.rz, sec.waist.rz, K.hipJointLerp), n: lerp(N.hip, N.waist, K.hipJointLerp) }, lerp(czOf.hip, czOf.waist, K.hipJointLerp)),
     T('waist', hy('waist'), sec.waist, czOf.waist),
-    T('underbust', hy('underbust'), sec.underbust, czOf.underbust),
+    T('underbust', FEM ? ubY : hy('underbust'), sec.underbust, czOf.underbust),
     T('chest', hy('chest'), sec.chest, czOf.chest),
     T('axilla', hy('axilla'), { rx: sec.chest.rx * 1.01, rz: sec.chest.rz * 0.98, n: N.chest }, lerp(czOf.chest, Z.shoulder * H, 0.4)),
     T('shoulder', hy('deltoid'), torsoShoulder, Z.shoulder * H),
     T('acromion', hy('acromion'), { rx: acrX * 0.96, rz: sec.chest.rz * 0.70, n: 2.6 }, Z.acromion * H),
     T('trap', lerp(hy('acromion'), neckBaseY, 0.55), { rx: lerp(sec.neck.rx * 1.1, acrX * 0.96, trapT), rz: lerp(sec.neck.rz * 1.15, sec.chest.rz * 0.7, 0.45), n: 2.3 }, Z.trap * H),
-    T('neckBase', neckBaseY, { rx: sec.neck.rx * 1.12, rz: sec.neck.rz * 1.12, n: 2.1 }, Z.neckBase * H),
+    T('neckBase', neckBaseY, { rx: sec.neck.rx * 1.12 * K.neckBase, rz: sec.neck.rz * 1.12 * K.neckBase, n: 2.1 }, Z.neckBase * H),
   ];
 
   // ---- neck & head
   const chinSec = { rx: sec.neck.rx * 1.0, rz: 0.046 * H, n: 2.2 };
   const neck = [
     // starts inside the trapezius (overlaps the torso top) so the two parts blend
-    T('neckBase', lerp(hy('acromion'), neckBaseY, 0.55), { rx: sec.neck.rx * 1.18, rz: sec.neck.rz * 1.15, n: 2.1 }, Z.neckBase * H),
+    T('neckBase', lerp(hy('acromion'), neckBaseY, 0.55), { rx: sec.neck.rx * 1.18 * K.neckBase, rz: sec.neck.rz * 1.15 * K.neckBase, n: 2.1 }, Z.neckBase * H),
     T('neck', hy('neck'), sec.neck, neckZ),
     T('chin', hy('chin'), chinSec, Z.chin * H),
   ];
-  const head = { center: { x: 0, y: hy('headCenter'), z: Z.head * H }, rx: HEAD.rx * H, ry: HEAD.ry * H, rz: HEAD.rz * H,
-    circumference: perimeter(HEAD.rx * H, HEAD.rz * H, 2) };
+  const HD = TB.HEAD;
+  const head = { center: { x: 0, y: hy('headCenter'), z: Z.head * H }, rx: HD.rx * H, ry: HD.ry * H, rz: HD.rz * H,
+    circumference: perimeter(HD.rx * H, HD.rz * H, 2) };
   // keep the ellipsoid inside vertex..chin
   head.ry = Math.min(head.ry, H - head.center.y, head.center.y - hy('chin') + 0.02 * H);
 
@@ -722,7 +884,7 @@ export function bodyGeometry(input = {}) {
   // Per-side elbow/wrist heights come from the (measured or ratio) bone lengths; J.map moves a default
   // rest-pose arm height onto this side's segments.
   const shoulderY = hy('shoulderJoint');
-  const sh0 = HEIGHTS.shoulderJoint * H, el0 = HEIGHTS.elbow * H, wr0 = HEIGHTS.wrist * H;
+  const sh0 = HT.shoulderJoint * H, el0 = HT.elbow * H, wr0 = HT.wrist * H;
   const mkJ = (up, fo, foreLen, id) => {
     const ey = id ? el0 : shoulderY - up, wy = id ? wr0 : ey - fo;
     return { id, up, fo, foreLen, sy: shoulderY, ey, wy, wz: Math.sin(8 * Math.PI / 180) * foreLen,   // relaxed elbow ≈ 8° flexed
@@ -730,18 +892,18 @@ export function bodyGeometry(input = {}) {
         : y0 >= wr0 ? lerp(ey, wy, (el0 - y0) / (el0 - wr0)) : wy - (wr0 - y0)) };
   };
   const armSamples = (armFlexG, foreFlexG, J) => {
-    const elbowY = J.ey, wristY = J.wy, axY = J.map(HEIGHTS.axilla * H);
+    const elbowY = J.ey, wristY = J.wy, axY = J.map(HT.axilla * H);
     const armG = armFlexG / flexArm, foreG = foreFlexG / flexFore;
-    const elbowG = 0.5 * (0.91 * foreG + 0.78 * armG), wristG = 0.5 * (0.60 * foreG + 0.0995 * H);
+    const elbowG = 0.5 * (0.91 * foreG + 0.78 * armG), wristG = 0.5 * (K.wristFore * foreG + K.wristH * H);
     const rows = [   // [name, y, girth|section, aspect, n]
       ['armTop', hy('acromion') + 0.006 * H, null, null, 2.0],   // deltoid cap closes just above the acromion
       ['deltoid', hy('deltoid'), null, null, 2.0],
       ['axilla', axY, armG * (1.03 + 0.03 * (mu.delts - 0.5)), aspect.arm, 2.0],
-      ['arm', J.map(0.725 * H), armG, aspect.arm, N.arm],
-      ['lowerArm', J.map(0.672 * H), armG * 0.88, aspect.arm * 0.97, 2.0],
+      ['arm', J.map(fyA(0.725) * H), armG, aspect.arm, N.arm],
+      ['lowerArm', J.map(fyA(0.672) * H), armG * 0.88, aspect.arm * 0.97, 2.0],
       ['elbow', elbowY, elbowG, aspect.elbow, N.elbow],
-      ['forearm', J.map(HEIGHTS.forearm * H), foreG, aspect.forearm, N.forearm],
-      ['lowerForearm', J.map(0.535 * H), foreG * 0.78, 1.2, 2.1],
+      ['forearm', J.map(HT.forearm * H), foreG, aspect.forearm, N.forearm],
+      ['lowerForearm', J.map(fyA(0.535) * H), foreG * 0.78, 1.2, 2.1],
       ['wrist', wristY, wristG, aspect.wrist, N.wrist],
     ];
     const out = rows.map(([name, y, G, k, n]) => {
@@ -765,7 +927,7 @@ export function bodyGeometry(input = {}) {
     }
     ex = Math.min(ex, c + Math.tan(25 * Math.PI / 180) * (shoulderY - elbowY));
     // Forearm + hand clear the hips/thighs.
-    const handY = wristY - 0.5 * SEGMENT_RATIOS.hand * H, handHalf = 0.5 * SEGMENT_RATIOS.handThickness * H;
+    const handY = wristY - 0.5 * SR.hand * H, handHalf = 0.5 * SR.handThickness * H;
     let wx = -Infinity;
     const lateralAt = y => {
       const tor = y >= hy('crotch') ? torsoAt(y) : null;
@@ -798,9 +960,9 @@ export function bodyGeometry(input = {}) {
   const armSide = (S, armFlexG) => {
     const kU = 'upperArm' + S, kF = 'forearm' + S, gU = LEN.tape[kU] != null, gF = LEN.tape[kF] != null;
     const id = !torsoMap && !gU && !gF;
-    const BU = gU ? boneFromTape('upperArm', LEN.tape[kU], H) : null, BF = gF ? boneFromTape('forearm', LEN.tape[kF], H) : null;
+    const BU = gU ? boneFromTape('upperArm', LEN.tape[kU], H, sex) : null, BF = gF ? boneFromTape('forearm', LEN.tape[kF], H, sex) : null;
     let up = sh0 - el0, fo = el0 - wr0;
-    const fl = gF ? BF : SEGMENT_RATIOS.forearm * H;
+    const fl = gF ? BF : SR.forearm * H;
     let A = armSamples(armFlexG, g.forearm, mkJ(up, fo, fl, id));
     for (let i = 0; i < 3 && (gU || gF); i++) {
       if (gU) up = vdrop(BU, A.ex - c, A.ez);
@@ -818,8 +980,8 @@ export function bodyGeometry(input = {}) {
   const fingerY = hy('fingertip');
   const mk = (x, y, z) => ({ x, y, z });
   const joints = {
-    head: mk(0, 0.915 * H, 0),                    // atlanto-occipital ≈ just below the tragion
-    neck: mk(0, tMap(0.833 * H), Z.neckBase * H),     // C7/T1, base of the neck
+    head: mk(0, fy(0.915) * H, 0),                    // atlanto-occipital ≈ just below the tragion
+    neck: mk(0, tMap(fy(0.833) * H), Z.neckBase * H),     // C7/T1, base of the neck
     chest: mk(0, hy('chest'), czOf.chest - 0.3 * sec.chest.rz),   // mid-thorax, slightly posterior (near the spine's curve)
     pelvis: mk(0, hy('hipJoint'), 0),
   };
@@ -829,18 +991,18 @@ export function bodyGeometry(input = {}) {
     joints['elbow' + S] = mk(sg * A.ex, elbowY, A.ez);
     joints['wrist' + S] = mk(sg * A.wx, wristY, A.wz);
     const dx = A.wx - A.ex, dz = A.wz - A.ez, dy = elbowY - wristY, len = Math.hypot(dx, dy, dz);
-    const hl = SEGMENT_RATIOS.hand * H;
+    const hl = SR.hand * H;
     joints['hand' + S] = mk(sg * (A.wx + dx / len * hl), wristY - dy / len * hl, A.wz + dz / len * hl);   // fingertip
     joints['hip' + S] = mk(sg * legJ.hip.x, legJ.hip.y, 0);
     joints['knee' + S] = mk(sg * legJ.knee.x, legJ.knee.y, legJ.knee.z);
     joints['ankle' + S] = mk(sg * legJ.ankle.x, legJ.ankle.y, legJ.ankle.z);
-    const fl = SEGMENT_RATIOS.foot * H;
+    const fl = SR.foot * H;
     joints['heel' + S] = mk(sg * legJ.ankle.x, 0, legJ.ankle.z - Z.heelBack * fl);
     joints['toe' + S] = mk(sg * (legJ.ankle.x + Math.sin(7 * Math.PI / 180) * fl * 0.78), 0, legJ.ankle.z - Z.heelBack * fl + fl * Math.cos(7 * Math.PI / 180));
   }
   void fingerY;
   const dist = (p, q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
-  const bones = { foot: SEGMENT_RATIOS.foot * H, spine: dist(joints.pelvis, joints.neck), neck: dist(joints.neck, joints.head) };
+  const bones = { foot: SR.foot * H, spine: dist(joints.pelvis, joints.neck), neck: dist(joints.neck, joints.head) };
   for (const S of ['L', 'R']) {
     bones['upperArm' + S] = dist(joints['shoulder' + S], joints['elbow' + S]);
     bones['forearm' + S] = dist(joints['elbow' + S], joints['wrist' + S]);
@@ -853,10 +1015,10 @@ export function bodyGeometry(input = {}) {
   const lengths = {};
   for (const k of LENGTH_FIELDS) {
     const scaled = pelvis.legScale !== 1 && /^(thigh|shank)/.test(k);
-    lengths[k] = LEN.tape[k] != null && !scaled ? LEN.tape[k] : tapeFromBone(k.slice(0, -1), bones[k], H);
+    lengths[k] = LEN.tape[k] != null && !scaled ? LEN.tape[k] : tapeFromBone(k.slice(0, -1), bones[k], H, sex);
   }
-  const landmarkOffsets = Object.fromEntries(LENGTH_SEGMENTS.map(k => [k, LANDMARK_OFFSETS[k] * H]));
-  const segments = Object.fromEntries(Object.entries(SEGMENT_RATIOS).map(([k, f]) => [k, f * H]));
+  const landmarkOffsets = Object.fromEntries(LENGTH_SEGMENTS.map(k => [k, TB.LO[k] * H]));
+  const segments = Object.fromEntries(Object.entries(SR).map(([k, f]) => [k, f * H]));
 
   // ---- landmarks (limbs: left side, averaged tape)
   const fromP = (p, extra) => ({ y: p.y, rx: p.rx, rz: p.rz, n: p.n, cx: p.cx, cz: p.cz, girth: perimeter(p.rx, p.rz, p.n), ...(extra || {}) });
@@ -895,10 +1057,12 @@ export function bodyGeometry(input = {}) {
   });
   const mirror = prof => prof.map(p => ({ ...p, cx: -p.cx }));
 
-  const heights = Object.fromEntries(Object.entries(HEIGHTS).map(([k, f]) => [k, tMap(f * H)]));
-  for (const k of ['elbow', 'forearm', 'wrist', 'fingertip']) heights[k] = armAvg.J.map(HEIGHTS[k] * H);   // L/R average
-  for (const k of ['thigh', 'knee', 'calf', 'ankle']) heights[k] = legMap(LJ.avg)(HEIGHTS[k] * H);
-  heights.nipple = heights.chest; heights.navel = heights.waist; heights.trochanter = heights.hipJoint; heights.neckBase = neckBaseY;
+  const heights = Object.fromEntries(Object.entries(HT).map(([k, f]) => [k, tMap(f * H)]));
+  for (const k of ['elbow', 'forearm', 'wrist', 'fingertip']) heights[k] = armAvg.J.map(HT[k] * H);   // L/R average
+  for (const k of ['thigh', 'knee', 'calf', 'ankle']) heights[k] = legMap(LJ.avg)(HT[k] * H);
+  // (female: the waist tape is the natural waist, ≈ 1.8 in above the navel; bust point = nipple; fold = underbust)
+  heights.nipple = heights.chest; heights.navel = FEM ? tMap(HT.navel * H) : heights.waist; heights.trochanter = heights.hipJoint; heights.neckBase = neckBaseY;
+  if (FEM) heights.underbust = ubY;
 
   const geom = {
     heightIn: H, units: 'in', sex,
@@ -915,6 +1079,7 @@ export function bodyGeometry(input = {}) {
       underbust: underbustG, knee: legAvg.find(p => p.name === 'knee').girth, ankle: legAvg.find(p => p.name === 'ankle').girth,
       elbow: armAvg.elbowG, wrist: armAvg.wristG, armRelaxed: armAvg.armG, forearmRelaxed: armAvg.foreG,
       deltoidReach: ax, shoulderSlopeDeg: slope * 180 / Math.PI,
+      ...(FEM ? { underbustSource: ubTape ? 'tape' : 'model', underbustY: ubY } : {}),
     },
     flex: { arm: flexArm, forearm: flexFore },
     hands: {}, feet: {},

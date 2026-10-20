@@ -1,21 +1,30 @@
 #!/usr/bin/env node
 // Offline asset builder for the MESH 3D renderer (js/ui/body3d-mesh.js). Node 20, no dependencies.
 //
-//   node scripts/build-body-mesh.mjs <makehuman-data-dir> [outDir = assets/body]
+//   node scripts/build-body-mesh.mjs <makehuman-data-dir> [outDir = assets/body] [--sex=male|female]
 //
 // <makehuman-data-dir> must contain files downloaded (as plain data, nothing executed) from
 // github.com/makehumancommunity/makehuman @ a8bc2d54ff0ac92e78ff71431b1023eda42bf482, path makehuman/data/:
 //   base.obj                  (3dobjs/base.obj, the hm08 base mesh)
 //   default.mhskel            (rigs/default.mhskel)
 //   default_weights.mhw       (rigs/default_weights.mhw)
-//   targets/*.target          (targets/macrodetails/{caucasian,african,asian}-male-young.target and the nine
-//                              targets/macrodetails/universal-male-young-*muscle-*weight.target)
+//   targets/*.target          (targets/macrodetails/{caucasian,african,asian}-<sex>-young.target and the nine
+//                              targets/macrodetails/universal-<sex>-young-*muscle-*weight.target)
+//   targets/breast/*.target   (female only: targets/breast/female-young-averagemuscle-averageweight-
+//                              {min,max}cup-averagefirmness.target, the cup-size morphs)
 // All of these are CC0 1.0 (see assets/body/LICENSE-ASSETS.md). No MakeHuman program code is used.
 //
 // Output (assets/body/):
+//   male   (default): body.json + body.bin
+//   female (--sex=female): body-female.json + body-female.bin, loaded lazily by the renderer only for
+//          profile.body.sex === 'female' (CONTRACT §21). Same topology, skeleton and skin weights; the default
+//          shape is MakeHuman's young female (ethnic mix as the male build) at average muscle / weight, the morph
+//          grid is the universal-female-young muscle × weight grid, plus two sparse cup-size morphs and an
+//          inframammary-fold landmark (imfV).
 //   body.json  layout + skeleton + landmark descriptors (small)
 //   body.bin   little-endian typed arrays: quantized positions, triangle indices, skin indices/weights,
 //              part labels, and sparse quantized morph deltas (macro muscle/weight grid).
+// The male output is byte-identical to the pre-female builds (nothing in its code path changed).
 //
 // Units in the asset are MakeHuman decimetres, Y up, the figure faces +Z, its left side is +X.
 import fs from 'node:fs';
@@ -23,11 +32,20 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SRC = process.argv[2];
-const OUT = process.argv[3] || path.join(HERE, '..', 'assets', 'body');
-if (!SRC) { console.error('usage: node scripts/build-body-mesh.mjs <makehuman-data-dir> [outDir]'); process.exit(1); }
+const ARGS = process.argv.slice(2), FLAGS = ARGS.filter(a => a.startsWith('--')), POSARGS = ARGS.filter(a => !a.startsWith('--'));
+const SRC = POSARGS[0];
+const OUT = POSARGS[1] || path.join(HERE, '..', 'assets', 'body');
+const SEX = FLAGS.includes('--sex=female') || FLAGS.includes('--female') ? 'female' : 'male';
+const FEMALE = SEX === 'female';
+if (!SRC) { console.error('usage: node scripts/build-body-mesh.mjs <makehuman-data-dir> [outDir] [--sex=male|female]'); process.exit(1); }
 
-const ETHNIC = { 'caucasian-male-young': 0.7, 'african-male-young': 0.15, 'asian-male-young': 0.15 };
+// ethnic blend of the default shape (the female build uses the same weights as the male one)
+const ETHNIC = FEMALE ? { 'caucasian-female-young': 0.7, 'african-female-young': 0.15, 'asian-female-young': 0.15 }
+  : { 'caucasian-male-young': 0.7, 'african-male-young': 0.15, 'asian-male-young': 0.15 };
+const UNIV = `universal-${SEX}-young-`;
+// female cup-size morphs (MakeHuman BreastSize modifier at average muscle/weight/firmness; 0.5 = no target)
+const CUPS = FEMALE ? ['mincup', 'maxcup'] : [];
+const cupTarget = c => `breast/female-young-averagemuscle-averageweight-${c}-averagefirmness`;
 const GRID = ['minmuscle-minweight', 'minmuscle-averageweight', 'minmuscle-maxweight',
   'averagemuscle-minweight', 'averagemuscle-maxweight',
   'maxmuscle-minweight', 'maxmuscle-averageweight', 'maxmuscle-maxweight'];
@@ -56,11 +74,12 @@ const obj = parseOBJ(path.join(SRC, 'base.obj'));
 const skel = JSON.parse(fs.readFileSync(path.join(SRC, 'default.mhskel'), 'utf8'));
 const mhw = JSON.parse(fs.readFileSync(path.join(SRC, 'default_weights.mhw'), 'utf8')).weights;
 
-// ------------------------------------------------------------------ default male = base + ethnic + universal(avg,avg)
+// ------------------------------------------------------------------ default shape = base + ethnic + universal(avg,avg)
 const P0 = obj.V.map(v => v.slice());
 for (const [name, w] of Object.entries(ETHNIC)) for (const [i, d] of readTarget(name)) { P0[i][0] += w * d[0]; P0[i][1] += w * d[1]; P0[i][2] += w * d[2]; }
-for (const [i, d] of readTarget('universal-male-young-averagemuscle-averageweight')) { P0[i][0] += d[0]; P0[i][1] += d[1]; P0[i][2] += d[2]; }
-const TG = GRID.map(n => readTarget('universal-male-young-' + n));
+for (const [i, d] of readTarget(UNIV + 'averagemuscle-averageweight')) { P0[i][0] += d[0]; P0[i][1] += d[1]; P0[i][2] += d[2]; }
+const TG = GRID.map(n => readTarget(UNIV + n));
+const TC = CUPS.map(c => readTarget(cupTarget(c)));
 
 // ------------------------------------------------------------------ keep body + eyeballs
 const KEEP = new Set(['body', 'helper-l-eye', 'helper-r-eye']);
@@ -194,15 +213,17 @@ const N = POS.length;
 if (process.env.DUMP) fs.writeFileSync(process.env.DUMP, JSON.stringify({ POS, part: [...part], tris: [...triIdx], nMesh }));
 
 // morph deltas for the macro grid (sparse), incl. pivots
-const morphs = TG.map((T, ti) => {
+const sparseMorph = (T, name) => {
   const entries = [];
   for (let k = 0; k < nMesh; k++) { const d = T.get(order[k]); if (d && (d[0] || d[1] || d[2])) entries.push([k, d]); }
   pivotVerts.forEach((ids, j) => {
     const c = [0, 0, 0]; for (const i of ids) { const d = T.get(i); if (d) { c[0] += d[0]; c[1] += d[1]; c[2] += d[2]; } }
     if (c[0] || c[1] || c[2]) entries.push([nMesh + j, c.map(x => x / ids.length)]);
   });
-  return { name: GRID[ti], entries };
-});
+  return { name, entries };
+};
+const morphs = TG.map((T, ti) => sparseMorph(T, GRID[ti]));
+const cupMorphs = TC.map((T, ci) => sparseMorph(T, CUPS[ci]));
 
 // ------------------------------------------------------------------ landmark descriptors (on the default shape)
 const pivot = (name, tail = false) => POS[nMesh + boneIndex[name] * 2 + (tail ? 1 : 0)];
@@ -286,10 +307,25 @@ const lm = {
   topV, soleV, navelV: NAVEL, nippleV, crotchV, buttV, chinV,
   calfT: calf.t, ankleT: ankle.t, bicepsT: biceps.t, forearmT: forearm.t, wristT: wrist.t, neckT: neckMin.t,
 };
+// female: inframammary fold (imfV) = the lowest point of the left breast, i.e. the lowest front-facing vertex the
+// max-cup morph moves noticeably (> 25 % of its peak) in the nipple's column; the fit anchors it to anthro's
+// underbust height so the bust and underbust stations land on the breast and on the ribcage below it.
+if (FEMALE) {
+  const T = TC[CUPS.indexOf('maxcup')], xN = POS[nippleV][0];
+  let dMax = 0; for (const [i, d] of T) if (remap.has(i)) dMax = Math.max(dMax, Math.hypot(d[0], d[1], d[2]));
+  let imf = -1;
+  for (const [i, d] of T) {
+    const k = remap.get(i); if (k === undefined || part[k] !== 0) continue;
+    const p = POS[k]; if (Math.hypot(d[0], d[1], d[2]) < 0.25 * dMax || Math.abs(p[0] - xN) > 0.3 || p[1] > POS[nippleV][1]) continue;
+    if (imf < 0 || p[1] < POS[imf][1]) imf = k;
+  }
+  lm.imfV = imf;
+}
 const IN = 3.937008, fy = y => ((y - minY) * IN).toFixed(2);
 console.log('height (in)', ((maxY - minY) * IN).toFixed(2), ' verts', nMesh, '+', nVirt, 'virtual  tris', triIdx.length / 3, ' unweighted', unweighted);
 console.log('landmarks y(in): navel', fy(POS[NAVEL][1]), 'nipple', fy(POS[nippleV][1]), 'crotch', fy(POS[crotchV][1]), 'buttock', fy(POS[buttV][1]),
   'chin', fy(POS[chinV][1]), 'knee', fy(kneeL[1]), 'ankleJ', fy(ankleL[1]), 'shoulderJ', fy(shL[1]), 'neckBase', fy(neckB[1]));
+if (FEMALE) console.log('female: imf y(in)', fy(POS[lm.imfV][1]), 'nipple x/z (dm)', POS[nippleV][0].toFixed(3), POS[nippleV][2].toFixed(3));
 console.log('profiles', JSON.stringify({ calf, ankle, biceps, forearm, wrist, neckMin }, (k, v) => typeof v === 'number' ? +(k === 'g' ? v * IN : v).toFixed(3) : v));
 
 // ------------------------------------------------------------------ pack
@@ -311,16 +347,18 @@ put('index', triIdx);
 put('skinIndex', skinIdx);
 put('skinWeight', skinW);
 put('part', part);
-layout.morphs = [];
-for (const m of morphs) {
+const packMorph = (m, prefix, list) => {
   let amax = 0; for (const [, d] of m.entries) for (const x of d) amax = Math.max(amax, Math.abs(x));
   const sc = amax / 32767 || 1;
   const idx = new Uint16Array(m.entries.length), dq = new Int16Array(m.entries.length * 3);
   m.entries.forEach(([k, d], j) => { idx[j] = k; for (let a = 0; a < 3; a++) dq[j * 3 + a] = Math.round(d[a] / sc); });
-  const name = 'morph:' + m.name;
+  const name = prefix + m.name;
   put(name + ':i', idx); put(name + ':d', dq, { scale: sc });
-  layout.morphs.push({ name: m.name, index: name + ':i', delta: name + ':d' });
-}
+  list.push({ name: m.name, index: name + ':i', delta: name + ':d' });
+};
+layout.morphs = [];
+for (const m of morphs) packMorph(m, 'morph:', layout.morphs);
+if (FEMALE) { layout.cups = []; for (const m of cupMorphs) packMorph(m, 'cup:', layout.cups); }
 const bin = Buffer.concat(chunks.map(c => Buffer.from(c)));
 const meta = {
   format: 'forge-body-mesh', version: 1,
@@ -335,8 +373,13 @@ const meta = {
   landmarks: lm,
   layout,
 };
+if (FEMALE) {   // (the male meta keeps its exact pre-female bytes: no `sex` key means male)
+  meta.sex = 'female';
+  meta.source.files.push('makehuman/data/targets/breast/female-young-averagemuscle-averageweight-{min,max}cup-averagefirmness.target');
+}
+const BASE = FEMALE ? 'body-female' : 'body';
 fs.mkdirSync(OUT, { recursive: true });
-fs.writeFileSync(path.join(OUT, 'body.bin'), bin);
-fs.writeFileSync(path.join(OUT, 'body.json'), JSON.stringify(meta));
-console.log('wrote', path.join(OUT, 'body.bin'), (bin.length / 1024).toFixed(1) + ' KB;', 'body.json', (JSON.stringify(meta).length / 1024).toFixed(1) + ' KB');
-console.log('morph entries', morphs.map(m => m.name + ':' + m.entries.length).join(' '));
+fs.writeFileSync(path.join(OUT, BASE + '.bin'), bin);
+fs.writeFileSync(path.join(OUT, BASE + '.json'), JSON.stringify(meta));
+console.log('wrote', path.join(OUT, BASE + '.bin'), (bin.length / 1024).toFixed(1) + ' KB;', BASE + '.json', (JSON.stringify(meta).length / 1024).toFixed(1) + ' KB');
+console.log('morph entries', morphs.map(m => m.name + ':' + m.entries.length).join(' ') + (FEMALE ? '  cups ' + cupMorphs.map(m => m.name + ':' + m.entries.length).join(' ') : ''));

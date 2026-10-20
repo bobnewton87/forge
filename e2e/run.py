@@ -41,7 +41,7 @@ LAUNCH_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swi
 LOCS = ['home', 'crunch', 'travel', 'office']
 ROUTES = ['today', 'session', 'plan', 'history', 'body', 'measure', 'projection', 'supplements',
           'nutrition', 'more', 'settings', 'library', 'exercise?id=db_curl', 'import']
-WEBGL_TESTS = {'F1', 'F2', 'S1', 'S2', 'S3'}   # run with real (swiftshader) WebGL; the rest run in lite mode
+WEBGL_TESTS = {'F1', 'F2', 'S1', 'S2', 'S3', 'S4'}   # run with real (swiftshader) WebGL; the rest run in lite mode
 CARDIO_GOAL = 225
 KCAL_GOAL = 2650
 BOB_MEAS = {'weight': 164, 'neck': 15, 'waist': 34.5, 'shoulders': 46, 'chest': 39, 'armL': 13.5, 'armR': 13.75,
@@ -593,6 +593,35 @@ def t_perf(t, ctx):
     top = ', '.join(f'{r} {ms}ms' for r, ms in sorted(perf.items(), key=lambda x: -x[1])[:4])
     t.check(not slow, 'slow screens', 'all < 1500 ms render+bind', f'slow: {slow}; top: {top}')
     t.app.notes.append('slowest: ' + top)
+
+
+@test('S4', 'Smoke: a female profile mounts the female 3D body on Body + Projection (CONTRACT §21), no page errors')
+def t_female_3d(t, ctx):
+    app = t.app
+    app.load({}, 'today')
+    app.store("(store.updateProfile({ body: { ...store.getProfile().body, sex: 'female', heightIn: 64, birthYear: 1992 } }), "
+              "store.logBodyweight(ds, 140), store.logMeasurement({ d: ds, neck: 13, shoulders: 40, chest: 35, waist: 29, hips: 39, "
+              "armL: 11.5, armR: 11.5, forearm: 9.5, thighL: 22, thighR: 22, calfL: 14, calfR: 14 }), 1)")
+    reqs = []
+    on_req = lambda r: reqs.append(r.url)
+    app.page.on('request', on_req)
+    e0 = len(app.errors)
+    try:
+        for r in ('body', 'projection'):
+            app.go(r, settle=300)
+            t.check(app.has('#content canvas', timeout=8000), f'{r}: 3D canvas mounted', 'canvas', 'none (SVG fallback)')
+            try:
+                app.page.wait_for_function("() => { const l = document.querySelector('#content .b3m .b3m-load'); return !!l && l.style.display === 'none'; }",
+                                           timeout=30000, polling=200)
+            except PWTimeout:
+                raise Fail(f'{r}: female 3D model ready', 'model loaded and fitted', short(app.text('#content .b3m'), 80))
+    finally:
+        app.page.remove_listener('request', on_req)
+    errs = app.errors[e0:]
+    t.check(not errs, 'no page / console / http errors', 'none', '; '.join(short(e[1], 100) for e in errs[:2]))
+    t.check(any(u.split('?')[0].endswith('/assets/body/body-female.bin') for u in reqs), 'female asset fetched', 'body-female.bin', [u.split('/')[-1] for u in reqs if '/assets/body/' in u])
+    t.check(not any(u.split('?')[0].endswith('/assets/body/body.bin') for u in reqs), 'male asset not fetched for a female profile', 'no body.bin',
+            [u.split('/')[-1] for u in reqs if '/assets/body/' in u])
 
 
 # ---------------------------------------------------------------- core flows
