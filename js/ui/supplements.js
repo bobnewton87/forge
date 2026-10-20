@@ -7,6 +7,7 @@
 import { esc } from './components.js';
 import { SUPPLEMENTS, NOT_MODELED, CATEGORIES, EVIDENCE, isUnapproved, isModeled, itemFor } from '../data/supplements.js';
 import { modifiersAt, testosteroneEffect, averageTotalT, resolveDose, stackAt, T_MODEL, T_MODEL_F } from '../engine/metabolic.js';
+import { tPlan, rowEntries } from '../engine/tplan.js';
 import { sexOf, femaleStatus, FEMALE_LABS, FEMALE_T_RANGE } from '../engine/sex.js';
 // CONTRACT-NOTE (§20 Female mode): for women the catalogue reads through itemFor(item, 'female'), labs show female
 //   reference ranges, the testosterone chart is on a female scale (Huang 2014 + trans-men fit, 24-week lean change),
@@ -79,6 +80,9 @@ export function render(ctx) {
 
   <div class="section-title">What this does to your projection</div>
   <div id="sp-impact-wrap">${impactCard(I, mods, off, activeIds)}</div>
+
+  ${sex === 'female' ? '' : `<div class="section-title" id="sp-plan">Raise your own testosterone</div>
+  <div id="sp-plan-wrap">${planCard(I)}</div>`}
 
   <div class="section-title">Metabolic values</div>
   ${metabolicForm(p, I)}
@@ -211,6 +215,85 @@ function impactCard(I, mods, off, activeIds) {
       <ul class="sp-contrib">${(mods.factors || []).map(f => `<li><div class="row between"><b class="small">${esc(f.label)}</b><span class="small num">${mult(f.mult)}${f.retention && Math.abs(f.retention - 1) > 0.004 ? ` · loss ${mult(f.retention)}` : ''}</span></div><div class="small muted">${esc(f.note)}${f.assumed ? ' <span class="sp-assumed">assumed</span>' : ''}</div></li>`).join('')}</ul>
       ${mods.notes.length ? `<ul class="sp-notes">${mods.notes.map(n => `<li class="small muted">${esc(n)}</li>`).join('')}</ul>` : ''}
     </details>
+  </div>`;
+}
+
+// ------------------------------------------------------------------ §22 "Raise your own testosterone" planner
+// CONTRACT-NOTE: the numbers come from js/engine/tplan.js, which runs every candidate through the same
+//   modifiersAt() and project() the Projection screen uses, so adding a row here changes Projection by exactly
+//   what the row said it would. §20: the whole section is absent for a female profile.
+const PLAN_MAX = 8;
+const planUi = { showZero: false, showCost: false, open: null };
+const bcBadge = r => r.bodyComp === 'measured'
+  ? '<span class="badge good" title="Trials of this item measured body composition.">Measured</span>'
+  : r.bodyComp === 'extrapolated'
+    ? '<span class="badge warn" title="No body-composition data. The lean number is extrapolated through the testosterone→lean curve.">Extrapolated</span>'
+    : '<span class="badge bad" title="Trials measured body composition on it and found none.">No muscle effect</span>';
+const rng = (lo, hi, dp = 1) => `${sgn(lo, dp)} to ${sgn(hi, dp)}`;
+
+function planRow(r) {
+  const open = planUi.open === r.id;
+  const tMoved = Math.abs(r.t.to - r.t.from) >= 2;
+  const e2Moved = r.e2.from != null && r.e2.to != null && Math.abs(r.e2.to - r.e2.from) >= 0.5;
+  const nums = [];
+  nums.push(`<div class="sp-pn"><span class="k">Total T</span><b>${tMoved ? `${r.t.from} → ${r.t.to}` : `${r.t.from} (no change)`}</b>${tMoved && r.t.hi !== r.t.lo ? `<span class="tiny muted">range ${r.t.lo}–${r.t.hi} ng/dL</span>` : '<span class="tiny muted">ng/dL</span>'}</div>`);
+  if (r.freeT.to != null) nums.push(`<div class="sp-pn"><span class="k">Free T</span><b>${f1(r.freeT.from)} → ${f1(r.freeT.to)}</b><span class="tiny muted">pg/mL (Vermeulen)</span></div>`);
+  if (r.e2.from != null) nums.push(`<div class="sp-pn"><span class="k">Estradiol</span><b>${e2Moved ? `${f1(r.e2.from)} → ${f1(r.e2.to)}` : `${f1(r.e2.from)} (no change)`}</b><span class="tiny muted">pg/mL${r.e2.assumed ? ' · assumed' : ''}</span></div>`);
+  nums.push(`<div class="sp-pn ${r.lean.lb > 0.05 ? 'good' : ''}"><span class="k">Lean</span><b>${sgn(r.lean.lb)} lb</b><span class="tiny muted">${rng(r.lean.lo, r.lean.hi)} over ${Math.round(r.weeks / 4.345)} mo</span></div>`);
+  nums.push(`<div class="sp-pn ${r.fat.lb < -0.05 ? 'good' : r.fat.lb > 0.05 ? 'bad' : ''}"><span class="k">Fat</span><b>${sgn(r.fat.lb)} lb</b><span class="tiny muted">${rng(r.fat.lo, r.fat.hi)}</span></div>`);
+  return `<div class="sp-prow ${open ? 'open' : ''}${r.inStack ? ' in' : ''}" data-prow="${esc(r.id)}">
+    <button class="sp-phead" data-popen="${esc(r.id)}" aria-expanded="${open}">
+      <div class="grow"><div class="t">${esc(r.name)}</div>
+        <div class="sp-badges">${r.rx ? '<span class="badge accent">℞ prescriber</span>' : ''}${r.combo ? '<span class="badge">Combination</span>' : ''}<span class="badge ${EV_CLS[r.evidence] || ''}">${esc(EVIDENCE[r.evidence]?.short || r.evidence)}</span>${bcBadge(r)}${r.inStack ? '<span class="badge good">In stack</span>' : ''}</div>
+      </div>
+      <div class="sp-pscore"><b class="${r.score > 0.05 ? 'good' : r.score < -0.05 ? 'bad' : 'muted'}">${sgn(r.score)}</b><span class="tiny muted">lb net</span></div>
+      <span class="chev">${open ? '⌄' : '›'}</span>
+    </button>
+    <div class="sp-pnums">${nums.join('')}</div>
+    ${open ? `<div class="sp-pdetail">
+      ${r.rationale ? `<p class="small">${esc(r.rationale)}</p>` : ''}
+      ${r.why.map(w => `<p class="small muted">${esc(w)}</p>`).join('')}
+      ${r.bcNote.map(n => `<p class="tiny muted">${esc(n)}</p>`).join('')}
+      ${r.warnings.map(w => `<p class="small sp-pwarn">${esc(w)}</p>`).join('')}
+      ${r.suits.length ? `<p class="small"><b>Suits:</b> ${esc(r.suits.join(' '))}</p>` : ''}
+      ${r.notSuits.length ? `<p class="small"><b>Not for:</b> ${esc(r.notSuits.join(' '))}</p>` : ''}
+      ${r.fertility.length ? `<p class="small"><b>Fertility:</b> ${esc(r.fertility.join(' '))}</p>` : ''}
+      ${r.monitor.length ? `<p class="small"><b>Labs to watch:</b> ${esc(r.monitor.join(' · '))}</p>` : ''}
+      ${r.wada.length ? `<p class="tiny muted"><b>Anti-doping:</b> ${esc(r.wada.join(' '))}</p>` : ''}
+      ${r.rx ? '<p class="tiny muted">Prescription item: needs a physician, a diagnosis and lab monitoring. Forge reports what the trials measured; it does not tell you to take anything.</p>' : ''}
+      ${r.projected ? '' : '<p class="tiny muted">Lean and fat here are from the stack model rather than your full projection (log a bodyweight to get the full one).</p>'}
+      <div class="sp-pact"><button class="btn btn-sm ${r.inStack ? '' : 'btn-primary'}" data-ptoggle="${esc(r.id)}">${r.inStack ? 'Remove from stack' : r.combo ? 'Add both to stack' : 'Add to stack'}</button>
+        ${r.ids.map(id => `<button class="btn btn-sm btn-ghost" data-detail="${esc(id)}">${esc(SUPPLEMENTS[id]?.name.split(' (')[0] || id)} details</button>`).join('')}</div>
+    </div>` : ''}
+  </div>`;
+}
+
+function planCard(I) {
+  const plan = safe(() => tPlan(I.profile, { now: I.now, age: I.b?.age, bodyweightLb: I.b?.weightLb || I.profile.bodyweight,
+    baseline: I.b, sessions: I.sessions, bodyLog: I.bodyLog, foodLog: I.foodLog, weeks: 52,
+    projectFn: typeof PJ.project === 'function' ? PJ.project : null }), null);
+  if (!plan || plan.hidden) return '';
+  const act = (plan.actions || []).find(a => a.kind === 'labs');
+  const worth = plan.rows.filter(r => r.applies && !r.cost && r.score > 0.05);
+  const negative = plan.rows.filter(r => r.applies && !r.cost && r.score <= 0.05);
+  const zero = plan.rows.filter(r => !r.applies && !r.cost);
+  const cost = plan.rows.filter(r => r.cost);
+  const shown = worth.slice(0, PLAN_MAX);
+  return `<div class="card sp-plan">
+    <p class="small">Every published way to raise your <b>own</b> testosterone, ranked by what Forge models it doing to your <b>lean and fat mass over 12 months</b> — not by how much it moves the number. Those are different lists.</p>
+    ${act ? `<div class="sp-plabs"><div class="t">① ${esc(act.title)}</div><p class="small">${esc(act.body)}</p>
+      <ul class="sp-plablist">${act.labs.map(l => `<li><b>${esc(l.label)}</b><span class="tiny muted">${esc(l.why)}</span></li>`).join('')}</ul></div>` : ''}
+    ${plan.notes.map(n => `<p class="tiny muted">${esc(n)}</p>`).join('')}
+    ${shown.length ? `<div class="sp-sub">Worth considering for you</div><div class="sp-plist">${shown.map(planRow).join('')}</div>`
+      : `<p class="small muted mt">On the values Forge has for you, <b>nothing here is modeled to add lean mass</b>. That is the honest answer, not a gap: almost every therapy in this area was tested in men who were hypogonadal, obese, or both. Open the list below to see each one's number and the reason it is zero.</p>`}
+    ${negative.length ? `<details class="sp-pmore"><summary class="small">Changes something, but not in your favour (${negative.length})</summary><div class="sp-plist">${negative.map(planRow).join('')}</div></details>` : ''}
+    ${zero.length ? `<details class="sp-pmore" ${planUi.showZero ? 'open' : ''} data-pzero><summary class="small">Modeled at ~0 for you, with the reason (${zero.length})</summary><div class="sp-plist">${zero.map(planRow).join('')}</div></details>` : ''}
+    ${cost.length ? `<details class="sp-pmore" ${planUi.showCost ? 'open' : ''} data-pcost><summary class="small">What might be costing you (${cost.length})</summary><div class="sp-plist">${cost.map(planRow).join('')}</div></details>` : ''}
+    <details class="sp-pmore"><summary class="small">Replacing testosterone instead (not "your own")</summary>
+      <p class="small muted">These put testosterone in from outside and suppress your own production: ${plan.exogenous.map(e => esc(e.name.split(' (')[0])).join(', ')}. Nasal testosterone is the partial exception — in one uncontrolled study LH stayed normal in 73% of men and sperm counts held up. They are in the catalogue below with their own evidence.</p></details>
+    ${plan.assumptions.length ? `<details class="sp-pmore"><summary class="small">What Forge assumed about you (${plan.assumptions.length})</summary><ul class="sp-notes">${plan.assumptions.map(a => `<li class="small muted">${esc(a)}</li>`).join('')}</ul></details>` : ''}
+    <p class="tiny muted mt"><b>Anti-doping:</b> ${esc(plan.wada)}</p>
+    <p class="tiny muted">Not medical advice. Prescription items need a prescriber; the numbers are study averages with the ranges shown, and your response can differ.</p>
   </div>`;
 }
 
@@ -456,6 +539,7 @@ export function bind(root, ctx) {
     const { mods, off, activeIds } = computeMods(I);
     const wrap = root.querySelector('#sp-impact-wrap');
     if (wrap) { wrap.innerHTML = impactCard(I, mods, off, activeIds); wrap.querySelectorAll('[data-tchart]').forEach(bindTChart); }
+    refreshPlan();
     const m = I.profile.metabolic || {};
     const sx = sexOf(I.profile);
     for (const L of [...labsFor(LABS, LABS_F, sx), ...labsFor(PANEL, PANEL_F, sx)]) { const el = root.querySelector(`[data-badge="${L.k}"]`); if (el) el.innerHTML = labBadge(L, m[L.k]); }
@@ -471,8 +555,48 @@ export function bind(root, ctx) {
   };
   const timers = {};
 
+  // ---- §22 planner: one tap adds a row (single item or whole combination), a second tap removes it
+  function bindPlan() {
+    const wrap = root.querySelector('#sp-plan-wrap');
+    if (!wrap) return;
+    wrap.querySelectorAll('[data-popen]').forEach(b => b.addEventListener('click', () => {
+      planUi.open = planUi.open === b.dataset.popen ? null : b.dataset.popen;
+      refreshPlan();
+    }));
+    wrap.querySelectorAll('[data-ptoggle]').forEach(b => b.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const ids = b.dataset.ptoggle.split('+').filter(id => SUPPLEMENTS[id]);
+      if (!ids.length) return;
+      const today = ds();
+      const p = store.getProfile();
+      const list = Array.isArray(p.supplements) ? [...p.supplements] : [];
+      const activeOf = id => list.findIndex(e => e && e.id === id && e.active !== false && (!e.end || e.end > today));
+      const allIn = ids.every(id => activeOf(id) >= 0);
+      if (allIn) {
+        for (const id of ids) { const i = activeOf(id); if (i >= 0) list.splice(i, 1); }
+        store.updateProfile({ supplements: list });
+        ctx.toast(`${ids.length > 1 ? 'Combination' : SUPPLEMENTS[ids[0]].name.split(' (')[0]} removed`);
+      } else {
+        for (const e of rowEntries(ids.filter(id => activeOf(id) < 0), today)) list.push(e);
+        store.updateProfile({ supplements: list });
+        ctx.toast(`${ids.length > 1 ? 'Combination added' : SUPPLEMENTS[ids[0]].name.split(' (')[0] + ' added'} — projection updated`);
+      }
+      ctx.rerender();
+    }));
+    wrap.querySelectorAll('[data-pzero]').forEach(d => d.addEventListener('toggle', e => { planUi.showZero = e.target.open; }));
+    wrap.querySelectorAll('[data-pcost]').forEach(d => d.addEventListener('toggle', e => { planUi.showCost = e.target.open; }));
+    wrap.querySelectorAll('[data-detail]').forEach(b => b.addEventListener('click', ev => { ev.stopPropagation(); openDetail(ctx, b.dataset.detail); }));
+  }
+  function refreshPlan() {
+    const wrap = root.querySelector('#sp-plan-wrap');
+    if (!wrap) return;
+    wrap.innerHTML = planCard(inputs(store));
+    bindPlan();
+  }
+  bindPlan();
+
   root.querySelectorAll('[data-cat]').forEach(b => b.addEventListener('click', () => { ui.cat = b.dataset.cat; ctx.rerender(); }));
-  root.querySelectorAll('[data-detail]').forEach(b => b.addEventListener('click', () => openDetail(ctx, b.dataset.detail)));
+  root.querySelectorAll('.list [data-detail], .sp-row [data-detail]').forEach(b => b.addEventListener('click', () => openDetail(ctx, b.dataset.detail)));
   root.querySelectorAll('[data-edit]').forEach(r => {
     const open = () => { const p = store.getProfile(); const e = p.supplements?.[Number(r.dataset.edit)]; if (e) openDetail(ctx, e.id, Number(r.dataset.edit)); };
     r.addEventListener('click', open);

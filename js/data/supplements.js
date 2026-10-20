@@ -980,7 +980,9 @@ const LIST = [
       wada: 'WADA prohibited at all times in males, S2.2 (chorionic gonadotropin).',
       suits: 'Low testosterone with fertility to protect, including men already on testosterone therapy. It works even when the pituitary signal is the problem, because it replaces LH.',
       notSuits: 'A normal testosterone; primary (testicular) failure where the testes cannot respond; anyone who would rather not inject.',
-      gate: { lowTOnly: true, noEffectAbove: 500 },
+      // Primary (testicular) failure blocks this too: hCG replaces the LH signal, but a testis that cannot respond
+      // to its own high LH will not respond to hCG either.
+      gate: { lowTOnly: true, noEffectAbove: 500, secondaryOnly: true },
       levelRisks: [{ min: 1, text: 'Estradiol rises with hCG: breast tenderness and gynecomastia are the common complaints, and your own LH and FSH are suppressed while you use it.' }],
     },
   },
@@ -1041,7 +1043,9 @@ const LIST = [
       suits: 'Obese men with low testosterone and a genuinely high estradiol, under a prescriber — and even then for the hormone profile, not for muscle.',
       notSuits: 'Anyone whose goal is muscle (measured: none), anyone at risk of bone loss (endurance athletes, low energy availability), and anyone with a normal estradiol.',
       leanNullNote: 'two 12-month randomized trials measured body composition and strength on it and found no change, and spine bone density fell',
-      gate: {},
+      // It works by removing estrogen feedback so LH rises. If LH is already high (primary), there is no feedback
+      // left to remove and no testicular reserve to recruit.
+      gate: { secondaryOnly: true },
       levelRisks: [{ min: 1, text: 'Lower estradiol is the mechanism and the problem: joint aches, low libido and, over a year, spine bone loss (Burnett-Bowie 2009).' }],
     },
   },
@@ -1072,7 +1076,7 @@ const LIST = [
       dose: { unit: '% of the studied regimen', default: 100, label: 'as studied (prescriber-set dose)', studied: [0, 100] },
       response: [[0, 0], [100, 1]],
       tPct: 60, rampWeeks: 6, maxLevel: 800,
-      axis: 'serm', ceilingNg: 800, tCI: [0.5, 1.5],
+      axis: 'serm', ceilingNg: 800, tCI: [0.5, 1.5], gate: { secondaryOnly: true },
       e2Pct: 60, e2ActionPct: 0, shbgDelta: 0,
       e2Note: 'Serum estradiol rises as on any SERM, but tamoxifen also blocks the receptor in several tissues, so whether estrogen action goes up or down in fat is unknown. Forge models no fat effect either way.',
       shbgNote: 'SHBG did not change significantly in Krause 1992.',
@@ -1119,7 +1123,7 @@ const LIST = [
       wada: 'Not prohibited.',
       suits: 'A confirmed high prolactin with low testosterone. This treats the cause rather than pushing the axis.',
       notSuits: 'A normal prolactin — then there is nothing here to treat and Forge models zero.',
-      gate: { highProlactin: true, lowTOnly: true, noEffectAbove: 450 },
+      gate: { highProlactin: true, lowTOnly: true, noEffectAbove: 450, secondaryOnly: true },
     },
   },
   {

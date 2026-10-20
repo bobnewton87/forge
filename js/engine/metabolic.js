@@ -715,20 +715,28 @@ export function combineEndogenous(parts, ctx = {}) {
   const freeT = vermeulenFreeT(mid.level, shbg);
   const freeTBase = vermeulenFreeT(T0, num(ctx.shbg, 1, 300) ?? ASSUMED_SHBG);
 
-  // ---- muscle credit: bounded by what the contributing items' own trials actually reached
-  let bcMax = -Infinity, bcSource = null;
-  for (const e of ev) {
-    if (e.pct0 === 0) continue;
-    const m = e.model;
-    const none = m.bodyComp === 'none' || m.tLeanShare === 0;
-    if (none) continue;
-    const cap = num(m.bcMaxLevel, 0, 1e5) ?? num(m.ceilingNg, 0, 1e5) ?? num(m.maxLevel, 0, 1e5) ?? Infinity;
-    if (cap > bcMax) { bcMax = cap; bcSource = e; }
+  // ---- muscle credit: bounded by what the contributing items' own trials actually reached.
+  // Composed the same way the level is, so a cause item with generous body-composition evidence cannot launder a
+  // drug's rise past that drug's own evidence bound: the cause chain is bounded by the cause items, and the extra
+  // the drug adds on top is bounded by the DRIVER's bound.
+  const creditable = e => !(e.model.bodyComp === 'none' || e.model.tLeanShare === 0);
+  const bcOf = e => num(e.model.bcMaxLevel, 0, 1e5) ?? num(e.model.ceilingNg, 0, 1e5) ?? num(e.model.maxLevel, 0, 1e5) ?? Infinity;
+  const CAUSE = new Set(['dopamine', 'nutrient', 'lifestyle']);
+  const causeActive = ev.filter(e => e.pct0 !== 0 && (e.pct0 < 0 || CAUSE.has(e.axis)));
+  const causeCred = causeActive.filter(creditable);
+  let credit = mid.base >= T0
+    ? (causeCred.length ? Math.min(mid.base, Math.max(T0, Math.max(...causeCred.map(bcOf)))) : T0)
+    : mid.base;                                        // a loss is always real
+  let bcSource = causeCred.length ? causeCred.reduce((a, b) => (bcOf(b) > bcOf(a) ? b : a)) : null;
+  const lhCred = mid.lh.filter(x => x.delta > 0 && creditable(x.e));
+  if (lhCred.length) {
+    const d = lhCred[0];                               // mid.lh is sorted by delta, so this is the strongest creditable one
+    const bound = Math.max(credit, bcOf(d.e));
+    if (Math.min(mid.level, bound) > credit) { credit = Math.min(mid.level, bound); bcSource = d.e; }
   }
   const anyCreditable = bcSource != null;
-  const creditLevel = mid.level >= T0
-    ? (anyCreditable ? clamp(Math.min(mid.level, bcMax), T0, mid.level) : T0)
-    : mid.level;                                       // a loss is always real
+  const creditLevel = mid.level >= T0 ? clamp(credit, Math.min(T0, mid.level), mid.level) : mid.level;
+  const bcMax = bcSource ? bcOf(bcSource) : Infinity;
   const extrapolated = !!(bcSource && bcSource.model.bodyComp === 'extrapolated');
 
   if (mid.lh.length > 1) {
