@@ -13,7 +13,7 @@
 //   the item is added. No parallel model lives here.
 // CONTRACT-NOTE (§20 Female mode): these are male-axis therapies. tPlan() returns { female: true, hidden: true }
 //   and no rows for a female profile, and the UI does not render the section at all.
-import { SUPPLEMENTS, T_LAB_PANEL, isRx, itemFor } from '../data/supplements.js';
+import { SUPPLEMENTS, T_LAB_PANEL, isRx, itemFor, TOLERABILITY, worstTolerability, tolerabilityOf } from '../data/supplements.js';
 import * as MET from '../engine/metabolic.js';
 import { sexOf } from './sex.js';
 
@@ -79,6 +79,28 @@ export function labStatus(profile) {
   const have = [], missing = [];
   for (const L of T_LAB_PANEL) (num(m[L.k], 0, 1e5) != null ? have : missing).push(L);
   return { have, missing, panel: T_LAB_PANEL, complete: missing.length === 0, decisive: num(m.totalT, 1, 5000) != null && num(m.lh, 0, 200) != null };
+}
+
+// ------------------------------------------------------------- §22.8 tolerability
+// Bob asked whether enclomiphene is "better tolerated". Before this the planner had no field in which that
+// question could be answered with a number, so the catalogue could only answer it in prose and the ranking
+// could not see it at all. A row now carries:
+//   grade / label      the worst grade among its items (a combination is as tolerable as its least tolerable part)
+//   comparedWith       what that grade is relative to — a grade without a comparator is meaningless
+//   headline, note     the one-line finding and the caveats that decide what it is worth
+//   events[]           every rate with its denominator, and the comparator arm's rate where one exists
+//   rank               used ONLY as a late tiebreak below, never to override measured lean/fat
+// Items with no tolerability block contribute nothing (most of the catalogue: sleep, food, herbs).
+function tolerabilityFor(items) {
+  const t = worstTolerability(items);
+  if (!t) return null;
+  const meta = TOLERABILITY[t.grade] || TOLERABILITY.unknown;
+  // Which of this row's items carry data at all, so the UI can say "graded on clomiphene" for a combination.
+  const from = items.filter(i => tolerabilityOf(i)).map(i => i.name.split(' (')[0]);
+  return { grade: t.grade, label: meta.label, short: meta.short, rank: meta.rank, explain: meta.text,
+    comparedWith: t.comparedWith || null, headline: t.headline || null, note: t.note || null,
+    evidence: t.evidence || 'none', discontinuation: t.discontinuation || null,
+    events: Array.isArray(t.events) ? t.events : [], sources: Array.isArray(t.sources) ? t.sources : [], from };
 }
 
 // --------------------------------------------------------------------- core
@@ -230,6 +252,11 @@ export function tPlan(profile, opts = {}) {
       // through the T->lean curve. Otherwise a drug with a published T rise and no body-composition
       // trial outranks everything that has actually been measured. The mid-point still shows on the row.
       score: r2(bc.includes('measured') && !t.extrapolated ? lean - fat : leanLo - fatHi),
+      // §22.8 tolerability. The row's grade is the WORST among the items actually doing something in this man —
+      // a combination is only as tolerable as its least tolerable part — and it travels with the comparator it
+      // was graded against, because a tolerability grade without one means nothing. `items`, not `acting`: an
+      // item gated to zero on testosterone still has to be swallowed, so its side effects still count.
+      tolerability: tolerabilityFor(items),
       why, monitor: [...new Set(items.flatMap(i => i.model?.monitor || []))],
       suits: items.map(i => i.model?.suits).filter(Boolean), notSuits: items.map(i => i.model?.notSuits).filter(Boolean),
       wada: [...new Set(items.map(i => i.model?.wada).filter(w => w && !/^not prohibited/i.test(w)))],
@@ -246,9 +273,15 @@ export function tPlan(profile, opts = {}) {
     const r = buildRow(c); if (r) rows.push(r);
   }
   // Rank by what it does to his body, not by the size of the testosterone number.
+  // Ranking is still lean − fat first and evidence second; nothing about tolerability can promote a row over one
+  // that is modeled to build more muscle on better evidence. But when two rows are otherwise tied — which is
+  // exactly what happens to clomiphene and enclomiphene for a man with a normal testosterone, where both score
+  // zero on 'moderate' evidence — the better-tolerated one goes first instead of whichever is earlier in the
+  // alphabet. That is the question Bob actually asked, and the tiebreak is where it belongs.
   const evOrder = { strong: 4, moderate: 3, weak: 2, preclinical: 1, refuted: 1, none: 0 };
   rows.sort((a, b) => (b.score - a.score)
     || ((evOrder[b.evidence] ?? 0) - (evOrder[a.evidence] ?? 0))
+    || ((b.tolerability?.rank ?? 0) - (a.tolerability?.rank ?? 0))
     || (Number(a.rx) - Number(b.rx))
     || a.name.localeCompare(b.name));
 

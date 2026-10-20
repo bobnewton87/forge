@@ -125,12 +125,19 @@ Oct 2015 and a Complete Response Letter followed on 30 Nov 2015; it has never be
 in **Category 1** of the FDA's 503A nominated bulk substances list (verified May 2026), which is how
 compounding pharmacies supply it. **No enclomiphene trial has ever measured body composition**, and **no
 enclomiphene trial has ever enrolled a eugonadal man** — Wiehle 2013 enrolled 48 and had to drop 4 whose
-baseline came back above 350 ng/dL. Forge's numbers for enclomiphene above ~350 ng/dL are therefore inferred
-from clomiphene's measured eugonadal response, scaled by the ratio of the two pooled hypogonadal effects
-(216/274 ≈ 0.79). That is an assumption on a mechanistic argument (enclomiphene is clomiphene's active
-trans-isomer), not a measurement. Dose ladder, day-42 morning total T (Wiehle 2013, doi:10.1111/bju.12363):
-6.25 mg → 420 ± 212, 12.5 mg → 404 ± 165, 25 mg → 604 ± 160 ng/dL, gel → 500 ± 278; the 25 mg Cmax was
-764 ± 164, which is the highest group mean this drug has ever produced and is now its ceiling.
+baseline came back above 350 ng/dL.
+
+Dose ladder, day-42 morning total T (Wiehle 2013, doi:10.1111/bju.12363): 6.25 mg → 420 ± 212, 12.5 mg →
+404 ± 165, 25 mg → 604 ± 160 ng/dL, gel → 500 ± 278 (across-group p = 0.07); 24-h means 391 / 426 / 586 vs 546
+(p = 0.003); 24-h Cmax 516 / 554 / **764 ± 164** vs 908. Measured as a *rise over each arm's own baseline*, the
+two lower arms are indistinguishable at ≈43 % of the 25 mg arm, which is how Forge now models the dose-response
+(§12.4). 764 remains the ceiling and 604 the muscle-credit bound; §12.5 says why both survive re-derivation.
+
+**The whole enclomiphene question was re-examined on 2026-10-20 — see [§12](#12-the-isomer-question-is-enclomiphene-better-tolerated-with-less-estrogen-effect-2026-10-20).**
+That section replaces the sentence that used to sit here claiming the eugonadal arm was "clomiphene's measured
+eugonadal response scaled by 216/274". That description was both circular (Hohl's 274 pools clomiphene *and*
+enclomiphene) and a misreading of the arithmetic (the curve is anchored on enclomiphene's own measured +216).
+Assumption **A15** is restated accordingly.
 
 ### hCG — the only one with a placebo-controlled lean-mass result
 **Liu 2002** (double-blind RCT, 40 men >60 with low T, 3 months; PMID 12107212): total and free T up ~150%,
@@ -566,7 +573,8 @@ Each of these is flagged in the code, in the UI and here. Nothing below was meas
 | A4 | **Testicular ceiling for hCG** | 1,100 ng/dL | Top of the male reference range. The highest level actually observed is ≈ 870 |
 | A13 | **`LH_PRIMARY_HARD`, the LH at which the response is modeled as zero** | 18.8 IU/L (= 2 × the EMAS 9.4 cut) | No trial reports an LH at which the response is measured to be zero. At 18.8 Kim 2026's OR 0.82/mIU/mL has compounded to ≈ 0.18. The **linear** fade between 9.4 and 18.8 is also an assumption |
 | A14 | **Clomiphene's absolute rise above 550 ng/dL** | tapers from +274 to ≈ +220 ng/dL by 1,000 | No trial has started a man above ~520. The flat +274 below 550 *is* measured (Hohl 2025 pooled it as one absolute effect; Keihani 2020 and Kim 2026 found baseline T non-predictive); the taper is physiology, not data |
-| A15 | **Enclomiphene's entire eugonadal arm** | clomiphene's eugonadal response × 216/274 | No enclomiphene trial has ever enrolled a eugonadal man. Mechanistic inference from it being clomiphene's active trans-isomer |
+| A15 | **The SHAPE of enclomiphene's response above ~350 ng/dL** (restated 2026-10-20; see §12.3) | a constant absolute rise, tapering mildly above 550, borrowed from clomiphene | No enclomiphene trial has ever enrolled a eugonadal man. What is inferred is only the *shape*: the **size** is enclomiphene's own measured +216 ng/dL (Tienforti 2023, I² = 4 %). The constant-absolute shape rests on Keihani 2020 and Kim 2026 finding baseline T non-predictive — and both of those are **clomiphene** cohorts. ~~The old wording, "clomiphene's eugonadal response × 216/274", was wrong twice over: circular (Hohl's 274 pools both isomers, so it contains enclomiphene) and a misreading of the arithmetic.~~ |
+| A15b | **Enclomiphene's ceiling between 604 and 764 ng/dL** | 764 (the 24-h Cmax) rather than 604 (the highest morning group mean) | Forge's serum numbers are morning values, so comparing one to a Cmax is the generous reading. 604 is kept as the hard muscle-credit bound. Capping the *hormone* at 604 was rejected because 604 is the highest level seen in obese **hypogonadal** men at the top dose tested — not a probe of the drug's ceiling, which nobody has run in a eugonadal man — and hard-capping there would open a ~700 ng/dL gap against clomiphene that is an artefact of enrolment, not pharmacology |
 | A16 | **hCG above 430 ng/dL** | a conservative taper (120 % at 500 falling to 40 % at 1,100) | hCG demonstrably raises testosterone in normal men — that is what a Leydig stimulation test is (Cailleux-Bounacer 2008, Panidis 2002) — but those are **single injections**. Nobody has run chronic hCG in a eugonadal man |
 | A17 | **`bcMaxBaseline` as the extrapolation trigger** | clomiphene 300, hCG 433 | These are the trials' **entry criteria**, not a measured boundary of where the effect stops |
 | A5 | **hCG muscle-credit bound** | 870 ng/dL | Inferred from Liu 2002's ≤ 433 ng/dL entry and its reported +150 %; the achieved mean is unpublished |
@@ -850,3 +858,466 @@ Potter 2021, PMID 35134000 (doi:10.1007/s40279-021-01600-z) · Ferrando & Green 
 - **Wiehle R, et al.** (2013) re-read in full from **PMC4155868** for the dose ladder in Table 2.
 
 Article metadata and full texts were retrieved from PubMed and PubMed Central.
+
+---
+
+## 12. The isomer question: is enclomiphene better tolerated, with less estrogen effect? (2026-10-20)
+
+Bob: *"I hear enclomiphene is better tolerated and has less of the estrogen effects. Study that, implement it."*
+
+**Short answer: half right, and the half that is right is the half people usually get backwards.** "Better
+tolerated" is supported, on one study. "Less of the estrogen effects" is supported for the *effects* and
+**contradicted for serum estradiol**, which goes up on enclomiphene about as much as on clomiphene.
+
+### 12.1 The pharmacology is real, and it is bigger than it looks
+
+Clomiphene citrate is a mixture of two geometric isomers: **62 % (trans)enclomiphene** and **38 %
+(cis)zuclomiphene** (Wiehle 2013, doi:10.1111/bju.12363). Enclomiphene is the estrogen antagonist that raises
+LH, FSH and testosterone. Zuclomiphene is an estrogen **agonist** that contributes little to the testosterone
+rise, and its half-life is about **30 days** against enclomiphene's **~10 h** (Rodriguez 2016,
+doi:10.1080/14656566.2016.1204294), so it accumulates.
+
+That accumulation has been measured, and it is dramatic. In 15 men on clomiphene 25 mg/day for at least six
+weeks, median serum **zuclomiphene was 44.0 ng/mL against 2.2 ng/mL of enclomiphene — a 20:1 ratio** (Helo
+2017, doi:10.1111/bju.13625). Age, BMI, treatment duration and testosterone level did not predict either
+concentration. So after a month or two on clomiphene, **almost all the drug in circulation is the estrogenic
+isomer**, and the one doing the work is a rounding error. The authors' own conclusion was that this "supports
+the need for the development of a pure selective oestrogen receptor antagonist".
+
+Supporting, in a species rather than a test tube: in baboons given the isomers separately for 12 days,
+zuclomiphene did **not** significantly raise testosterone and raised serum cholesterol 22 %, while enclomiphene
+took testosterone 170 → 1,144 ng/dL (clomiphene itself 170 → 559) and **lowered** cholesterol 8 % (Rodriguez
+2016, reviewing the Repros preclinical programme).
+
+So the mechanistic case for Bob's claim is strong. The clinical case is thinner.
+
+### 12.2 Tolerability: supported, on one study
+
+**There has never been a randomized trial of enclomiphene against clomiphene.** The entire direct comparison in
+the literature is one retrospective chart review.
+
+**Saffati 2024** (Transl Androl Urol 13(9):1984–1990, doi:10.21037/tau-24-238; Baylor, 66 men, mean age 38.5,
+BMI 30.2, 78 % secondary hypogonadism). Each man took clomiphene first (median 18.7 months) and was then
+switched to enclomiphene (median 8.9 months), serving as his own control.
+
+| Side effect | Clomiphene | Enclomiphene | p |
+|---|---|---|---|
+| **Any adverse event** | **47 % (31/66)** | **13.8 % (8/58)** | **0.001** (OR 0.18, 95 % CI 0.07–0.44) |
+| Decreased libido | 33.3 % (22/66) | 8.6 % (5/58) | 0.001 (OR 0.18, CI 0.06–0.53) |
+| Erectile dysfunction | 18.2 % (12/66) | 8.6 % (5/58) | 0.12 — ns |
+| Fatigue | 18.2 % (12/66) | 6.9 % (4/58) | 0.06 — ns |
+| Decreased energy | 16.7 % (11/66) | 5.2 % (3/58) | 0.044 |
+| Mood changes | 9.1 % (6/66) | 0 % (0/58) | 0.03 |
+| Depressive thoughts | 4.5 % (3/66) | 0 % (0/58) | 0.24 — ns |
+| Gynecomastia | 3.0 % (2/66) | 0 % (0/58) | 0.49 — ns |
+| Agitation | 6.1 % (4/66) | 1.7 % (1/58) | 0.37 — ns |
+| Hematocrit change (median) | +0.4 % | 0 % | 0.85 — ns |
+
+**Why this is not proof,** mostly in the authors' own words: retrospective, single institution, unblinded,
+adverse events counted from whether a clinician wrote them in a note with a diagnosis code; **no washout**
+between the two drugs, with zuclomiphene's ~30-day half-life sitting right in the middle of that problem;
+everyone took the drugs in the same order, so a period effect and an ascertainment effect both point the same
+way (a second drug's side effects are simply less likely to get written down); men switched for different
+reasons; and the baselines differ — clomiphene started in a hypogonadal state (306 ng/dL) while enclomiphene
+started from an already-corrected one (436 ng/dL). Three of the differences (gynecomastia, depressive thoughts,
+agitation) are a handful of events and are not significant.
+
+**What the randomized evidence says** is a weaker but cleaner claim: enclomiphene is no worse than placebo.
+- **Kim 2016** (two parallel phase-3 RCTs, 256 men): 53 men (21 %) had an adverse event attributed to study
+  drug, **none severe**, and **no significant difference between enclomiphene, testosterone gel and placebo**.
+  *This 21 % is the rate across all arms, including placebo — the previous Forge entry reported it as an
+  enclomiphene-specific rate, which was wrong, and it is now corrected.* Discontinuations: 2 in the 25 mg arm
+  (one raised hematocrit/haemoglobin, one raised PSA), 1 on gel (hematocrit), 8 in the placebo/gel arms overall.
+- **Wiehle 2014** (phase 2b, 124 men): treatment-emergent AEs in 9–20 % of subjects, similar across all arms;
+  the only enclomiphene events were one mildly raised estradiol and two headaches; **no discontinuations for an
+  adverse event and no serious AEs on enclomiphene**.
+
+**Clomiphene's own safety record is also good on hard endpoints**, which is worth saying because "better
+tolerated" is sometimes heard as "clomiphene is dangerous". It is not:
+- **Krzastek 2019** (doi:10.1097/JU.0000000000000396, 400 men, mean 25.5 months, up to 7 years): among the 120
+  treated beyond 3 years, 88 % reached eugonadism, 77 % reported improved symptoms and **8 % reported a side
+  effect** — mood changes in 5, blurred vision in 3, breast tenderness in 2. **No significant adverse event in
+  any of the 400 patients.**
+- **Guo 2019** (doi:10.5534/wjmh.190028, 12,318 US men in MarketScan claims; 5,118 with adequate follow-up):
+  **no increase** in thrombotic events, vision problems, liver disease or nausea in the 6 months after starting
+  versus the 6 months before. Gynecomastia, mental disorders, skin disorders and hypertension were coded *less*
+  often afterwards, on low event counts.
+- **Soares 2018** (doi:10.1038/s41366-018-0105-2): **no** adverse-event withdrawals in the clomiphene arm (both
+  withdrawals were in the placebo arm); hematocrit unchanged (p = 0.409); PSA rose 0.62 → 0.76 ng/mL (p = 0.023)
+  but stayed in range; somnolence in 5/39 vs 0/39 on placebo (p = 0.064).
+- **VTE** is case-report-level only in men (an isolated cortical vein thrombosis, Choi 2020
+  doi:10.1007/s10072-020-04862-z; a thrombotic STEMI in a man in his early 30s, Shahid 2025
+  doi:10.1177/00368504251349392) with no excess in Guo's 5,118-man analysis. Tamoxifen is the SERM here with a
+  labelled VTE risk, and nobody has quantified it in men using it this way.
+- **Bone density** has never been measured on either SERM in men. It *has* been measured on an aromatase
+  inhibitor, where spine BMD fell over 12 randomized months (Burnett-Bowie 2009) — which is why the AI is the
+  one item in this group Forge grades `poor`.
+
+**Lipids are the one place the isomer story shows up in a hard number.** Clomiphene **lowered HDL, p < 0.001**
+(Soares 2018). Enclomiphene did not move HDL, LDL, total cholesterol or triglycerides at 6.25, 12.5 or 25 mg
+over 6 weeks (Wiehle 2013, across-group p = 0.78 for HDL). With the baboon cholesterol result pointing the same
+way, that is a consistent, mechanistically coherent, non-self-reported difference.
+
+**The one finding against enclomiphene:** IGF-1 fell on every dose, ≈96 → 50–62 µg/L over 6 weeks, significantly
+more than on gel (p ≤ 0.008 for all three doses; Wiehle 2013). Levels stayed inside the reference range and
+nobody knows what it means — but for someone whose goal is muscle it is the result in this section that should
+give the most pause, and it is in the catalogue's risk list for that reason.
+
+**Verdict: PARTLY SUPPORTED.** Direction is consistent across one direct comparison, the lipid data and the
+preclinical isomer work; the magnitude rests on a single unblinded retrospective study. Forge grades
+enclomiphene `good` and clomiphene `moderate`, and the grade is capped there — not raised to "proven" — by the
+design of the only study that compares them.
+
+### 12.3 Serum estradiol: NOT supported, and this is the important correction
+
+Forge used to model enclomiphene's estradiol rise at **half** clomiphene's (`e2Pct: 45` vs `90`) on the
+reasoning that the estrogenic isomer had been removed. **That reasoning conflates two different things.**
+
+Serum estradiol rises on a SERM because the SERM raises testosterone, and testosterone is the substrate
+aromatase works on. Removing zuclomiphene does nothing to aromatase. The data:
+
+| | Enclomiphene | Clomiphene | Source |
+|---|---|---|---|
+| Serum E2, before → after | **29.5 → 67 pg/mL** (p = 0.003, n = 18) | 31 → 37.6 (p = 0.074, n = 11) | Thomas 2023, doi:10.7759/cureus.41476 |
+| Mean change, between groups | +61.2 pg/mL | +25.0 | same, p = 0.164 — ns |
+| T/E ratio | 13.2 → **8.7** (worse) | 7.9 → **12.5** (better) | same |
+| Change from an on-clomiphene baseline | −5.92 pg/mL | +17.5 | Saffati 2024, p = 0.001 |
+| Pooled SERM vs placebo (both isomers) | +33.99 pg/mL (CI 19.19–48.79) | | Hohl 2025 |
+
+Thomas 2023 went looking for exactly Bob's hypothesis and found the opposite: *"Theoretically, EC has been
+proposed to cause less estrogenic effects than CC… However, our results showed that the T/E ratio considerably
+decreased in men who received EC, while it significantly improved in men who received CC."* Hohl's pooled
++34 pg/mL includes the enclomiphene trials. Wiehle 2014 lists raised estradiol as an enclomiphene adverse event.
+
+**Saffati's −5.92 does not contradict any of this**, and it is the number people quote. It is a change measured
+from a level clomiphene had *already* raised, not from an untreated baseline — stopping the isomer that was
+raising estrogen action lowers it relative to where clomiphene left you. It says nothing about what enclomiphene
+does from zero.
+
+The two direct studies therefore point in opposite directions on serum E2, both on tiny estradiol sub-samples
+(n = 18 and 11 in Thomas), with channelling bias in both: 6 of Thomas's 46 enclomiphene patients had already
+quit clomiphene for side effects, while every one of Saffati's enclomiphene patients was a clomiphene user first.
+
+**Forge's correction:** `e2Pct` 45 → **85**, just under clomiphene's 90 in proportion to the slightly smaller
+pooled testosterone rise. The modeled estradiol for the two drugs is now within ~3 %. The entry says in words
+that estradiol goes **up**, because the number alone will be read the other way.
+
+**The distinction that survives** is the one Forge already makes for aromatase inhibitors: *serum estradiol* is
+not *estrogen action*. Zuclomiphene is a long-lived estrogen agonist at 20× the concentration of its partner;
+removing it lowers estrogen **action** in tissue while leaving the **hormone** where it was. That is a coherent
+explanation for Saffati's side-effect table and for the HDL difference, and it is why Forge treats "fewer
+estrogen-mediated side effects" as supported while treating "lower estradiol" as refuted. Neither SERM feeds the
+Finkelstein fat term, which is driven by estrogen action being *blocked*; a SERM's direction there is unknown,
+so it stays at zero for both.
+
+### 12.4 Efficacy: no significant difference in either direct comparison
+
+| Comparison | Enclomiphene | Clomiphene | p |
+|---|---|---|---|
+| Tienforti 2023 pooled, obesity-related, n = 292 (isomer-matched, **not** circular) | +7.50 nmol/L = **+216 ng/dL** (CI 188–245, I² = 4 %) | +11.56 nmol/L = **+333** (CI 9.68–13.43, I² = 69 %) | ratio **0.65** |
+| Thomas 2023, 46 vs 32, ≥3 months | +124.96 ng/dL (390 → 581) | +177.30 (244 → 470) | **0.491 — ns** (ratio 0.70) |
+| Saffati 2024, 66 men, sequential | +166 ng/dL (436 → 499) | +98 (306 → 436) | **0.20 — ns** (enclomiphene higher) |
+| vs testosterone gel (both pooled, Hohl 2025) | difference 5.41 ng/dL (CI −43 to +54) | | 0.83 — ns |
+
+So the isomer-matched meta-analysis says enclomiphene is about two-thirds as strong, and neither head-to-head
+can distinguish them. Forge's curve sits at **0.787 ×** clomiphene's at every baseline — between those readings
+— and the disagreement is carried in the confidence interval (`tCI` widened from [0.87, 1.13] to **[0.80,
+1.45]**) rather than hidden inside the point estimate.
+
+Gonadotropins are where enclomiphene wins consistently: Thomas found LH and FSH rose significantly on
+enclomiphene and not on clomiphene, and total motile sperm count improved only in the enclomiphene group.
+
+**The dose-response** is now modeled from Wiehle 2013 rather than treated as flat. Measured as a rise over each
+arm's own baseline: morning C0 gives 6.25 mg = 0.44 and 12.5 mg = 0.31 of the 25 mg arm; the 24-h mean gives
+0.45 and 0.51. The two lower arms are indistinguishable (n = 12 and 7, across-group p = 0.07 for C0), so Forge
+models both at **0.43** and puts the step at the top dose — `response: [[0,0],[25,0.43],[50,0.43],[100,1]]`,
+expressed as a share of the studied regimen rather than in mg, like every other §22 prescription item, so the
+model never prints a number a man could dose himself from. Above the top dose it plateaus: 50 mg was given for
+two weeks in one arm and never in the 3-month programme, and Wiehle's own reading was that the limit is the
+testis, not the dose — tripling LH from 6.7 to 13.3 IU/L raised the 24-h mean testosterone only 27 %,
+*"suggesting a dose-limiting effect on the testosterone-producing Leydig cells… and the inability of
+enclomiphene citrate to stimulate the production of supernormal levels of testosterone."*
+
+### 12.5 What replaced assumption A15
+
+**The old A15 was wrong in its own description, not just uncertain.** It read: *"enclomiphene's entire eugonadal
+arm = clomiphene's eugonadal response × 216/274."* Two problems:
+
+1. **It was circular.** 274 ng/dL is Hohl 2025's pooled **SERM** effect, and that pool contains the enclomiphene
+   trials (Kim 2016 and both Wiehle 2014 studies) alongside the clomiphene ones. Scaling enclomiphene against a
+   pool that includes enclomiphene is not a comparison. (Forge's clomiphene entry is now corrected to say that
+   +274 is a class estimate, not a clomiphene-specific one; the clomiphene-specific figure is Tienforti's +333,
+   and Forge keeps 274 as the deliberately conservative anchor.)
+2. **It misdescribed the arithmetic.** The anchors are 0.787 × clomiphene's at every baseline, and 0.787 × 274 =
+   216 — which is simply Tienforti's directly measured, **enclomiphene-specific** pooled effect. The hypogonadal
+   arm of that curve is a *measurement of this drug*, not an inference from the other one.
+
+**Restated A15: what is inferred is the SHAPE above ~350 ng/dL, not the size.** Forge carries a constant
+absolute rise upward because Keihani 2020 (n = 332) and Kim 2026 (n = 292) both found baseline total T does not
+predict the size of the response — and **both of those are clomiphene cohorts.** Nobody has tested whether
+enclomiphene behaves the same way, because nobody has given it to a eugonadal man. That is the assumption, and
+it is now a much smaller and more precisely stated one.
+
+**Ceiling, re-derived (A15b).** 764 ng/dL is Wiehle 2013's 25 mg day-42 **24-h Cmax** — the highest group mean
+the drug has produced by any measure. The highest **morning** group mean (C0, which is the measurement Forge's
+serum numbers actually are) is 604, and the highest 24-h mean is 586. Comparing a morning level to a Cmax is the
+generous reading, and the obvious fix would be to drop the ceiling to 604. **Rejected, deliberately:** 604 is
+the highest level observed in obese *hypogonadal* men at the only dose anyone pushed to, not a probe of the
+drug's ceiling. Clomiphene's 1,390 *is* a probe — Tenover 1991 gave it to healthy eugonadal men. Hard-capping
+enclomiphene at 604 would open a ~700 ng/dL gap between two drugs that are the same molecule minus an isomer
+that barely moves testosterone, which would be an artefact of who got enrolled rather than a pharmacological
+claim. The conservative reading is carried where it belongs: `bcMaxLevel` stays at **604** as a hard bound on
+*muscle credit*, and every extrapolated row's lean range still starts at zero.
+
+**`bcMaxLevel` 604, re-derived.** Unchanged, but it means something different here than for clomiphene. For
+clomiphene, 500 is "where the body-composition trial landed". For enclomiphene **no body-composition trial
+exists at all**, so 604 is simply "the highest level this drug has ever been shown to produce", and Forge
+refuses to run the muscle curve above it. That is now said explicitly in `bcNote`.
+
+### 12.6 Tolerability as a modeled property (CONTRACT §22.8)
+
+Bob's question had no field to land in: the catalogue could describe side effects in prose but the planner could
+not rank on them and nothing forced a rate to carry its denominator. Every §22 prescription item now carries
+`model.tolerability` with a grade, **the comparator the grade is relative to**, a discontinuation rate with its
+denominator, itemised events each with `n of N` and the comparator arm where one exists, the p-value (including
+"not significant", explicitly), the caveats, and its own citations.
+
+| Item | Grade | On what |
+|---|---|---|
+| Enclomiphene | **good** | No worse than placebo in 2 phase-3 RCTs + 1 phase-2b; 13.8 % vs 47 % against clomiphene in the one head-to-head. Capped at `good` because that head-to-head is unblinded and retrospective |
+| Cabergoline | **good** | ~4.5 % side effects over 24 months, and the only item here FDA-approved for the condition it treats |
+| Clomiphene | **moderate** | Excellent on hard endpoints (400 men to 7 years, 12,318 in claims, no excess thrombosis/vision/liver); common on symptoms (33 % low libido in the head-to-head); HDL falls, p < 0.001 |
+| hCG | **moderate** | No AE table has ever been published; graded on the two things that *were* measured — testis volume −5 mL and estradiol +150 % — plus being an injection |
+| Aromatase inhibitor | **poor** | Spine BMD fell over 12 randomized months. Graded on a scan, not on symptoms: symptom scores actually matched clomiphene (p = 0.634) |
+| Tamoxifen | **unknown** | No trial has tabulated AEs for this use in men. Grading it `good` because nothing bad was reported would be reading silence as safety |
+
+Rules enforced by `test/supp-tolerability.test.js`: no rate without a denominator; no grade without a
+comparator; a non-significant difference must be labelled non-significant; and a combination inherits the
+**worst** grade among its items. The planner uses the grade only as a **late tiebreak**, after modeled lean/fat
+and evidence grade — which is exactly where Bob's question bites, because at a normal baseline clomiphene and
+enclomiphene score identically (zero, both extrapolated) on the same evidence grade, so before this they were
+ordered alphabetically and now the better-tolerated one leads.
+
+*(That schema rule immediately caught a real data problem: Colao 2004's "about 4.5 %" has no published
+numerator, and 4.5 % of 51 is 2.3 men. It is now stored as a narrative row that says the count is unknown,
+rather than as a fabricated fraction.)*
+
+### 12.7 Everything this pass corrected
+
+| Was | Now | Why |
+|---|---|---|
+| `e2Pct: 45` — "estradiol rises half as much as clomiphene" | **85** | Thomas 2023 measured 29.5 → 67 pg/mL on enclomiphene vs 31 → 37.6 on clomiphene. Removing zuclomiphene does not touch aromatase |
+| "+274 ng/dL" described as clomiphene's pooled effect | labelled a **pooled clomiphene-AND-enclomiphene class** estimate; clomiphene-specific is +333 (Tienforti) | Hohl 2025's 10 trials include Kim 2016 and both Wiehle 2014 studies |
+| A15: "eugonadal arm = clomiphene × 216/274" | A15 restated: the **shape** is borrowed, the **size** is enclomiphene's own measured +216 | The old ratio was circular and misdescribed the arithmetic |
+| "Drug-related adverse events in about 21 % of men" (read as an enclomiphene rate) | 21 % is **53/256 across all arms** including placebo, with no between-group difference | Kim 2016 as tabulated by Hohl 2025 |
+| `tCI: [0.87, 1.13]` | **[0.80, 1.45]** | The old CI was Tienforti's interval on a pooled hypogonadal mean, not the uncertainty of the number shown |
+| `response: [[0,0],[100,1]]` (flat) | a real ladder, `[[0,0],[25,0.43],[50,0.43],[100,1]]` | Wiehle 2013's three arms, as a rise over each arm's own baseline |
+| "may mean fewer of the estrogenic side effects" (mechanism, hedged) | the measured isomer pharmacology: 62/38, ~10 h vs ~30 days, 20:1 at steady state | Wiehle 2013, Rodriguez 2016, Helo 2017 |
+| Status: "Complete Response Letter in 2015… Category 1" | dated and expanded: CRL **30 Nov 2015**; PCAC voted **8–4 against** inclusion on **8 June 2022**; still **Category 1** on the list updated **14 May 2026**; explicitly **not** Category 2 | FDA primary documents |
+| No tolerability field anywhere | `model.tolerability` on six items, surfaced in the planner row, the badge and the catalogue sheet | CONTRACT §22.8 |
+
+Four further FDA-status corrections fell out of reading the primary lists to settle the enclomiphene question.
+They are outside §22 but they were wrong, so they are fixed:
+
+| Item | Was | Now |
+|---|---|---|
+| **BPC-157** | "FDA lists it among compounding substances with significant safety risks" | **Not in Category 2 on either list.** Its nomination was **withdrawn**; FDA's safety-risks page lists it among withdrawn nominations with an immunogenicity concern and says FDA "lacks sufficient information to know whether the drug would cause harm" — weaker, and different |
+| **Ipamorelin / CJC-1295** | "Category 2 list, 2023" (shared citation, implying 503A) | Ipamorelin acetate is in Category 2 of the **503B** list, entry dated **29 Sep 2023** (list updated 21 Mar 2025), so outsourcing facilities have no route |
+| **MK-677 (ibutamoren)** | no FDA-list status at all | **Category 2 on both lists** — 503A (14 May 2026) and 503B (29 Sep 2023). One of only six substances on 503A Category 2, and a materially harder restriction than enclomiphene's Category 1 |
+| **Kisspeptin** | Category 2 correct; WADA hedged as "likely prohibited — check the current list" | Category 2 confirmed on 503A. WADA hedge removed: "kisspeptin and its agonist analogues" is **named outright** under S2.2.1 of the 2026 list |
+
+### 12.8 Sources added in this pass (all opened and read in full)
+
+- **Helo S, Mahon J, Ellen J, Wiehle R, Fontenot G, Hsu K, Feustel P, Welliver C, McCullough A.** Serum levels
+  of enclomiphene and zuclomiphene in men with hypogonadism on long-term clomiphene citrate treatment.
+  *BJU Int.* 2017;119(1):171–176. **doi:10.1111/bju.13625** (PMID 27511863). The 20:1 steady-state ratio.
+- **Saffati G, Kassab J, Orozco Rendon D, Hinojosa-Gonzalez DE, Kronstedt S, Lipshultz LI, Khera M.** Safety and
+  efficacy of enclomiphene and clomiphene for hypogonadal men. *Transl Androl Urol.* 2024;13(9):1984–1990.
+  **doi:10.21037/tau-24-238** (PMID 39434750, PMC11491226). The only direct tolerability comparison.
+- **Thomas J, Suarez Arbelaez MC, Narasimman M, Weber AR, Blachman-Braun R, White JT, Ledesma B, Ghomeshi A,
+  Jara-Palacios MA, Ramasamy R.** Efficacy of clomiphene citrate versus enclomiphene citrate for male
+  infertility treatment: a retrospective study. *Cureus.* 2023;15(7):e41476. **doi:10.7759/cureus.41476**
+  (PMID 37546076, PMC10404117). The estradiol finding that contradicts the usual claim.
+- **Rodriguez KM, Pastuszak AW, Lipshultz LI.** Enclomiphene citrate for the treatment of secondary male
+  hypogonadism. *Expert Opin Pharmacother.* 2016;17(11):1561–1567. **doi:10.1080/14656566.2016.1204294**
+  (PMID 27337642, PMC5009465). Half-lives, the baboon isomer study, and the FDA history.
+- **Hohl A, et al.** (2025) re-read in full from **PMC12510335** — specifically Table 2, the safety and
+  adverse-event tabulation, and the fact that the pool mixes both isomers. **doi:10.20945/2359-4292-2025-0093**
+- **Wiehle R, et al.** (2013) re-read in full from **PMC4155868** for Table 1 (the full C0/Cavg/Cmax/Cmin ladder),
+  Table 4 (lipids, IGF-1, bone markers) and the discussion of the Leydig-cell limit.
+- **Krzastek SC, et al.** Long-term safety and efficacy of clomiphene citrate for the treatment of
+  hypogonadism. *J Urol.* 2019;202(5):1029–1035. **doi:10.1097/JU.0000000000000396** (PMID 31216250).
+- **Guo DP, Zlatev DV, Li S, Baker LC, Eisenberg ML.** Demographics, usage patterns, and safety of male users of
+  clomiphene in the United States. *World J Mens Health.* 2020;38(2):220–225. **doi:10.5534/wjmh.190028**
+  (PMID 31385473, PMC7076309). 12,318 men; the largest safety denominator in this whole document.
+- **Soares AH, et al.** (2018) metadata re-checked: the HDL fall (p < 0.001) is in the abstract.
+  **doi:10.1038/s41366-018-0105-2** (PMID 29777228).
+- **Tienforti D, et al.** (2023) re-read: the isomer-matched split, clomiphene +11.56 vs enclomiphene
+  +7.50 nmol/L. **doi:10.1111/andr.13373** (PMID 36604313).
+- **Choi J, Lee S, Lee CN.** Isolated cortical vein thrombosis in an infertile male taking clomiphene citrate.
+  *Neurol Sci.* 2021;42(4):1615–1616. **doi:10.1007/s10072-020-04862-z** (PMID 33129205).
+- **Shahid Z, Kim GE, Mousa T, AlSehli Z, Al-Qahtani A.** Clomiphene-induced myocardial infarction in a young
+  male. *Sci Prog.* 2025;108(3). **doi:10.1177/00368504251349392** (PMID 40629978).
+- **Van Wagoner RM, Eichner A, Bhasin S, Deuster PA, Eichner D.** Chemical composition and labeling of
+  substances marketed as selective androgen receptor modulators and sold via the internet. *JAMA.*
+  2017;318(20):2004–2010. **doi:10.1001/jama.2017.17069** (PMID 29183075). Cited in §13 for the grey market.
+
+**FDA and WADA primary documents** (retrieved and read 2026-10-20):
+- U.S. FDA. *Bulk drug substances nominated for use in compounding under section 503A of the FD&C Act*,
+  updated **14 May 2026**. Enclomiphene citrate is in **Category 1**. Category 2 contains cesium chloride,
+  domperidone, germanium sesquioxide, **ibutamoren mesylate**, **kisspeptin-10** and intrauterine quinacrine —
+  not enclomiphene.
+- U.S. FDA. *Pharmacy Compounding Advisory Committee, summary minutes, 8 June 2022* (approved 19 Aug 2022):
+  "FDA is proposing that enclomiphene citrate NOT be included on the 503A Bulks List." Vote **4 yes / 8 no /
+  0 abstain**; "several committee members who voted 'No' noted lack of clinical efficacy evidence."
+- U.S. FDA. *Bulk drug substances nominated for use in compounding under section 503B*, updated 21 Mar 2025 —
+  enclomiphene does not appear, so outsourcing facilities have no bulk route.
+- WADA. *Prohibited List 2026*, in force 1 Jan 2026. **S4.2** anti-estrogenic substances names Clomifene
+  (with bazedoxifene, cyclofenil, elacestrant, fulvestrant, ospemifene, raloxifene, tamoxifen, toremifene);
+  **S4.1** aromatase inhibitors names anastrozole; **S2.2.1** testosterone-stimulating peptides in males names
+  chorionic gonadotrophin, LH, GnRH agonists and kisspeptin. S4.1 and S4.2 are *Specified Substances*.
+
+---
+
+## 13. How these are legitimately obtained (US; researched 2026-10-20)
+
+Information, not advice. Nothing below is a recommendation to take anything, and every decision and every
+prescription here belongs to a licensed clinician who has seen your labs.
+
+### 13.1 Regulatory status, item by item
+
+| Drug | US status | What that means for a man who wants it |
+|---|---|---|
+| **Clomiphene citrate** | **FDA-approved** (1967, as Clomid/Serophene) — but **only for ovulation induction in women**. Never approved for any use in men. | Prescribing an approved drug for an unapproved indication is **off-label**, which is lawful for a licensed physician and routine here. The AUA guideline names it as an off-label option. Dispensed as an ordinary generic tablet from any pharmacy. |
+| **Enclomiphene citrate** | **Not approved for anything.** The Androxal NDA drew a Complete Response Letter on **30 Nov 2015** and nothing has been approved since. | There is no FDA-approved enclomiphene product to prescribe, so a legitimate supply means a **compounding pharmacy** filling a prescription written for a named patient. See 13.2 — this is the item whose status people most often get wrong. |
+| **hCG** | **Approved, prescription-only**, and since **23 March 2020** regulated as a **biologic** (BLA) rather than a drug, under the BPCIA "deemed to be a license" transition. | Brand-name/approved hCG on prescription is fine. **Compounded hCG is not**: biologics are outside the 503A and 503B compounding exemptions, so the compounded hCG that was widely sold (including for the "hCG diet") lost its legal route in 2020. FDA has told NABP that "federal law does not provide a legal pathway for marketing biological products… prepared outside the scope of an approved BLA." |
+| **Anastrozole / letrozole** | Approved, prescription-only, **for breast cancer**. | Off-label in men, lawful to prescribe. Forge models zero muscle for these and a *fat cost*, and grades them the only `poor` tolerability in the group (spine bone loss). |
+| **Tamoxifen** | Approved, prescription-only, **for breast cancer** (and risk reduction). | Off-label in men, lawful to prescribe. Carries a labelled VTE risk that has never been quantified in this use. |
+
+**The enclomiphene compounding question, precisely, because the internet is confidently wrong about it in both
+directions.** Three facts, all from FDA primary documents:
+
+1. On **8 June 2022** FDA's Pharmacy Compounding Advisory Committee considered enclomiphene citrate for the
+   503A Bulks List. FDA's own proposal was that it **not** be included. The committee voted **4 yes / 8 no /
+   0 abstain** — i.e. against inclusion — with several members citing a **lack of clinical efficacy evidence**
+   (not a safety concern). The committee is advisory; FDA is not bound by it.
+2. FDA has **not acted on that vote**. On the 503A bulk-substances list **updated 14 May 2026**, enclomiphene
+   citrate is still in **Category 1, "bulk drug substances under evaluation"** — the category where FDA states
+   it does not intend to take enforcement action against a compounder who meets the guidance conditions.
+3. Enclomiphene is **not** in Category 2 ("raise significant safety concerns"). That list currently holds
+   cesium chloride, domperidone, germanium sesquioxide, **ibutamoren mesylate (MK-677)**, **kisspeptin-10** and
+   quinacrine for intrauterine use. (Two of those, MK-677 and kisspeptin, *are* in this app's catalogue, and
+   that is a genuine Category 2 restriction — just not on enclomiphene.)
+
+There is also a second, independent argument for its compoundability that a PCAC member made on the record:
+enclomiphene is a **component of an FDA-approved drug** (clomiphene citrate, which is 62 % enclomiphene), and
+FD&C Act §503A(b)(1)(A) permits compounding from a bulk substance that is a component of an approved drug. The
+Defense Department's Operation Supplement Safety states this position plainly (page current 12 Jan 2026): it
+"can be used in compounding under Section 503A, but only with a valid prescription."
+
+**Net:** compounded enclomiphene on a valid prescription is currently tolerated and widely dispensed, but it
+rests on enforcement discretion plus a statutory argument, not on an approval. That status is revocable, and an
+advisory committee has already voted against it once. No approved label means no approved dose, no
+post-marketing safety surveillance, and quality that varies by pharmacy. Ask whether the pharmacy is
+PCAB-accredited and whether it will provide a certificate of analysis.
+
+### 13.2 The legitimate route, concretely
+
+1. **See a clinician who does this work.** A **urologist** (ideally fellowship-trained in andrology or male
+   infertility), an **endocrinologist**, or a reputable men's-health / telehealth practice. In Texas a
+   telehealth prescription is lawful where the clinician is Texas-licensed and establishes a proper
+   practitioner–patient relationship. The thing to screen a telehealth service on is whether it will tell you
+   **no**: a service that requires real labs, repeats an abnormal testosterone, measures LH before choosing a
+   drug, and is willing to conclude you do not need treatment is behaving like a clinic. One that ships a
+   product after a questionnaire is behaving like a storefront.
+2. **Labs first, and they are not optional.** Expect: **total testosterone, drawn fasted between 7 and 10 am**,
+   plus **free testosterone, SHBG, LH, FSH, estradiol (sensitive assay), prolactin, CBC/hematocrit, PSA**
+   (usually from 40), a **metabolic panel and lipids**, **TSH**, and **a semen analysis** if fertility is in
+   play. This is the panel Forge's planner asks for.
+3. **Why the repeat morning draw genuinely matters.** Testosterone is pulsatile and has a strong diurnal
+   rhythm, so a single low reading means very little — guidelines require **two separate morning measurements**
+   before diagnosing deficiency. It matters commercially too: a one-draw diagnosis is the standard way to
+   convert a man with a normal level into a lifelong customer. And **LH is the decisive number**: low T with a
+   normal or low LH is *secondary* and is what clomiphene, enclomiphene and hCG treat; low T with a clearly
+   raised LH is *testicular*, and these drugs will not work.
+4. **What follows.** A recheck at roughly 4–6 weeks and again at 3 months (total T, estradiol, hematocrit,
+   LH/FSH), then periodically — plus PSA where age-appropriate, and semen analysis if fertility is the point.
+   Stop and call the prescriber for **visual changes** on a SERM (blurring or flickering), and for leg swelling,
+   chest pain or breathlessness on tamoxifen.
+5. **The prescription is filled like any other.** Clomiphene, anastrozole, letrozole and tamoxifen are ordinary
+   generics at any retail pharmacy. Enclomiphene comes from a **compounding pharmacy** the prescriber sends it
+   to. hCG comes as an approved product.
+
+**Insurance and cost.** Clomiphene for a man is off-label, so coverage is inconsistent, but it is a cheap old
+generic: the median monthly copay in a 12,318-man US claims cohort was **$20** (range $0–$1,862; Guo 2019), and
+cash discount-card prices are usually in the tens of dollars. **Enclomiphene is essentially never covered** —
+it is not an approved drug — and compounded cash prices cluster around **$60–$120/month**, with telehealth
+bundles that include the visit running higher; those figures come from commercial pharmacy and telehealth
+sites rather than a published dataset, so treat them as a range to quote against, not a benchmark. Labs and the
+consultation are extra, and a male-infertility workup is often covered where "low testosterone" alone is not.
+Clomiphene costing roughly a tenth of enclomiphene, with far more evidence behind it, is a real part of this
+decision — and it is exactly why the one tolerability study matters so much to people.
+
+### 13.3 What to avoid, and why — factually
+
+**"Research chemical" and "not for human consumption" sellers.** Enclomiphene is sold online with "Research
+Facts" panels and "for research use only" labels, and sometimes as a dietary-supplement-style "testosterone
+booster" with a Supplement Facts panel. Both are unlawful: **selling either clomiphene or enclomiphene as a
+dietary-supplement ingredient is illegal**, and neither is an approved drug for this use, so a product marketed
+for human consumption is an **unapproved new drug** (DoD Operation Supplement Safety, current 12 Jan 2026). The
+"research use only" label is not a legal exemption; it is a marketing posture.
+
+**The real risk is that you do not know what is in the bottle.** The best-documented analysis of this exact
+market is **Van Wagoner 2017 in JAMA** (doi:10.1001/jama.2017.17069), which bought 44 products sold online as
+SARMs and analysed them under WADA-accredited chain of custody:
+
+- only **23 of 44 (52 %)** contained the substance advertised;
+- **17 (39 %)** contained a *different* unapproved drug (including ibutamoren, GW501516 and SR9009);
+- **4 (9 %)** contained **no active compound at all**;
+- **11 (25 %)** contained substances **not listed on the label**;
+- the labelled amount matched the measured amount in only **18 of 44 (41 %)** — i.e. **59 % were mis-dosed**.
+
+That study tested SARMs, not SERMs — I could not find an equivalent published analysis of online enclomiphene
+specifically, and I am not going to imply one exists. But it is the same sellers, the same "research chemical"
+framing and the same absence of any testing requirement, and there is no reason to expect better. With an
+unapproved drug there is no manufacturer to recall it, no adverse-event reporting, and no way to tell a
+mis-dose from a non-response.
+
+**Importing.** Under the FD&C Act, importing an unapproved drug is generally unlawful, including for personal
+use and including foreign versions of US-approved drugs. FDA has a narrow **personal importation** enforcement
+policy, but it is discretionary and its conditions (a serious condition with no effective domestic treatment,
+no commercialisation to US consumers, a written personal-use statement, ≤3 months' supply) are not met by
+wanting a cheaper testosterone drug — a domestic, approved, prescribable treatment exists. FDA also maintains
+import alerts aimed at online pharmacies selling unapproved prescription drugs.
+
+*I am deliberately not naming vendors, marketplaces, or ways around any of this.*
+
+### 13.4 Anti-doping
+
+If you ever race in a tested event — USADA/WADA-governed road racing included, and that is not hypothetical for
+Bob — all of these are **prohibited at all times, in and out of competition**, under the WADA Prohibited List
+2026 (in force 1 Jan 2026):
+
+- **S4.2 Anti-estrogenic substances (anti-estrogens and SERMs)** — **clomifene** and **tamoxifen** are named;
+  enclomiphene is clomifene's trans-isomer and the class is "including, but not limited to", so it is covered
+  (and the DoD prohibited-ingredient list names enclomiphene directly). *Specified Substances.*
+- **S4.1 Aromatase inhibitors** — anastrozole, letrozole. *Specified Substances.*
+- **S2.2.1 Testosterone-stimulating peptides in males** — **chorionic gonadotrophin (CG)**, LH, GnRH agonists
+  and kisspeptin. Prohibited **in males only**. Not a Specified Substance.
+- **S1** — testosterone by any route.
+
+A legitimate prescription does not make a prohibited substance permitted. It is the basis for a **Therapeutic
+Use Exemption**, which has to be applied for, is granted on documented medical need, and is not granted simply
+because a level is low-normal. Clomiphene is also a long-lived detection problem: zuclomiphene's ~30-day
+half-life means it is detectable in urine for **months** after the last dose, so "I stopped before the season"
+is not a plan. Enclomiphene's own half-life is ~10 h, but taking the isomer alone does not make it undetectable.
+
+Ashwagandha, tongkat ali, cabergoline, sleeping more and eating enough are not prohibited.
+
+### 13.5 The honest framing
+
+For a 39-year-old man with **no labs**, the first legitimate step is not a drug at all — it is the morning
+panel, repeated. Forge's planner says the same thing, and for Bob specifically it currently ranks every drug in
+this section at a **score of zero**, because no trial has ever measured body composition on any SERM in a man
+whose testosterone was already normal. The hormone moves; whether the muscle follows is untested. A clinician
+with his numbers in front of them is the right person to decide what, if anything, to do about that.

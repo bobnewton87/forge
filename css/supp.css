@@ -143,6 +143,14 @@
 .sp-pdetail { padding: 10px 12px 12px; border-top: 1px solid var(--line); }
 .sp-pdetail p { margin: 0 0 7px; line-height: 1.4; }
 .sp-pwarn { color: var(--warn); }
+/* §22.8 tolerability: adverse-event rates with their denominators, in the planner row and the catalogue sheet */
+.sp-tol { margin: 8px 0; border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+.sp-tol > summary { cursor: pointer; line-height: 1.4; }
+.sp-tol[open] > summary { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.sp-tol p { margin: 0 0 6px; }
+.sp-tolev { margin: 0 0 6px; }
+.sp-tolev li { padding: 4px 0; line-height: 1.4; border-bottom: 1px solid var(--line); }
+.sp-tolev li:last-child { border-bottom: 0; }
 .sp-pact { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .sp-pmore { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
 .sp-pmore summary { cursor: pointer; padding: 5px 0; color: var(--muted); }

@@ -1682,6 +1682,80 @@ def t_tplan(t, ctx):
     t.sub('T1h', 'No page errors through the planner flow', not errs, 'console', 'no errors', errs[:2])
 
 
+@test('T2', 'Tolerability renders as cited rates with denominators, in the planner and the catalogue (CONTRACT §22.8)')
+def t_tolerability(t, ctx):
+    """§22.8: Bob asked whether enclomiphene is "better tolerated". The answer has to appear as a badge plus a
+    cited rate WITH its denominator — never as a bare adjective and never as a bare percentage."""
+    app = t.app
+    app.load(bobir(app), 'supplements')
+    app.store("(store.updateProfile({ metabolic: { ...(store.getProfile().metabolic || {}), totalT: 300, lh: 3.2, labDate: '2026-07-01' } }), 1)")
+    app.go('supplements', settle=600)
+    t.check(app.has('#sp-plan-wrap'), 'planner section', '#sp-plan-wrap on Supplements', short(app.text(), 150))
+    wrap = app.text('#sp-plan-wrap')
+    t.sub('T2a', 'Tolerability badges appear on the ranked rows', 'Tolerability:' in wrap,
+          'planner rows', 'a "Tolerability: …" badge', short(wrap, 180))
+    e0 = len(app.errors)
+    # Enclomiphene ranks at a score of zero (extrapolated: nobody has measured muscle on it), so it lives in the
+    # collapsed "raises testosterone but nobody measured muscle" group. Open every group before reading text —
+    # inner_text() returns '' inside a closed <details>.
+    app.page.eval_on_selector_all('#sp-plan-wrap details.sp-pmore', 'els => els.forEach(d => d.open = true)')
+    app.page.wait_for_timeout(200)
+    t.check(app.has('#sp-plan-wrap [data-popen="enclomiphene"]'), 'enclomiphene row', 'an enclomiphene row in the planner',
+            short(wrap, 150))
+    app.click('#sp-plan-wrap [data-popen="enclomiphene"]')
+    app.page.wait_for_timeout(300)
+    app.page.eval_on_selector_all('#sp-plan-wrap details.sp-pmore', 'els => els.forEach(d => d.open = true)')
+    app.page.wait_for_timeout(150)
+    # Expand the tolerability block, then read the row: "Graded against: …" lives inside it.
+    det = app.page.query_selector('#sp-plan-wrap [data-prow="enclomiphene"] details.sp-tol')
+    t.check(det is not None, 'tolerability block', 'a details.sp-tol inside the open row',
+            short(app.text('#sp-plan-wrap [data-prow="enclomiphene"]'), 150))
+    app.page.eval_on_selector('#sp-plan-wrap [data-prow="enclomiphene"] details.sp-tol', 'd => d.open = true')
+    app.page.wait_for_timeout(200)
+    row = app.text('#sp-plan-wrap [data-prow="enclomiphene"]')
+    t.sub('T2b', 'Enclomiphene is graded good, with the comparator named', 'tolerability: good' in row.lower()
+          and 'graded against' in row.lower(), 'open row', 'grade + "Graded against: …"', short(row, 200))
+    tol = app.text('#sp-plan-wrap [data-prow="enclomiphene"] details.sp-tol')
+    t.sub('T2c', 'The head-to-head rate shows with its denominator and comparator',
+          '8 of 58' in tol and '31 of 66' in tol, 'tolerability block',
+          '"13.8% (8 of 58)" vs "47% (31 of 66)"', short(tol, 220))
+    t.sub('T2d', 'Every percentage in the block is followed by its fraction',
+          not [m for m in re.findall(r'\d+(?:\.\d+)?%(?:\s*\([^)]*\))?', tol)
+               if '(' not in m and 'p=' not in m and '%' == m[-1] and not re.search(r'\d+ of \d+', m)]
+          or bool(re.search(r'%\s*\(\d+ of \d+\)', tol)),
+          'tolerability block', 'no bare percentages', short(tol, 200))
+    t.sub('T2e', 'Non-significant differences are labelled as such', 'not significant' in tol.lower(),
+          'tolerability block', '"not significant" on the ED/gynecomastia rows', short(tol, 200))
+    t.sub('T2f', 'The caveats travel with the number', all(w in tol.lower() for w in ['retrospective', 'washout']),
+          'tolerability block', 'retrospective + no-washout caveats', short(tol, 220))
+    # The estradiol correction must be visible: enclomiphene RAISES it, which is the half of Bob's claim that fails.
+    # The half of Bob's claim that FAILS: enclomiphene raises serum estradiol, it does not lower it. The tile
+    # label renders uppercase, hence re.I.
+    e2m = re.search(r'Estradiol\s*([\d.]+)\s*→\s*([\d.]+)', row, re.I)
+    t.sub('T2g', 'The row shows estradiol rising, not falling',
+          bool(e2m) and float(e2m.group(2)) > float(e2m.group(1)),
+          'row numbers', 'estradiol goes up on enclomiphene', short(row, 180))
+    # The catalogue sheet carries it too.
+    app.go('supplements', settle=500)
+    app.store("(window.scrollTo(0, 0), 1)")
+    opened = app.page.evaluate("""() => { const b = [...document.querySelectorAll('[data-detail]')]
+        .find(e => e.dataset.detail === 'enclomiphene'); if (b) { b.click(); return true; } return false; }""")
+    if not opened:
+        app.click('[data-cat="prescription"]') if app.has('[data-cat="prescription"]') else None
+        app.page.wait_for_timeout(300)
+        opened = app.page.evaluate("""() => { const b = [...document.querySelectorAll('[data-open],[data-detail]')]
+            .find(e => (e.dataset.open || e.dataset.detail) === 'enclomiphene'); if (b) { b.click(); return true; } return false; }""")
+    app.page.wait_for_timeout(450)
+    sheet = app.text('.sp-sheet') if app.has('.sp-sheet') else ''
+    t.sub('T2h', 'Catalogue sheet has a Tolerability section', opened and 'Tolerability' in sheet,
+          'enclomiphene detail sheet', 'a Tolerability heading', short(sheet, 200) or 'sheet did not open')
+    t.sub('T2i', 'Catalogue sheet states the isomer pharmacology with numbers',
+          all(s in sheet for s in ['62%', '38%', '20:1']), 'detail sheet mechanism',
+          '62/38 isomer split and the 20:1 steady-state ratio', short(sheet, 220))
+    errs = [f'{k}: {short(x, 90)}' for k, x, _ in app.errors[e0:]]
+    t.sub('T2j', 'No page errors through the tolerability flow', not errs, 'console', 'no errors', errs[:2])
+
+
 SUPP_NAMES = {'clomiphene': 'Clomiphene', 'enclomiphene': 'Enclomiphene', 'hcg': 'hCG', 'tamoxifen': 'Tamoxifen',
               'aromatase_inhibitor': 'Aromatase inhibitor', 'ashwagandha': 'Ashwagandha', 'sleep_hygiene': 'Sleep',
               'energy_availability': 'Eating enough', 'fat_loss': 'Fat loss', 'cabergoline': 'Cabergoline',

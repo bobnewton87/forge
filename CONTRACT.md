@@ -1204,6 +1204,89 @@ and Liu 2002 (hCG: lean +2 kg and **no** gain in strength, gait or balance). For
 entry, the per-row note, the planner's group heading and `docs/research/endogenous-testosterone.md` §8b, and
 backs it up by ranking every such row on a lower bound of zero.
 
+### 22.8 Tolerability as a first-class property, and the enclomiphene isomer question (2026-10-20, third pass)
+
+Bob: *"I hear enclomiphene is better tolerated and has less of the estrogen effects. Study that, implement it,
+and then let me know how I can get these legally, or get them at all."*
+
+**Verdict, implemented: half supported.** "Better tolerated" — supported, on one unblinded retrospective
+study. "Less of the estrogen effects" — supported for the *effects*, **contradicted for serum estradiol**,
+which rises on enclomiphene about as much as on clomiphene. Full working in
+`docs/research/endogenous-testosterone.md` §12; the access write-up is §13 there.
+
+**The isomer pharmacology, now in the catalogue with numbers.** Clomiphene citrate is 62 % (trans)enclomiphene
+and 38 % (cis)zuclomiphene (Wiehle 2013). Zuclomiphene is an estrogen **agonist** that barely moves
+testosterone, with a half-life of ~30 days against enclomiphene's ~10 h, so it accumulates: after ≥6 weeks on
+clomiphene 25 mg/day the median serum ratio is **zuclomiphene 44.0 vs enclomiphene 2.2 ng/mL, 20:1** (Helo
+2017, doi:10.1111/bju.13625). Removing it is a real intervention, not a marketing distinction.
+
+**New `model.tolerability` block** on every §22 prescription item that has data. Fields: `grade`
+(`good|moderate|poor|unknown`), **`comparedWith`** (mandatory — a grade without a comparator is meaningless),
+`evidence` (`rct|observational|none`), `headline`, `discontinuation: { pct, n, of, note, source }`,
+`events: [{ label, pct, n, of, arm, vs?, p?, source }]`, `note`, `sources`. Helpers: `TOLERABILITY`,
+`tolerabilityOf()`, `fmtRate()`, `worstTolerability()`.
+
+Rules, enforced by `test/supp-tolerability.test.js`:
+- **No rate without its denominator.** A percentage must carry `n` and `of` and must agree with them. "3 %" is
+  how 2 men out of 66 gets laundered into a population statistic. A narrative row (`pct: null`) is allowed and
+  must say what was observed. *(This rule immediately caught a real defect: Colao 2004's "about 4.5 %" has no
+  published numerator, and it is now stored as narrative rather than as an invented fraction.)*
+- **No grade without a comparator**, and a non-significant difference is labelled non-significant.
+- **A combination inherits the worst grade among its items** — a stack is as tolerable as its least tolerable
+  part. `unknown` never outranks a measured grade.
+- Where nobody has measured it, the grade is **`unknown`** (tamoxifen). Reading silence as safety is the error
+  this field exists to prevent.
+
+Grades: enclomiphene `good`, cabergoline `good`, clomiphene `moderate`, hCG `moderate`, aromatase inhibitor
+`poor` (graded on spine BMD falling over 12 randomized months — a scan, not a symptom; symptom scores actually
+matched clomiphene), tamoxifen `unknown`.
+
+**Planner and UI.** `tPlan()` rows carry `tolerability`; the grade is a **late ranking tiebreak only**, after
+modeled lean − fat and evidence grade — which is exactly where Bob's question bites, since clomiphene and
+enclomiphene tie at zero on the same evidence grade for a eugonadal man and were previously ordered
+alphabetically. `js/ui/supplements.js` renders a tolerability badge on the planner row and in the catalogue
+sheet, plus an expandable block with every rate, its denominator, the comparator arm and the caveats. Styles in
+the §22 block of `css/supp.css`. e2e `T2`.
+
+**Corrections made (each is a thing the old model got wrong, not just a refinement):**
+- `e2Pct` 45 → **85**. The old value halved enclomiphene's estradiol rise on the reasoning that the estrogenic
+  isomer was gone. Serum E2 rises because a SERM raises testosterone, which is aromatase's substrate; removing
+  zuclomiphene does nothing to aromatase. Thomas 2023 measured **29.5 → 67 pg/mL** on enclomiphene (p = 0.003)
+  against 31 → 37.6 on clomiphene (p = 0.074). Saffati's −5.92 pg/mL is a fall from an *already
+  clomiphene-raised* level, not from an untreated baseline.
+- **Assumption A15 replaced.** It read "enclomiphene's entire eugonadal arm = clomiphene's eugonadal response
+  × 216/274". That was **circular** — Hohl's 274 is a pooled clomiphene-AND-enclomiphene class estimate whose
+  10 trials include Kim 2016 and both Wiehle 2014 studies — and it misdescribed the arithmetic: the curve is
+  0.787 × clomiphene's, and 0.787 × 274 = 216, which is simply Tienforti 2023's directly measured
+  **enclomiphene-specific** effect. **What is inferred is the SHAPE above ~350 ng/dL, not the size**, and the
+  shape rests on Keihani 2020 and Kim 2026 finding baseline T non-predictive — both clomiphene cohorts.
+- The clomiphene entry now states that **+274 is a class estimate, not clomiphene-specific**; the
+  clomiphene-specific pooled figure is **+333 ng/dL** (Tienforti). Forge keeps 274 as the conservative anchor.
+- "Drug-related adverse events in about 21 % of men in phase 3" was read as an enclomiphene rate. It is
+  **53/256 across all arms including placebo**, with no significant between-group difference.
+- `tCI` [0.87, 1.13] → **[0.80, 1.45]**. The old interval was Tienforti's CI on a pooled hypogonadal mean, not
+  the uncertainty of the number shown. The low end carries the isomer-matched ratio 0.65; the high end carries
+  the two head-to-heads, neither of which found a significant difference (Thomas +125 vs +177, p = 0.49;
+  Saffati +166 vs +98, p = 0.20, enclomiphene **higher**).
+- **Real dose-response** replaces the flat `[[0,0],[100,1]]`: `[[0,0],[25,0.43],[50,0.43],[100,1]]` from
+  Wiehle 2013's three arms as a rise over each arm's own baseline. Still expressed as a share of the studied
+  regimen, never in mg — the §22 rule that the model prints no self-administrable dose is unchanged.
+- **Ceiling re-derived and deliberately kept at 764** (A15b): that is the 25 mg day-42 **24-h Cmax**, while the
+  highest *morning* group mean is 604. Dropping it to 604 was considered and rejected — 604 is the highest
+  level seen in obese **hypogonadal** men at the top dose tested, not a probe of the ceiling, and hard-capping
+  there would open a ~700 ng/dL gap against clomiphene that is an artefact of enrolment rather than
+  pharmacology. `bcMaxLevel` stays **604** as a hard bound on muscle credit, and every extrapolated range still
+  starts at zero.
+- **Status string dated against FDA primary documents**: CRL **30 Nov 2015**; PCAC voted **4 yes / 8 no**
+  against inclusion on the 503A Bulks List on **8 June 2022** citing lack of efficacy evidence; still
+  **Category 1** on the list updated **14 May 2026**; explicitly **not** Category 2. (Category 2 does contain
+  two items this catalogue models — ibutamoren/MK-677 and kisspeptin-10.)
+
+**Still an assumption, unchanged and unfixable from the literature:** no enclomiphene trial has ever enrolled a
+eugonadal man, none has ever measured body composition at any baseline, and there has never been a randomized
+trial of enclomiphene against clomiphene. The Bhasin T→lean curve every extrapolated row runs through is still
+exogenous testosterone with the gonadotropins suppressed (A11). Lean ranges start at zero and rows rank at zero.
+
 ## 23. Weight-loss goal and intentional lean loss (2026-10-20)
 
 Bob: *"the app doesn't really allow someone to lose muscle mass if they want to or if their primary goal is

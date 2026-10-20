@@ -5,7 +5,7 @@
 //   useStack:false (and supplements:[] as a belt-and-braces fallback for engines without that option). If the
 //   two runs are identical while the stack clearly changes the modifiers, it says the engine isn't using the stack yet.
 import { esc } from './components.js';
-import { SUPPLEMENTS, NOT_MODELED, CATEGORIES, EVIDENCE, isUnapproved, isModeled, itemFor } from '../data/supplements.js';
+import { SUPPLEMENTS, NOT_MODELED, CATEGORIES, EVIDENCE, isUnapproved, isModeled, itemFor, TOLERABILITY, tolerabilityOf, fmtRate } from '../data/supplements.js';
 import { modifiersAt, testosteroneEffect, averageTotalT, resolveDose, stackAt, T_MODEL, T_MODEL_F } from '../engine/metabolic.js';
 import { tPlan, rowEntries } from '../engine/tplan.js';
 import { sexOf, femaleStatus, FEMALE_LABS, FEMALE_T_RANGE } from '../engine/sex.js';
@@ -231,6 +231,34 @@ const bcBadge = r => r.bodyComp === 'measured'
     : '<span class="badge bad" title="Trials measured body composition on it and found none.">No muscle effect</span>';
 const rng = (lo, hi, dp = 1) => `${sgn(lo, dp)} to ${sgn(hi, dp)}`;
 
+// §22.8. "Better tolerated" is a claim people repeat about these drugs constantly, so the planner shows it as a
+// badge with a cited number behind it rather than leaving it to the reader's memory of a forum post.
+const TOL_CLS = { good: 'good', moderate: 'cardio', poor: 'bad', unknown: 'warn' };
+const tolBadge = t => t
+  ? `<span class="badge ${TOL_CLS[t.grade] || 'warn'}" title="${esc(`${t.explain} Graded against: ${t.comparedWith || 'nothing stated'}.`)}">${esc(t.short)}</span>`
+  : '';
+// One adverse event, with its denominator and (where one exists) the comparator arm. A percentage on its own
+// hides that "3%" can be 2 men out of 66, so fmtRate always prints the fraction too.
+function tolEvent(ev) {
+  const mine = fmtRate(ev) || esc(ev.arm || '');
+  const vs = ev.vs ? ` vs <b>${esc(fmtRate(ev.vs) || '—')}</b> ${esc(ev.vs.label)}` : '';
+  const arm = ev.arm && fmtRate(ev) ? ` <span class="muted">(${esc(ev.arm)})</span>` : '';
+  const p = ev.p ? ` <span class="muted">· ${esc(String(ev.p))}</span>` : '';
+  const src = ev.source ? ` <span class="tiny muted">${esc(ev.source)}</span>` : '';
+  return `<li class="small"><b>${esc(ev.label)}:</b> ${fmtRate(ev) ? `<b>${esc(mine)}</b>` : esc(ev.arm || '')}${arm}${vs}${p}${src}</li>`;
+}
+function tolBlock(t) {
+  if (!t) return '';
+  const d = t.discontinuation;
+  return `<details class="sp-tol"><summary class="small"><b>Tolerability: ${esc(t.label.toLowerCase())}</b>${t.headline ? ` — ${esc(t.headline)}` : ''}</summary>
+    <p class="tiny muted">Graded against: ${esc(t.comparedWith || 'nothing stated — treat the grade as unsupported')}. Evidence: ${esc(t.evidence === 'rct' ? 'randomized trials' : t.evidence === 'observational' ? 'observational only' : 'none')}.${t.from && t.from.length > 1 ? ` Graded on: ${esc(t.from.join(', '))}.` : ''}</p>
+    ${d ? `<p class="small"><b>Stopped for a side effect:</b> ${esc(fmtRate(d) || '—')}${d.note ? ` <span class="muted">${esc(d.note)}</span>` : ''}</p>` : '<p class="small muted">No discontinuation rate has been published for this.</p>'}
+    ${t.events.length ? `<ul class="tip-list sp-tolev">${t.events.map(tolEvent).join('')}</ul>` : ''}
+    ${t.note ? `<p class="tiny muted">${esc(t.note)}</p>` : ''}
+    ${t.sources.length ? `<ol class="sp-src tiny">${t.sources.map(s => `<li>${esc(s)}</li>`).join('')}</ol>` : ''}
+  </details>`;
+}
+
 function planRow(r) {
   const open = planUi.open === r.id;
   const tMoved = Math.abs(r.t.to - r.t.from) >= 2;
@@ -244,7 +272,7 @@ function planRow(r) {
   return `<div class="sp-prow ${open ? 'open' : ''}${r.inStack ? ' in' : ''}" data-prow="${esc(r.id)}">
     <button class="sp-phead" data-popen="${esc(r.id)}" aria-expanded="${open}">
       <div class="grow"><div class="t">${esc(r.name)}</div>
-        <div class="sp-badges">${r.rx ? '<span class="badge accent">℞ prescriber</span>' : ''}${r.combo ? '<span class="badge">Combination</span>' : ''}<span class="badge ${EV_CLS[r.evidence] || ''}">${esc(EVIDENCE[r.evidence]?.short || r.evidence)}</span>${bcBadge(r)}${r.inStack ? '<span class="badge good">In stack</span>' : ''}</div>
+        <div class="sp-badges">${r.rx ? '<span class="badge accent">℞ prescriber</span>' : ''}${r.combo ? '<span class="badge">Combination</span>' : ''}<span class="badge ${EV_CLS[r.evidence] || ''}">${esc(EVIDENCE[r.evidence]?.short || r.evidence)}</span>${bcBadge(r)}${tolBadge(r.tolerability)}${r.inStack ? '<span class="badge good">In stack</span>' : ''}</div>
       </div>
       <div class="sp-pscore"><b class="${r.score > 0.05 ? 'good' : r.score < -0.05 ? 'bad' : 'muted'}">${sgn(r.score)}</b><span class="tiny muted">lb net</span></div>
       <span class="chev">${open ? '⌄' : '›'}</span>
@@ -259,6 +287,7 @@ function planRow(r) {
       ${r.notSuits.length ? `<p class="small"><b>Not for:</b> ${esc(r.notSuits.join(' '))}</p>` : ''}
       ${r.fertility.length ? `<p class="small"><b>Fertility:</b> ${esc(r.fertility.join(' '))}</p>` : ''}
       ${r.monitor.length ? `<p class="small"><b>Labs to watch:</b> ${esc(r.monitor.join(' · '))}</p>` : ''}
+      ${tolBlock(r.tolerability)}
       ${r.wada.length ? `<p class="tiny muted"><b>Anti-doping:</b> ${esc(r.wada.join(' '))}</p>` : ''}
       ${r.rx ? '<p class="tiny muted">Prescription item: needs a physician, a diagnosis and lab monitoring. Forge reports what the trials measured; it does not tell you to take anything.</p>' : ''}
       ${r.projected ? '' : '<p class="tiny muted">Lean and fat here are from the stack model rather than your full projection (log a bodyweight to get the full one).</p>'}
@@ -482,7 +511,11 @@ function detailSheet(s, entry, today, sex = 'male') {
   const studied = md.dose ? `${md.dose.default} ${md.dose.unit}` : '';
   const unapproved = isUnapproved(s);
   return `<div class="sp-sheet">
-    <div class="sp-badges">${evBadge(s)}${stBadge(s)}<span class="badge">${esc(CATEGORIES.find(c => c.id === s.category)?.label || s.category)}</span></div>
+    <div class="sp-badges">${evBadge(s)}${stBadge(s)}<span class="badge">${esc(CATEGORIES.find(c => c.id === s.category)?.label || s.category)}</span>${(() => {
+      const t = tolerabilityOf(s); if (!t) return '';
+      const m = TOLERABILITY[t.grade] || TOLERABILITY.unknown;
+      return `<span class="badge ${TOL_CLS[t.grade] || 'warn'}" title="${esc(`${m.text} Graded against: ${t.comparedWith || 'nothing stated'}.`)}">${esc(m.short)}</span>`;
+    })()}</div>
     <h2>${esc(s.name)}</h2>
     <p class="small muted">${esc(s.status)}</p>
     <p class="mt">${esc(s.summary)}</p>
@@ -490,6 +523,10 @@ function detailSheet(s, entry, today, sex = 'male') {
     <h3 class="sp-h">What the evidence shows</h3><ul class="tip-list">${s.effects.map(x => `<li class="small">${esc(x)}</li>`).join('')}</ul>
     ${s.id === 'trt' ? `<div class="sp-chart mt" data-tchart='${esc(JSON.stringify({ natural: null, level: null, age: null, sex }))}'>${tChart({ natural: null, sex })}<div class="sp-readout small muted">Drag across the chart to read values.</div></div><p class="tiny muted">Lean change over ${sex === 'female' ? 24 : 20} weeks without training vs serum T, for an average 39-year-old ${sex === 'female' ? 'woman' : 'man'} (natural ≈${averageTotalT(39, sex)}). Your own curve is on the projection card once T is in your stack or labs.</p>` : ''}
     ${s.risks.length ? `<h3 class="sp-h">Risks</h3><ul class="tip-list sp-risks">${s.risks.map(x => `<li class="small">${esc(x)}</li>`).join('')}${(md.levelRisks || []).map(r => `<li class="small"><span class="muted">At ≥${r.min.toLocaleString()} ${esc(s.id === 'trt' ? 'ng/dL' : md.dose?.unit || '')}:</span> ${esc(r.text)}</li>`).join('')}</ul>` : ''}
+    ${md.tolerability ? `<h3 class="sp-h">Tolerability</h3>${tolBlock({ ...md.tolerability,
+      label: TOLERABILITY[md.tolerability.grade]?.label || 'Tolerability not measured',
+      explain: TOLERABILITY[md.tolerability.grade]?.text || '',
+      events: md.tolerability.events || [], sources: md.tolerability.sources || [], from: [] })}` : ''}
     ${s.typicalUse ? `<h3 class="sp-h">Typical use</h3><p class="small">${esc(s.typicalUse)}</p>` : modeled && md.dose ? `<h3 class="sp-h">Studied dose</h3><p class="small">${esc(studied)} in the cited trials. Shown for context, not as a recommendation; it's what the model uses when you leave the dose blank.</p>` : ''}
     <div class="sp-addform">
       <div class="grid2">
