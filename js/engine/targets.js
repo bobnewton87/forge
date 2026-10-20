@@ -85,9 +85,9 @@ export const GOAL_INFO = {
   recomp: { name: 'Recomp', blurb: 'Lose fat, build muscle', direction: 'recomp' },
   lean_bulk: { name: 'Lean bulk', blurb: 'Small surplus, max growth', direction: 'gain' },
   cut: { name: 'Cut', blurb: 'Get lean, keep muscle', direction: 'lose',
-    long: 'A cut takes fat off while defending every pound of muscle: a moderate deficit, high protein and full lifting volume. Scale weight comes down slowly because you are protecting lean mass.' },
+    long: 'A cut takes fat off while defending as much muscle as a deficit allows: a moderate deficit, high protein and full lifting volume. Scale weight comes down slowly because you are protecting lean mass. Forge still models what the deficit costs — going fast or dropping protein takes lean mass off under a cut exactly as it would under any other goal.' },
   weight_loss: { name: 'Lose weight', blurb: 'Fat first, lean mass allowed to follow', direction: 'lose',
-    long: 'For when the number on the scale is the goal: a weight class, a race weight, or simply being smaller. Fat still goes first (your body burns fat before muscle), but Forge stops pretending every pound of lean mass will survive, shows you how much lean you are projected to lose at your chosen rate, and lets you deliberately train and eat for minimum body mass instead of maximum muscle retention.' },
+    long: 'For when the number on the scale is the goal: a weight class, a race weight, or simply being smaller. Fat still goes first (your body burns fat before muscle) and Forge projects the lean mass you lose at your chosen rate — the same way it does for every goal. What this goal adds is the choice: aim at a goal WEIGHT and a rate, and deliberately train and eat for minimum body mass instead of maximum muscle retention.' },
 };
 export const GOAL_ORDER = ['recomp', 'lean_bulk', 'cut', 'weight_loss'];
 export const LOSS_GOALS = ['cut', 'weight_loss'];

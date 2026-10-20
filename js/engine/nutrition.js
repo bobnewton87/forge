@@ -61,7 +61,7 @@ const NOTES = {
 const GOAL_NOTES = {
   recomp: 'Recomp: small average deficit, protein every day.',
   lean_bulk: 'Lean bulk: small surplus. Aim to gain about 0.25-0.5 lb a week.',
-  cut: 'Cut: moderate deficit with higher protein to keep muscle.',
+  cut: 'Cut: moderate deficit with higher protein to keep as much muscle as a deficit allows.',
   weight_loss: 'Losing weight: fat goes first, but some lean mass comes with it. Protein and lifting decide how much.',
 };
 
@@ -117,7 +117,8 @@ function balanceNote(goal, bal) {
     if (goal === 'weight_loss') return `Deficit of about ${-b} kcal/day. Most of that comes off as fat, but some of it is lean mass${b <= -500 ? '; past ~500 kcal/day lifters stopped gaining lean mass altogether (Murphy & Koehler 2022)' : ''}. Protein and lifting decide the split.`;
     if (goal === 'cut') return GOAL_NOTES.cut;
     if (b >= -350) return GOAL_NOTES.recomp;
-    return `Deficit of about ${-b} kcal/day: expect steady fat loss. Keep protein high and keep lifting to hold on to muscle.`;
+    // §23 (universal): a big deficit costs lean mass under every goal, so say so rather than promising muscle.
+    return `Deficit of about ${-b} kcal/day: expect steady fat loss, and some lean mass with it${b <= -500 ? ' (past ~500 kcal/day lifters stopped gaining lean mass altogether; Murphy & Koehler 2022)' : ''}. Protein and lifting decide the split.`;
   }
   if (b > 100) {
     if (b <= 500) return `Surplus of about ${b} kcal/day: a lean bulk. Aim to gain about 0.25-0.5% of bodyweight a week.`;

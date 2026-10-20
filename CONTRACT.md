@@ -571,7 +571,7 @@ Model requirements. Be evidence-honest, and list every assumption in `assumption
 - **Energy partitioning (P-ratio):** in a surplus, the fraction of gained mass that is lean depends on training stimulus, training age and body fat (Forbes: leaner people partition more to lean). Muscle growth has a **ceiling** set by training age × volume adherence × protein adequacy. Energy beyond what supports that ceiling (plus the cost of building tissue) is stored as fat. So more calories means more lean only up to a point (diminishing returns at ~+10–20% surplus for novices; Iraki 2019, Garthe 2013-type findings), after which nearly all the extra goes to fat. This is THE lesson to make visible.
 - **Protein:** below ~0.7 g/lb, lean gain is reduced (scaling down smoothly toward 0.5 at 0.4 g/lb). Above ~1.0 g/lb there is no added benefit (Morton 2018 meta-analysis: ~1.6 g/kg plateau, upper CI ~2.2 g/kg).
 - **Carbs/fat split:** minimal effect on body composition at equal calories and protein. Carbs support training volume and performance. Flag fat < ~20% of kcal (hormonal). Say so honestly; don't fake big effects.
-- **Deficit:** lean gain is reduced. Novices and returners can still recomp; large deficits risk lean loss.
+- **Deficit:** lean gain is reduced. Novices and returners can still recomp; large deficits risk lean loss. **Since §23's universal amendment** the loss direction is modelled explicitly in every week with a negative balance, under every goal: Forbes' `p = 10.4/(10.4 + fat kg)`, scaled by lifting stimulus and `proteinRetentionFactor(gPerLb)`, then by `lossRateFactor(%BW/week)`, clamped to a 0.95 lean share. The goal label changes the calories, never the partition.
 - **Cardio:** adds energy expenditure (by modality, intensity and bodyweight). The interference effect is small at moderate volume and grows with high-volume, high-impact running (Wilson 2012). Model it as a modest reduction of the lean ceiling above ~150–200 min/week, larger for running than cycling.
 - **Body-fat projection accuracy:** track fat mass and lean mass separately (BF% = fat/weight); exclude water/glycogen shifts but note them. Calibrate TDEE with `adaptiveTdee` when data exists (raising confidence), otherwise use the formula. Use separate L/R limb measures (averaged for the model). Project limb and torso circumferences from lean distribution (by planned volume share) and fat distribution (male pattern: waist/abdomen gains and loses fat first, limbs less).
 - Each series point gains `shape` fields for the 3D model: `{ neck, shoulders, chest, waist, hips, arm, forearm, thigh, calf, heightIn }`, plus `muscle: { chest, delts, lats, arms, abs, quads, calves, traps }` development scores 0..1 (from lean mass, FFMI and the volume distribution) and `bodyFatPct`.
@@ -1187,7 +1187,22 @@ stored 0 as 0 rather than "not set", so Today stops recommending a muscle the pl
 
 ### `js/engine/projection.js`
 The lean/fat partition in a deficit is now modelled from three things, all of which the user controls.
-Applied **only** under the `weight_loss` goal; `recomp` / `cut` / `lean_bulk` produce byte-identical results.
+
+> **Amendment (2026-10-20, Bob: "Better model everywhere go"), supersedes the gate below.** The partition is
+> **universal**: it runs in every week where `balance < 0`, under `recomp`, `cut`, `lean_bulk` and
+> `weight_loss` alike. Physiology does not read the goal field, so the same person with the same deficit,
+> protein and training gets the same lean loss whatever the goal is labelled. There is one branch, no
+> `lossModel` gate on the maths. What stays gated to `weight_loss` is only the goal-level machinery: the
+> goal **weight** and its stop condition, `lossPlan()`-sized intake, the `result.weightLoss` block and the
+> `goal_weight` milestone, the rate scan, the weight-loss-only warnings, and `result.energyAvailability`
+> for men. Reported for every goal instead: `partition.leanLossLb`, `partition.leanLossFrac` (average lean
+> share of each pound lost over the deficit weeks, `null` when there are none) and
+> `partition.lossRatePctPerWeek`; the three-factor explanation is in `assumptions` for every goal, and the
+> Nutrition lab explains what the deficit end of its sweep costs. In practice a slow, high-protein diet is
+> slightly *kinder* than the old model (the rate factor floors at 0.5) and a fast, low-protein one is
+> materially harsher — at 180 lb / 25 %, 26 weeks: −1,000 kcal/day at 0.5 g/lb costs 7.2 lb of lean against
+> 5.9 lb before, while −350 kcal/day at 1.1 g/lb costs 0.3 lb against 0.4 lb before.
+
 1. **Forbes' rule** (already present, now exercised and explained in the loss direction):
    `p = 10.4 / (10.4 + fat kg)` — leaner people lose proportionally more lean tissue.
 2. **Rate** — `lossRateFactor(pctPerWeek)`: 1.0 at 0.7 %/week, 1.6 at 1.0 %/week, clamped [0.5, 3]
@@ -1195,10 +1210,20 @@ Applied **only** under the `weight_loss` goal; `recomp` / `cut` / `lean_bulk` pr
 3. **Protein** — `proteinRetentionFactor(gPerLb)`, a deficit-specific curve separate from the growth curve
    (Mettler 2010, Longland 2016, Helms 2014), plus the existing lifting-stimulus protection term.
 
-Intake comes from `lossPlan().deficitKcal` (via `nutrition.lossRateDeficit`, 3,500 kcal/lb) instead of
-`GOAL_OFFSET`; the simulation still does proper energy bookkeeping (1,250 kcal to build a lb of lean, 800
-released when lost), so the delivered rate differs from the requested one and both are reported. The deficit
-also **stops at the goal weight** as well as the goal body fat.
+The lean fraction of what is lost is clamped to `[0, 0.95]`: even starvation leaves some fat coming off.
+
+**Under `weight_loss` only**, intake comes from `lossPlan().deficitKcal` (via `nutrition.lossRateDeficit`,
+3,500 kcal/lb) instead of `GOAL_OFFSET`; the simulation still does proper energy bookkeeping (1,250 kcal to
+build a lb of lean, 800 released when lost), so the delivered rate differs from the requested one and both are
+reported. The deficit also **stops at the goal weight** as well as the goal body fat. Every other goal keeps
+`GOAL_OFFSET` and the goal-body-fat stop; only the partition maths is shared.
+
+New result fields (every goal):
+```js
+result.partition.leanLossLb              // lb of lean lost over the horizon (already existed)
+result.partition.leanLossFrac            // avg lean share of each lb lost, deficit weeks only; null if none
+result.partition.lossRatePctPerWeek      // avg % of bodyweight lost per week, deficit weeks only; null if none
+```
 
 New result fields (weight-loss goal only):
 ```js
@@ -1244,6 +1269,12 @@ pregnancy still never plans a deficit.
 ### Tests
 `test/weight-loss.test.js`: Forbes partitions in the loss direction and leaner means a larger lean share; faster
 deficits cost more lean; protein and lifting change retention; floors and warnings fire; below-floor targets are
-allowed only under this goal; the projected body shrinks; and a golden comparison that `recomp` / `cut` /
-`lean_bulk` are unchanged. e2e `L1` picks the goal with a goal weight and checks Projection, Nutrition, Plan and
-Body agree with no page errors.
+allowed only under this goal; the projected body shrinks. Per the amendment above, the `§23 universal` tests
+assert that the goal label does **not** change the partition (identical series under `recomp` / `cut` /
+`weight_loss` / `lean_bulk` at the same intake and protein), that a fast low-protein cut costs materially more
+lean than a slow high-protein one, that a surplus never enters the branch, that a 50 kcal/day deficit costs
+almost nothing and lean loss rises monotonically with the deficit, and that `lossRateFactor` /
+`proteinRetentionFactor` stay finite and bounded on nonsense input. The remaining goal-gating test asserts only
+the weight-loss-specific machinery (`result.weightLoss`, the `goal_weight` milestone, floors, priority sliders).
+e2e `L1` picks the goal with a goal weight and checks Projection, Nutrition, Plan and Body agree with no page
+errors.
