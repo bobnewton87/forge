@@ -25,6 +25,16 @@
 //     → { update(opts), setPose(name), destroy() }
 //   POSES, supported()
 //
+// CONTRACT-NOTE (§21, female body): the asset follows the sex (opts.sex › shape.sex › stored profile.body.sex › male):
+//   'female' lazily fetches assets/body/body-female.{json,bin} (MakeHuman young female, same topology / skeleton /
+//   skin weights; male users never download it), fits it to anthro's female geometry (bust / underbust / natural
+//   waist / hips / thighs …, ANSUR II female head targets HEAD_REF_F), picks a cup-size morph from bust ÷ underbust,
+//   smooths the nipples / crease before the fit (modesty), and renders a sports top + shorts and a hair bun (renderer-
+//   only geometry after the body vertices). "Now" and "projected" (blink / ghost) share the asset; update({ sex })
+//   switches it. Muscle scores stay on the engine's absolute FFMI scale (effectiveMuscle shifts them for the female
+//   mesh). Body fat is DXA-equivalent for both sexes (BF_CAL: average-look anchor, heuristic definition thresholds).
+//   Extra exports: sexOf, assetFiles, effectiveMuscle, FEMALE_MUSCLE_SHIFT, HEAD_REF_F, cupWeight, placeBun, BF_CAL,
+//   definitionLevels; handle extras stats().sex / .cup, getSex().
 // CONTRACT-NOTE (extras, all optional):
 //   - compareShape may carry its own bodyFatPct / muscle (else the main body's are used). It is drawn as a
 //     translucent Fresnel ghost (depth-tested against the main body, so you see where "now" sticks out).
@@ -50,6 +60,7 @@
 //     Transitions: POSE_MS (450 ms) with poseEase (smootherstep, no overshoot); the lowest ankle stays at its fitted
 //     height. Pure extras for tests: FIT_POSE, POSE_MS, poseEase.
 import { bodyGeometry } from '../engine/anthro.js';
+import { store } from '../store.js';
 
 export const POSES = ['relaxed', 'front_double_biceps', 'lat_spread', 'side_chest', 'back_double_biceps'];
 const POSE_LABEL = {
@@ -58,8 +69,10 @@ const POSE_LABEL = {
 };
 const IN = 3.937007874;     // inches per MakeHuman decimetre
 const DEF_SHAPE = { neck: 15, shoulders: 46, chest: 39, waist: 33, hips: 38, arm: 13, forearm: 11, thigh: 22, calf: 14.5, heightIn: 69 };
+// typical woman (anthro REF.female = projection REF_BODY.female): chest = bust, waist = natural waist
+const DEF_SHAPE_F = { neck: 13, shoulders: 40, chest: 35, waist: 29, hips: 39, arm: 11.5, forearm: 9.5, thigh: 22, calf: 14, heightIn: 64 };
 const DEF_MUSCLE = { chest: 0.4, delts: 0.4, lats: 0.4, arms: 0.4, abs: 0.4, quads: 0.5, calves: 0.5, traps: 0.4 };
-const DEF_BF = 18;
+const DEF_BF = 24, DEF_BF_F = 34;   // (only when no body fat is known; DXA-equivalent, see BF_CAL)
 const TRUNK_SKIP = new Set(['crotch', 'shoulder', 'acromion', 'trap', 'neckBase', 'chin']);
 const ARM_SKIP = new Set(['armTop', 'deltoid']);
 
@@ -80,6 +93,28 @@ export function supported() {
     if (lose) lose.loseContext();
   } catch (e) { cachedSupport = false; }
   return cachedSupport;
+}
+
+// ================================================================== sex (CONTRACT §21)
+/** 'female' | 'male' from opts.sex, else shape.sex, else the stored profile (profile.body.sex), else 'male'. */
+export function sexOf(o = {}) {
+  let v = o && (o.sex ?? o.shape?.sex);
+  if (v == null) { try { v = store.getProfile()?.body?.sex; } catch (e) { v = null; } }
+  return v === 'female' ? 'female' : 'male';
+}
+/** Asset file names per sex: the female mesh is a separate, lazily fetched pair (male users never download it). */
+export function assetFiles(sex = 'male') { return sex === 'female' ? ['body-female.json', 'body-female.bin'] : ['body.json', 'body.bin']; }
+// Muscle scores are on the engine's absolute normalized-FFMI scale (projection.js: FFMI 15 → 0, 24 → 1) for both
+// sexes. MakeHuman's muscle axis is sex-relative, so for the female mesh the score is shifted by the sex difference
+// in median FFMI (≈ 3.5 kg/m²: ≈ 18.9 men vs 15.4 women, Schutz, Kyle & Pichard 2002, Int J Obes 26:953) → the
+// same FFMI percentile gets the same MakeHuman muscle parameter (a typical 140 lb / 28 % woman ≈ 0.6 of the axis).
+export const FEMALE_MUSCLE_SHIFT = 3.5 / 9;
+export function effectiveMuscle(muscle, sex = 'male') {
+  const mu = { ...DEF_MUSCLE, ...(muscle || {}) };
+  if (sex !== 'female') return mu;
+  const out = {};
+  for (const [k, v] of Object.entries(mu)) out[k] = num(v) == null ? v : clamp(v + FEMALE_MUSCLE_SHIFT, 0, 1);
+  return out;
 }
 
 // ================================================================== vector / quaternion math
@@ -244,22 +279,29 @@ export function decodeBodyAsset(meta, buf) {
     for (let i = 0; i < dq.length; i++) d[i] = dq[i] * s;
     return { name: m.name, idx, d };
   });
+  const cups = (L.cups || []).map(m => {   // female cup-size morphs (min / max cup)
+    const idx = new Uint16Array(view(m.index)), dq = view(m.delta), s = L[m.delta].scale, d = new Float32Array(dq.length);
+    for (let i = 0; i < dq.length; i++) d[i] = dq[i] * s;
+    return { name: m.name, idx, d };
+  });
   const bones = meta.bones;
   const B = Object.fromEntries(bones.map((b, i) => [b.name, i]));
-  const asset = { meta, N, nMesh, base, tris: new Uint16Array(view('index')), skinIdx, skinW, part: new Uint8Array(view('part')), morphs, bones, B, lm: meta.landmarks, aux: meta.aux };
+  const asset = { meta, sex: meta.sex === 'female' ? 'female' : 'male', N, nMesh, base, tris: new Uint16Array(view('index')), skinIdx, skinW, part: new Uint8Array(view('part')), morphs, cups, bones, B, lm: meta.landmarks, aux: meta.aux };
   prepareAsset(asset);
   return asset;
 }
-let assetPromise = null;
-export function loadBodyAsset(baseUrl) {
-  if (!assetPromise) {
-    const base = baseUrl || new URL('../../assets/body/', import.meta.url);
-    assetPromise = Promise.all([
-      fetch(new URL('body.json', base)).then(r => { if (!r.ok) throw new Error('body.json ' + r.status); return r.json(); }),
-      fetch(new URL('body.bin', base)).then(r => { if (!r.ok) throw new Error('body.bin ' + r.status); return r.arrayBuffer(); }),
-    ]).then(([m, b]) => decodeBodyAsset(m, b)).catch(e => { assetPromise = null; throw e; });
+const assetPromises = new Map();
+/** Fetch + decode the body asset for a sex (cached per sex; the female pair is only fetched when asked for). */
+export function loadBodyAsset(baseUrl, sex = 'male') {
+  const sx = sex === 'female' ? 'female' : 'male', key = sx + '|' + (baseUrl ? String(baseUrl) : '');
+  if (!assetPromises.has(key)) {
+    const base = baseUrl || new URL('../../assets/body/', import.meta.url), [fj, fb] = assetFiles(sx);
+    assetPromises.set(key, Promise.all([
+      fetch(new URL(fj, base)).then(r => { if (!r.ok) throw new Error(fj + ' ' + r.status); return r.json(); }),
+      fetch(new URL(fb, base)).then(r => { if (!r.ok) throw new Error(fb + ' ' + r.status); return r.arrayBuffer(); }),
+    ]).then(([m, b]) => decodeBodyAsset(m, b)).catch(e => { assetPromises.delete(key); throw e; }));
   }
-  return assetPromise;
+  return assetPromises.get(key);
 }
 
 // per-vertex bone-group weights, arm segment weights, smooth normals of the default shape, muscle region masks
@@ -279,6 +321,28 @@ function prepareAsset(A) {
   }
   buildTopology(A);
   A.canonNormals = computeNormals(base, A.tris, nMesh, null, A.weld);
+  if (A.cups && A.cups.length) {   // female: torso-only triangles for the cup-size girths (arms are apart in the bind pose)
+    const t = [], pt = A.part;
+    for (let k = 0; k < A.tris.length; k += 3) if (pt[A.tris[k]] === 0 && pt[A.tris[k + 1]] === 0 && pt[A.tris[k + 2]] === 0) t.push(A.tris[k], A.tris[k + 1], A.tris[k + 2]);
+    A.cupTris = Uint16Array.from(t);
+  }
+  if (A.sex === 'female') {
+    // modesty smoothing region (CONTRACT §21): the base mesh's nipples and the vulva crease would show through the
+    // painted-on sports top and shorts, so they are smoothed away (Taubin, before the fit, so every girth still
+    // matches the tape). Weights fall off smoothly: ≈ 1.6 in around each bust point, and the front of the crotch.
+    const w = new Float32Array(nMesh), nip = A.lm.nippleV, cr = A.lm.crotchV;
+    const np = [Math.abs(base[nip * 3]), base[nip * 3 + 1], base[nip * 3 + 2]], cy = base[cr * 3 + 1], cz = base[cr * 3 + 2];
+    for (let i = 0; i < nMesh; i++) {
+      if (A.part[i] === 6) continue;
+      const x = base[i * 3], y = base[i * 3 + 1], z = base[i * 3 + 2];
+      const dn = Math.hypot(Math.abs(x) - np[0], y - np[1], z - np[2]);
+      const wn = 1 - sstep(0.4, 0.7, dn);
+      const wc = (1 - sstep(0.35, 0.6, Math.abs(x))) * sstep(cy - 0.45, cy - 0.2, y) * (1 - sstep(cy + 0.9, cy + 1.3, y)) * sstep(cz - 0.5, cz - 0.1, z);
+      w[i] = Math.max(wn, wc);
+    }
+    A.modesty = w;
+    A.modestyList = Int32Array.from({ length: nMesh }, (_, i) => i).filter(i => w[i] > 0);
+  }
   // head-bone share of each vertex (skin weights, diffused a little): the head-proportion scale follows the skull
   // and jaw instead of a height band, so the jaw underside / nape carry the head↔neck transition (no lump below
   // the ear, no shelf under the chin)
@@ -395,6 +459,7 @@ function prepareAsset(A) {
   let ey = 0, ex = 0, ez = 0, ne = 0;
   for (let i = 0; i < nMesh; i++) if (A.part[i] === 6) { ey += base[i * 3 + 1]; ex += Math.abs(base[i * 3]); ez += base[i * 3 + 2]; ne++; }
   A.eye = [ey / ne, ex / ne, ez / ne];
+  if (A.sex === 'female') A.bun = bunTemplate(A);
   // head anthropometry helpers (canonical dm): the ears (excluded from head breadth/circumference, as ANSUR
   // measures above them) and the suprasternal notch (deepest point of the front midline between chest and chin)
   const earMask = new Uint8Array(nMesh), [eyY, , eyZ] = A.eye;
@@ -418,8 +483,13 @@ function prepareAsset(A) {
 // horizontal dimensions ∝ H^0.3, head height (vertex→menton, partly facial) ∝ H^0.5. The neck (menton →
 // suprasternale) follows anthro's segment ratio (0.052 H: chin 0.870 H − suprasternale ≈ acromion 0.818 H).
 export const HEAD_REF = { statureIn: 69, breadth: 6.1, length: 7.8, circumference: 22.6, bizygomatic: 5.6, height: 9.1, expH: 0.3, expV: 0.5, neck: 0.052 };
-export function headTargets(H) {
-  const R = HEAD_REF, kh = Math.pow(H / R.statureIn, R.expH), kv = Math.pow(H / R.statureIn, R.expV);
+// ANSUR II adult-FEMALE medians (n = 1,986, stature 1626 mm = 64.0 in): head breadth 147 mm, head length 190 mm,
+// head circumference 560 mm, bizygomatic breadth 134 mm; head height = the male 9.1 in × the female/male ratio of
+// (tragion–top of head + menton–sellion) medians (240 / 254 mm); neck (menton → suprasternale) 0.052 H as for men
+// (female chin − suprasternale from [AN2F] = 0.049 H, identical to the male value from the same formula).
+export const HEAD_REF_F = { statureIn: 64.0, breadth: 5.79, length: 7.48, circumference: 22.05, bizygomatic: 5.28, height: 8.6, expH: 0.3, expV: 0.5, neck: 0.052 };
+export function headTargets(H, sex = 'male') {
+  const R = sex === 'female' ? HEAD_REF_F : HEAD_REF, kh = Math.pow(H / R.statureIn, R.expH), kv = Math.pow(H / R.statureIn, R.expV);
   return { breadth: R.breadth * kh, length: R.length * kh, circumference: R.circumference * kh, bizygomatic: R.bizygomatic * kh, height: R.height * kv, neck: R.neck * H };
 }
 /**
@@ -448,6 +518,42 @@ export function headDims(A, pos) {
   for (let y = ey - 0.18 * height; y <= ey; y += 0.1) { const h = sliceHull(pos, tris, ok, y, p => p[1] >= zF); if (h.n >= 2) bizygomatic = Math.max(bizygomatic, h.maxx - h.minx); }
   const notch = pos[A.notchV * 3 + 1];
   return { top, chin, height, eyeY: ey, glabellaY: yG, breadth, length: zmax - zmin, circumference, bizygomatic, notch, neck: chin - notch, cz: (zmin + zmax) / 2 };
+}
+// Female hair bun: a small ellipsoid appended after the body vertices (drawn in the same call, skinned 100 % to the
+// head bone, shaded as hair). It is extra geometry for the renderer only: every fit / girth / pose computation works
+// on the first nMesh vertices, so the bun never touches the body surface the tapes are fitted to.
+function bunTemplate(A) {
+  const ST = 10, SL = 20, unit = [], tris = [];
+  for (let i = 0; i <= ST; i++) { const th = Math.PI * i / ST; for (let j = 0; j < SL; j++) { const ph = 2 * Math.PI * j / SL; unit.push(Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)); } }
+  for (let i = 0; i < ST; i++) for (let j = 0; j < SL; j++) {
+    const a = i * SL + j, b = i * SL + (j + 1) % SL, c = (i + 1) * SL + j, d = (i + 1) * SL + (j + 1) % SL;
+    tris.push(A.nMesh + a, A.nMesh + b, A.nMesh + c, A.nMesh + b, A.nMesh + d, A.nMesh + c);
+  }
+  const [ey, , ez] = A.eye;
+  return { n: unit.length / 3, unit: Float32Array.from(unit), tris: Uint16Array.from(tris), canon: [0, ey + 0.9, ez - 1.2] };
+}
+/** Bun placement on a fitted bind-pose mesh (inches): at the back of the crown, sized from the cranium. */
+export function placeBun(A, rest) {
+  if (!A.bun) return null;
+  let top = -Infinity;
+  for (let i = 0; i < A.nMesh; i++) if (A.part[i] === 1 && A.wHead[i] > 0.6 && rest[i * 3 + 1] > top) top = rest[i * 3 + 1];
+  let zMin = Infinity, zMax = -Infinity, zb = Infinity;
+  const yb = top - 2.0;
+  for (let i = 0; i < A.nMesh; i++) {
+    if (A.part[i] !== 1 || A.wHead[i] < 0.6) continue;
+    const y = rest[i * 3 + 1], z = rest[i * 3 + 2];
+    if (y > top - 3.2 && y < top - 0.8) { zMin = Math.min(zMin, z); zMax = Math.max(zMax, z); }
+    if (Math.abs(y - yb) < 0.8 && Math.abs(rest[i * 3]) < 1.0) zb = Math.min(zb, z);   // back of the skull (sparse mesh there)
+  }
+  const len = zMax - zMin, R = 0.19 * len, C = [0, yb, (isFinite(zb) ? zb : zMin) - 0.42 * R];
+  const rx = 1.15 * R, ry = 0.95 * R, rz = 0.85 * R, n = A.bun.n, u = A.bun.unit;
+  const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3);
+  for (let k = 0; k < n; k++) {
+    pos[k * 3] = C[0] + rx * u[k * 3]; pos[k * 3 + 1] = C[1] + ry * u[k * 3 + 1]; pos[k * 3 + 2] = C[2] + rz * u[k * 3 + 2];
+    const nx = u[k * 3] / rx, ny = u[k * 3 + 1] / ry, nz = u[k * 3 + 2] / rz, l = Math.hypot(nx, ny, nz) || 1;
+    nrm[k * 3] = nx / l; nrm[k * 3 + 1] = ny / l; nrm[k * 3 + 2] = nz / l;
+  }
+  return { pos, nrm, center: C, radius: R };
 }
 // Smooth vertex normals (area-weighted face normals). With `weld` (vertex → representative of its position group)
 // duplicated seam vertices share one averaged normal, so UV/part seams never show as lighting seams.
@@ -537,6 +643,23 @@ export function taubinField(A, d, iters = 8, lam = 0.6, mu = -0.63, pin = null) 
   }
   return d;
 }
+// taubinField restricted to a vertex list (weights w, 0 = fixed): same result as taubinField(A, d, …, w) for a field
+// that is only smoothed inside the list, at a fraction of the cost
+function regionTaubin(A, d, list, w, iters, lam, mu) {
+  const { off, idx } = A.adj, n = list.length, tmp = new Float32Array(n * 3);
+  for (let it = 0; it < iters * 2; it++) {
+    const k = it & 1 ? mu : lam;
+    for (let q = 0; q < n; q++) {
+      const i = list[q], o0 = off[i], o1 = off[i + 1];
+      if (o1 === o0) { tmp[q * 3] = d[i * 3]; tmp[q * 3 + 1] = d[i * 3 + 1]; tmp[q * 3 + 2] = d[i * 3 + 2]; continue; }
+      let sx = 0, sy = 0, sz = 0; for (let o = o0; o < o1; o++) { const j = idx[o] * 3; sx += d[j]; sy += d[j + 1]; sz += d[j + 2]; }
+      const inv = 1 / (o1 - o0), ww = k * w[i];
+      tmp[q * 3] = d[i * 3] + ww * (sx * inv - d[i * 3]); tmp[q * 3 + 1] = d[i * 3 + 1] + ww * (sy * inv - d[i * 3 + 1]); tmp[q * 3 + 2] = d[i * 3 + 2] + ww * (sz * inv - d[i * 3 + 2]);
+    }
+    for (let q = 0; q < n; q++) { const i = list[q]; d[i * 3] = tmp[q * 3]; d[i * 3 + 1] = tmp[q * 3 + 1]; d[i * 3 + 2] = tmp[q * 3 + 2]; }
+  }
+  return d;
+}
 // cavity term: how far a vertex sits below the average of its neighbours, along its normal (0 = flat/convex)
 function computeCavity(pos, nrm, tris, n) {
   const acc = new Float32Array(n * 3), cnt = new Float32Array(n), len = new Float32Array(n);
@@ -567,13 +690,57 @@ function computeCavity(pos, nrm, tris, n) {
 
 // ================================================================== morphing (macro muscle × weight grid)
 function muscleParam(score) { return clamp(0.35 + 0.65 * score, 0, 1); }
-function weightParam(bf) { return clamp(0.5 + (bf - 20) / 28, 0.08, 1); }
-function morphPositions(A, bf, muscle) {
-  const P = Float32Array.from(A.base);
+// ---------------------------------------------------------------- visual body-fat calibration
+// bodyFatPct is DXA-equivalent (the app's scale; ≈ 3–5 points above Navy-tape / caliper numbers for the same body).
+//  - avg: the body fat that renders as MakeHuman's AVERAGE weight = the population-median DXA body fat of young adults
+//    (≈ 25 % men, ≈ 36 % women; NHANES 1999–2004 DXA, Kelly, Wilson & Heymsfield 2009, PLoS One 4:e7038 — value from
+//    the project's research summary, rounded). The weight morph's character is kept modest (±0.35 of the axis over
+//    ±14 points) because the tape girths already carry the fat volume; it only shifts where the volume sits.
+//  - definition (HEURISTIC: no validated visual-body-fat data exists; coaching rules of thumb converted to DXA):
+//    men: an upper-ab outline starts below ≈ 18 %, full abs by ≈ 12.5 %; delt / arm / chest separation from ≈ 23 %,
+//    scaled by muscle score. Women ≈ +8 points on each threshold (essential and sex-specific fat; coaching charts put
+//    visible female abs ≈ 6–8 points above the male level). Every term is a smoothstep: no hard cutoffs.
+//  - muscle-shape sculpt (bulk, not lines) stays at full strength through the separation range and softens only above
+//    it (to −40 % at avg + 10).
+export const BF_CAL = {
+  male: { avg: 25, absStart: 18, absFull: 12.5, sepStart: 23, sepFull: 14 },
+  female: { avg: 36, absStart: 26, absFull: 20.5, sepStart: 31, sepFull: 22 },
+};
+function weightParam(bf, sex = 'male') { const c = BF_CAL[sex === 'female' ? 'female' : 'male']; return clamp(0.5 + (bf - c.avg) / 40, 0.12, 0.88); }
+/** Definition levels for the shader: { upper, full, sep } (0..≈1.2), from body fat (DXA) and the mean muscle score. */
+export function definitionLevels(bf, muscleMean = 0.4, sex = 'male') {
+  const c = BF_CAL[sex === 'female' ? 'female' : 'male'], m = clamp(num(muscleMean) ?? 0.4, 0, 1);
+  const k = (0.45 + 0.8 * m) * (sex === 'female' ? 0.8 : 1);   // trained bodies show more; female lines a little softer
+  return {
+    upper: k * sstep(c.absStart, c.absStart - 4, bf),          // linea alba, upper intersections, lateral border
+    full: k * sstep(c.absStart - 2.5, c.absFull, bf),           // all blocks, lower intersection, V lines, serratus
+    sep: (0.3 + 0.9 * m) * sstep(c.sepStart, c.sepFull, bf),    // delt / arm / chest separation (crease depth)
+  };
+}
+// Female cup size: pick the cup morph weight w ∈ [−1, 1] (−1 = min cup, +1 = max cup) whose bust / ribcage girth
+// ratio (convex hulls of the torso at the bust point and 1 in below the inframammary fold, on the morphed bind mesh)
+// best matches anthro's bust / underbust; the stations then fit both girths exactly, so the cup only decides how
+// much of the bust is breast vs ribcage.
+function cupGirths(A, P, w) {
+  const c = w < 0 ? A.cups[0] : A.cups[1], k = Math.abs(w), Q = k ? Float32Array.from(P) : P;
+  if (k) for (let j = 0; j < c.idx.length; j++) { const i = c.idx[j]; Q[i * 3] += k * c.d[j * 3]; Q[i * 3 + 1] += k * c.d[j * 3 + 1]; Q[i * 3 + 2] += k * c.d[j * 3 + 2]; }
+  return { bust: sliceHull(Q, A.cupTris, () => true, Q[A.lm.nippleV * 3 + 1]).per, Q };
+}
+export function cupWeight(A, P, ratio) {
+  if (!A.cups || A.cups.length < 2 || !(ratio > 0) || A.lm.imfV == null) return 0;
+  const rib = sliceHull(P, A.cupTris, () => true, P[A.lm.imfV * 3 + 1] - 0.254).per;
+  if (!(rib > 0)) return 0;
+  const r = [-1, 0, 1].map(w => cupGirths(A, P, w).bust / rib);
+  if (ratio <= r[0]) return -1;
+  if (ratio >= r[2]) return 1;
+  return ratio < r[1] ? -1 + (ratio - r[0]) / ((r[1] - r[0]) || 1e-9) : (ratio - r[1]) / ((r[2] - r[1]) || 1e-9);
+}
+function morphPositions(A, bf, muscle, cupRatio = null) {
+  const P = Float32Array.from(A.base), sex = A.sex || 'male';
   const mu = { ...DEF_MUSCLE, ...(muscle || {}) };
   const reg = A.regions.map(r => muscleParam(clamp(num(mu[r]) ?? 0.4, 0, 1)));
   const mDef = muscleParam(A.regions.reduce((t, r) => t + clamp(num(mu[r]) ?? 0.4, 0, 1), 0) / A.regions.length);
-  const w = weightParam(bf);
+  const w = weightParam(bf, sex);
   const wv = { min: Math.max(0, 1 - 2 * w), max: Math.max(0, 2 * w - 1) }; wv.avg = 1 - wv.min - wv.max;
   const N = A.N, nMesh = A.nMesh, mv = new Float32Array(N * 3);   // per-vertex muscle min/avg/max weights
   for (let i = 0; i < N; i++) {
@@ -592,13 +759,22 @@ function morphPositions(A, bf, muscle) {
       P[i * 3] += k * m.d[j * 3]; P[i * 3 + 1] += k * m.d[j * 3 + 1]; P[i * 3 + 2] += k * m.d[j * 3 + 2];
     }
   }
+  // female: cup size from the bust / underbust ratio (before the sculpt, on the macro-morphed mesh)
+  let cup = 0;
+  if (A.cups && A.cups.length === 2 && cupRatio) {
+    cup = cupWeight(A, P, cupRatio);
+    if (cup) { const c = cup < 0 ? A.cups[0] : A.cups[1], k = Math.abs(cup); for (let j = 0; j < c.idx.length; j++) { const i = c.idx[j]; P[i * 3] += k * c.d[j * 3]; P[i * 3 + 1] += k * c.d[j * 3 + 1]; P[i * 3 + 2] += k * c.d[j * 3 + 2]; } }
+  }
+  P.cup = cup;
   // region sculpt, scaled by each score (≈ flat at 0.3, full at 1) and softened by fat
-  const R = A.sculptRegions.length, fat = 1 - 0.45 * sstep(14, 30, bf);
-  const amp = A.sculptRegions.map(r => clamp(0.1 + 1.15 * clamp(num(mu[r]) ?? 0.4, 0, 1), 0, 1.25) * fat);
+  // (female: the pec sculpt is mostly hidden under breast tissue, so it is kept small; see BF_CAL for the fat softening)
+  const cal = BF_CAL[sex], R = A.sculptRegions.length, fat = 1 - 0.4 * sstep(cal.sepStart, cal.avg + 10, bf);
+  const amp = A.sculptRegions.map(r => clamp(0.1 + 1.15 * clamp(num(mu[r]) ?? 0.4, 0, 1), 0, 1.25) * fat * (sex === 'female' && r === 'chest' ? 0.3 : 1));
   for (let i = 0; i < nMesh; i++) for (let r = 0; r < R; r++) {
     const k = amp[r]; if (!k) continue;
     const o = (i * R + r) * 3; P[i * 3] += k * A.sculpt[o]; P[i * 3 + 1] += k * A.sculpt[o + 1]; P[i * 3 + 2] += k * A.sculpt[o + 2];
   }
+  if (A.modesty) regionTaubin(A, P, A.modestyList, A.modesty, 60, 0.6, -0.55);   // female: smooth nipples / crease last (see prepareAsset)
   return P;
 }
 
@@ -944,13 +1120,14 @@ function unskinPositions(A, posed, M, n = A.nMesh, dirs = false) {
 }
 
 // ================================================================== fitting
-function geometryFor(shape, bodyFatPct, muscle) {
-  const sh = { ...DEF_SHAPE, ...(shape || {}) };
+function geometryFor(shape, bodyFatPct, muscle, sex = 'male') {
+  const sh = { ...(sex === 'female' ? DEF_SHAPE_F : DEF_SHAPE), ...(shape || {}) };
   const avg = (a, b) => (num(a) && num(b) ? (a + b) / 2 : num(a) ?? num(b));
   const limbs = {};
   for (const k of ['armL', 'armR', 'thighL', 'thighR', 'calfL', 'calfR']) if (num(sh[k])) limbs[k] = sh[k];
   for (const k of ['arm', 'thigh', 'calf']) if (!num(shape?.[k])) { const a = avg(sh[k + 'L'], sh[k + 'R']); if (a) sh[k] = a; }
-  return bodyGeometry({ ...sh, limbs, bodyFatPct: num(bodyFatPct) ?? DEF_BF, muscle: { ...DEF_MUSCLE, ...(muscle || {}) }, sex: 'male' });
+  if (sex !== 'female') return bodyGeometry({ ...sh, limbs, bodyFatPct: num(bodyFatPct) ?? DEF_BF, muscle: { ...DEF_MUSCLE, ...(muscle || {}) }, sex: 'male' });
+  return bodyGeometry({ ...sh, limbs, bodyFatPct: num(bodyFatPct) ?? DEF_BF_F, muscle: { ...DEF_MUSCLE, ...(muscle || {}) }, sex: 'female' });
 }
 
 /**
@@ -1005,15 +1182,17 @@ function limbProfile(geom, J, part) {
  */
 export function fitBody(A, opts = {}) {
   const t0 = now();
-  const bf = num(opts.bodyFatPct) ?? DEF_BF;
-  const geom = opts.geom || geometryFor(opts.shape, bf, opts.muscle);
+  const sex = A.sex === 'female' ? 'female' : 'male', FEM = sex === 'female';
+  const bf = num(opts.bodyFatPct) ?? (FEM ? DEF_BF_F : DEF_BF);
+  const muEff = FEM ? effectiveMuscle(opts.muscle, sex) : opts.muscle;   // (male: the scores as given)
+  const geom = opts.geom || geometryFor(opts.shape, bf, muEff, sex);
   const H = geom.heightIn, LM = geom.landmarks, GJ = sideJoints(geom);
   const prof = { armL: limbProfile(geom, GJ, 'armL'), armR: limbProfile(geom, GJ, 'armR'), legL: limbProfile(geom, GJ, 'legL'), legR: limbProfile(geom, GJ, 'legR') };
   const { nMesh, N, B, bones, part, grp, seg, tris } = A;
   const nb = bones.length;
 
   // 1. morph, convert to inches, floor at 0
-  const P = morphPositions(A, bf, opts.muscle);
+  const P = morphPositions(A, bf, muEff, FEM ? geom.landmarks.chest.girth / geom.landmarks.underbust.girth : null);
   let minY = Infinity;
   for (let i = 0; i < nMesh; i++) if (part[i] !== 6 && P[i * 3 + 1] < minY) minY = P[i * 3 + 1];
   for (let i = 0; i < N; i++) { P[i * 3] *= IN; P[i * 3 + 1] = (P[i * 3 + 1] - minY) * IN; P[i * 3 + 2] *= IN; }
@@ -1035,7 +1214,7 @@ export function fitBody(A, opts = {}) {
   const Hm = qMax - qMin, hs = H / Hm;
   const qy = i => Q[i * 3 + 1];
   // head height and neck length from adult-male anthropometry (head size scales weakly with stature)
-  const HT = headTargets(H), chinT = H - HT.height, notchT = chinT - HT.neck;
+  const HT = headTargets(H, sex), chinT = H - HT.height, notchT = chinT - HT.neck;
 
   // 3a. vertical remap anchors (mesh height → anthro height), all in the rest pose
   // One map per leg (per-side ankle / calf / knee / thigh / hip heights, CONTRACT §16c); they share every anchor
@@ -1051,7 +1230,8 @@ export function fitBody(A, opts = {}) {
     [yCr, LM.crotch.y],
     [qy(A.lm.buttV), LM.hip.y],
     [Jq[B['thigh' + s]][1], GJ['hip' + s].y],
-    [qy(A.lm.navelV), LM.waist.y],
+    [qy(A.lm.navelV), geom.heights.navel ?? LM.waist.y],   // (female: the waist tape is the natural waist, above the navel)
+    ...(A.lm.imfV != null ? [[qy(A.lm.imfV), LM.underbust.y]] : []),   // female: inframammary fold → anthro's underbust
     [qy(A.lm.nippleV), LM.chest.y],
     [Jq[B.uarm1L][1], GJ.shoulderL.y],
     [qy(A.notchV), notchT],
@@ -1335,7 +1515,7 @@ export function fitBody(A, opts = {}) {
 
   // flexed-arm bulge amplitude so the flexed biceps section reaches the flexed tape (anthro flex.arm)
   const fit = {
-    A, geom, bf, muscle: opts.muscle, rest, restNrm, cavity, flare, heads: heads1, frames, relaxed: V3, relax,
+    A, sex, cup: P.cup || 0, geom, bf, muscle: opts.muscle, muscleEff: muEff, rest, restNrm, cavity, flare, heads: heads1, frames, relaxed: V3, relax,
     sections: {}, neckY, src: Q, joints: GJ,
     report: { head, stations: [], shoulders: { girth: hull2(crossPoints(V3, shCross)).per, target: Gsh, sigma }, iters, worst, hs, anchors: ax.map((m, i) => [m, ay[i]]), smooth: { roughBefore: rough0, roughAfter: rough1 } },
   };
@@ -1345,6 +1525,7 @@ export function fitBody(A, opts = {}) {
     if (st.name === 'trunk') fit.sections[s.name] = { y: s.y, w: s.rx, d: s.rz, cx: s.cx, cz: s.cz };
   }
   fit.flexAmp = calibrateFlex(fit);
+  if (A.bun) fit.bun = placeBun(A, rest);
   fit.ms = now() - t0;
   return fit;
 }
@@ -1438,6 +1619,15 @@ float hairLift(vec3 c){   // hair-cap thickness: same hairline as the fragment m
   line = mix(line, backL, smoothstep(ez - 1.2, ez - 1.6, c.z));
   return smoothstep(line - 0.02, line + 0.28, c.y);
 }
+uniform float uFem;          // 1 = female mesh (CONTRACT §21)
+float hairLineF(vec3 c){     // female hairline: rounded forehead (no temple recession), temples to mid-ear, low nape
+  float ax = abs(c.x), ey = uEyeRef.x, ez = uEyeRef.z;
+  float front = ey + 0.6 - 0.05 * smoothstep(0.2, 0.6, ax);
+  float side = ey - 0.08;
+  float backL = uEyeRef.w + 0.3;
+  float line = mix(front, side, smoothstep(0.42, 0.66, ax));
+  return mix(line, backL, smoothstep(ez - 1.0, ez - 1.5, c.z));
+}
 out vec3 vW; out vec3 vN; out vec3 vC; out float vPart; out float vCav;
 float ss(float a, float b, float x){ float t = clamp((x-a)/(b-a), 0., 1.); return t*t*(3.-2.*t); }
 void main(){
@@ -1458,10 +1648,12 @@ void main(){
     p += r * amt * bump * wua * bias;
   }
   p += aFlare * uLat;
-  if (aPart > 0.5 && aPart < 1.5) p += aNrm * hairLift(aCanon) * 0.12;
+  if (uFem > 0.5) {   // female hair cap (the bun is real geometry appended to the mesh, see hairBun())
+    if (aPart > 0.5 && aPart < 1.5 && aCav > -0.5) { float line = hairLineF(aCanon); p += aNrm * smoothstep(line - 0.02, line + 0.28, aCanon.y) * 0.16; }
+  } else if (aPart > 0.5 && aPart < 1.5) p += aNrm * hairLift(aCanon) * 0.12;
   mat4 M = aWeight.x * uBones[j.x] + aWeight.y * uBones[j.y] + aWeight.z * uBones[j.z] + aWeight.w * uBones[j.w];
   vec4 w = M * vec4(p, 1.0);
-  vW = w.xyz; vN = mat3(M) * aNrm; vC = aCanon; vPart = aPart; vCav = aCav;
+  vW = w.xyz; vN = mat3(M) * aNrm; vC = aCanon; vPart = aPart; vCav = max(aCav, 0.0);
   gl_Position = uVP * w;
 }`;
 const FRAG = `#version 300 es
@@ -1469,7 +1661,8 @@ precision highp float;
 in vec3 vW; in vec3 vN; in vec3 vC; in float vPart; in float vCav;
 uniform vec3 uEye;
 uniform vec3 uKey, uFill, uRim, uRim2;
-uniform float uDef;          // muscle definition 0..1 (low body fat)
+uniform float uDef;          // 1 main body, 0 ghost
+uniform vec3 uDefMix;        // definitionLevels(): upper abs, full abs, delt/arm/chest separation (0..≈1.2)
 uniform float uFat;          // 0..1 softness
 uniform vec4 uCanon;         // navelY, nippleY, crotchY, nippleX  (canonical dm)
 uniform vec4 uCanon2;        // shoulderY, kneeY, chinY, pubisY
@@ -1485,6 +1678,39 @@ float hairMask(vec3 c){
   float line = mix(front, side, sideMix);
   line = mix(line, backL, smoothstep(ez - 1.2, ez - 1.6, c.z));
   return smoothstep(line - 0.02, line + 0.05, c.y);
+}
+uniform float uFem;          // 1 = female mesh
+uniform vec4 uBra;           // female sports top: inframammary-fold y, bust-point y, bust-point x, suprasternal-notch y (canonical dm)
+float hairMaskF(vec3 c){
+  float ax = abs(c.x), ey = uEyeRef.x, ez = uEyeRef.z;
+  float front = ey + 0.6 - 0.05 * smoothstep(0.2, 0.6, ax);
+  float side = ey - 0.08;
+  float backL = uEyeRef.w + 0.3;
+  float line = mix(front, side, smoothstep(0.42, 0.66, ax));
+  line = mix(line, backL, smoothstep(ez - 1.0, ez - 1.5, c.z));
+  // ears stay skin (the hair is swept back behind them)
+  float ear = smoothstep(0.66, 0.74, ax) * smoothstep(ez - 1.15, ez - 1.05, c.z) * (1.0 - smoothstep(ez - 0.62, ez - 0.52, c.z))
+            * smoothstep(ey - 0.7, ey - 0.6, c.y) * (1.0 - smoothstep(ey + 0.12, ey + 0.2, c.y));
+  return smoothstep(line - 0.02, line + 0.05, c.y) * (1.0 - ear);
+}
+// Sports top as a material region in canonical space (no geometry): a band under the bust, a scoop neckline rising
+// to the cup tops, side panels up to the armpits, a low back with a racer-back converging to the spine, and straps
+// over the shoulders. Returns 0..1 (anti-aliased by fw).
+float braMask(vec3 c, float fw, float part){
+  float ax = abs(c.x), y = c.y, imf = uBra.x, nip = uBra.y, nx = uBra.z, notch = uBra.w;
+  float bottom = imf - 0.30;
+  float fb = smoothstep(-0.1, 0.55, c.z);                                       // 1 front … 0 back
+  float scoop = nip + 0.40 + 0.40 * smoothstep(0.05, nx * 0.95, ax);
+  float topF = mix(scoop, nip + 0.40, smoothstep(nx * 1.05, nx * 1.4, ax));
+  float topB = nip + 0.12 + 0.28 * smoothstep(nx * 1.2, nx * 1.5, ax);
+  float top = mix(topB, topF, fb);
+  // the panel stays on the trunk: fragments interpolated toward the arm (part → 2) are left bare, so raised arms
+  // never drag a "sleeve" of fabric up from the armpit
+  float panel = smoothstep(bottom - fw, bottom + fw, y) * (1.0 - smoothstep(top - fw, top + fw, y)) * (1.0 - smoothstep(0.45, 0.6, part));
+  float scF = nx * 0.88, scB = mix(0.2, nx * 0.88, smoothstep(nip, notch - 0.2, y));
+  float sc = mix(scB, scF, fb), sw = 0.15;
+  float strap = (1.0 - smoothstep(sw - fw, sw + fw, abs(ax - sc))) * smoothstep(bottom + 0.3, bottom + 0.4, y);
+  return max(panel, strap);
 }
 out vec4 frag;
 float ss(float a, float b, float x){ float t = clamp((x-a)/(b-a), 0., 1.); return t*t*(3.-2.*t); }
@@ -1504,20 +1730,24 @@ float defField(vec3 c){
   // block dome: bulge in the middle of each block (cosine across x and between intersections)
   float bx = 0.5 - 0.5 * cos(clamp(x / 0.6, 0.0, 1.0) * 6.2832);
   float by = 0.5 + 0.5 * cos(clamp((y - nav + 0.14) / 0.48, -0.6, 2.4) * 6.2832);
-  h += (bx * by * 0.35 - lin * 0.9 - ints * 0.65 * inRect - lat * 0.8) * absBand * front;
+  float up = uDefMix.x, full = uDefMix.y, sep = uDefMix.z;
+  ints = groove(y - i1, 0.05) * full + groove(y - i2, 0.05) * mix(up, full, 0.5) + 0.8 * groove(y - i3, 0.055) * up;
+  h += (bx * by * 0.35 * full - lin * 0.9 * up - ints * 0.65 * inRect - lat * 0.8 * up) * absBand * front;
   // inguinal "V" lines
   float vy = mix(pub + 0.05, nav - 0.35, ss(0.25, 1.05, x));
-  h -= groove(y - vy, 0.07) * ss(0.2, 0.35, x) * (1.0 - ss(1.0, 1.15, x)) * 0.8 * front;
-  // lower pec border
-  float pecY = nip - 0.42 + 0.22 * (x - uCanon.w) * (x - uCanon.w);
-  h -= groove(y - pecY, 0.08) * ss(0.15, 0.3, x) * (1.0 - ss(1.25, 1.45, x)) * 0.6 * front;
+  h -= groove(y - vy, 0.07) * ss(0.2, 0.35, x) * (1.0 - ss(1.0, 1.15, x)) * 0.8 * front * full;
+  // lower pec border (male only: on the female body it would sit on the breast)
+  if (uFem < 0.5) {
+    float pecY = nip - 0.42 + 0.22 * (x - uCanon.w) * (x - uCanon.w);
+    h -= groove(y - pecY, 0.08) * ss(0.15, 0.3, x) * (1.0 - ss(1.25, 1.45, x)) * 0.6 * front * sep;
+  }
   // serratus digitations on the lateral ribcage
   float sy = (y - (nip - 0.95)) + (x - 1.05) * 0.7;
   float ser = 0.5 + 0.5 * cos(sy * 15.0);
-  h -= ser * ss(0.95, 1.12, x) * (1.0 - ss(1.4, 1.55, x)) * ss(nip - 1.15, nip - 0.85, y) * (1.0 - ss(nip - 0.25, nip, y)) * ss(-0.1, 0.4, c.z) * 0.45;
+  h -= ser * ss(0.95, 1.12, x) * (1.0 - ss(1.4, 1.55, x)) * ss(nip - 1.15, nip - 0.85, y) * (1.0 - ss(nip - 0.25, nip, y)) * ss(-0.1, 0.4, c.z) * 0.45 * full;
   // back: spinal erector groove (lower back) and a soft lat/scapula edge
   float back = ss(0.0, -0.45, c.z);
-  h -= groove(x, 0.07) * ss(pub, nav + 0.3, y) * (1.0 - ss(nip, nip + 0.6, y)) * back * 0.8;
+  h -= groove(x, 0.07) * ss(pub, nav + 0.3, y) * (1.0 - ss(nip, nip + 0.6, y)) * back * 0.8 * up;
   return h;
 }
 vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), 0., 1.); }
@@ -1538,39 +1768,53 @@ void main(){
   float fw = max(fwidth(vC.y), 1e-4);   // anti-aliased fabric edges (a hard step aliased into jaggies at the hem)
   float shorts = legOrTorso ? ss(hem - fw, hem + fw, vC.y) * (1.0 - ss(waistband - fw, waistband + fw, vC.y)) : 0.0;
   float band = shorts * ss(waistband - 0.16, waistband - 0.12, vC.y);
+  // female: sports top (torso, plus the neck part only where the straps cross the trapezius)
+  float cloth = shorts, bra = 0.0, braBand = 0.0;
+  if (uFem > 0.5 && vPart < 1.5 && vC.y < uBra.w + 0.6) {
+    bra = braMask(vC, max(fwidth(vC.y) + fwidth(vC.x), 1e-4), vPart);
+    braBand = bra * (1.0 - ss(uBra.x - 0.17, uBra.x - 0.13, vC.y));
+    cloth = max(shorts, bra);
+  }
   // definition: perturb the normal with the gradient of the field (torso front only)
-  if (uDef > 0.01 && torso && shorts < 0.5) {
+  if (uDef > 0.01 && max(uDefMix.x, max(uDefMix.y, uDefMix.z)) > 0.005 && torso && cloth < 0.5) {
     float e = 0.02;
     float h0 = defField(vC);
     vec3 g = vec3(defField(vC + vec3(e,0,0)) - h0, defField(vC + vec3(0,e,0)) - h0, 0.0) / e;
     g.x *= sign(vC.x + 1e-5) * sign(vC.x + 1e-5);
-    float k = uDef * 0.04;
+    float k = uDef * 0.042;
     N = normalize(N - k * (g - dot(g, N) * N));
   }
   vec3 base = uSkin;
   float rough = 0.42, specK = 0.32;
   base = mix(base, mix(vec3(0.028, 0.028, 0.034), vec3(0.95, 0.30, 0.12), band), shorts); rough = mix(rough, 0.85, shorts); specK = mix(specK, 0.06, shorts);
+  if (uFem > 0.5) { base = mix(base, mix(vec3(0.028, 0.028, 0.034), vec3(0.95, 0.30, 0.12), braBand), bra); rough = mix(rough, 0.85, bra); specK = mix(specK, 0.06, bra); }
   if (vPart > 2.5) { base = uSkin * 0.42; rough = 0.2; specK = 0.8; }
   if (vPart > 0.5 && vPart < 1.5) {
-    // short hair cap + brows on the head
-    float hm = hairMask(vC);
+    // hair cap + brows on the head (female: hairline per hairMaskF)
+    float hm = uFem > 0.5 ? hairMaskF(vC) : hairMask(vC);
     float ax = abs(vC.x);
     float brow = smoothstep(0.1, 0.16, ax) * (1.0 - smoothstep(0.5, 0.6, ax)) * smoothstep(uEyeRef.x + 0.13, uEyeRef.x + 0.17, vC.y + 0.06 * ax)
                * (1.0 - smoothstep(uEyeRef.x + 0.23, uEyeRef.x + 0.27, vC.y + 0.06 * ax)) * smoothstep(uEyeRef.z - 0.15, uEyeRef.z + 0.05, vC.z);
+    if (uFem > 0.5) {   // thinner, arched brows (peak ≈ 2/3 of the way out), a little softer
+      float u = (ax - 0.36) / 0.26, yb = uEyeRef.x + 0.175 + 0.045 * (1.0 - u * u);
+      brow = smoothstep(0.08, 0.13, ax) * (1.0 - smoothstep(0.54, 0.62, ax)) * smoothstep(yb - 0.035, yb - 0.015, vC.y)
+           * (1.0 - smoothstep(yb + 0.015 - 0.01 * u, yb + 0.035 - 0.01 * u, vC.y)) * smoothstep(uEyeRef.z - 0.15, uEyeRef.z + 0.05, vC.z) * 0.8;
+    }
     float n = fract(sin(dot(floor(vC * 140.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
     vec3 hair = vec3(0.034, 0.025, 0.02) * (0.85 + 0.3 * n);
     base = mix(base, hair, max(hm, brow * 0.85));
     rough = mix(rough, 0.7, hm); specK = mix(specK, 0.12, hm);
   }
-  float ao = 1.0 - 0.55 * vCav;
+  // crease depth (cavity AO) on the trunk and limbs follows muscle separation (BF_CAL), the head keeps the base value
+  float ao = 1.0 - 0.55 * vCav * ((vPart > 0.5 && vPart < 1.5) ? 1.0 : 0.8 + 0.35 * uDefMix.z);
   vec3 col = vec3(0.0);
   vec3 L[4]; L[0] = uKey; L[1] = uFill; L[2] = uRim; L[3] = uRim2;
   vec3 C[4]; C[0] = vec3(1.0, 0.95, 0.9) * 2.0; C[1] = vec3(0.6, 0.68, 0.85) * 0.5; C[2] = vec3(1.0, 0.86, 0.72) * 1.2; C[3] = vec3(0.6, 0.72, 1.0) * 0.85;
   for (int i = 0; i < 4; i++) {
     vec3 l = normalize(L[i]);
     float nl = dot(N, l);
-    float wrap = mix(max((nl + 0.35) / 1.35, 0.0), max(nl, 0.0), shorts);
-    vec3 sss = (1.0 - shorts) * vec3(0.3, 0.08, 0.03) * ss(0.3, -0.05, nl) * ss(-0.5, 0.0, nl);
+    float wrap = mix(max((nl + 0.35) / 1.35, 0.0), max(nl, 0.0), cloth);
+    vec3 sss = (1.0 - cloth) * vec3(0.3, 0.08, 0.03) * ss(0.3, -0.05, nl) * ss(-0.5, 0.0, nl);
     vec3 hv = normalize(l + V);
     float nh = max(dot(N, hv), 0.0);
     float a2 = rough * rough * rough * rough;
@@ -1585,7 +1829,7 @@ void main(){
   col *= mix(1.0, ao, 0.8);
   // rim fresnel
   float fr = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-  col += vec3(0.9, 0.7, 0.55) * fr * 0.18 * mix(1.0, 0.3, shorts);
+  col += vec3(0.9, 0.7, 0.55) * fr * 0.18 * mix(1.0, 0.3, cloth);
   col = aces(col * 0.85);
   frag = vec4(pow(col, vec3(1.0 / 2.2)), 1.0);
 }`;
@@ -1756,14 +2000,19 @@ export function mountBody3D(el, opts = {}) {
     resize();
   }
   function uploadStatic() {
-    const n = A.nMesh;
-    bufs.idx = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bufs.idx); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, A.tris, gl.STATIC_DRAW); nIdx = A.tris.length;
-    bufs.joint = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufs.joint); gl.bufferData(gl.ARRAY_BUFFER, A.skinIdx.subarray(0, n * 4), gl.STATIC_DRAW);
-    const w8 = new Uint8Array(n * 4); for (let i = 0; i < n * 4; i++) w8[i] = Math.round(A.skinW[i] * 255);
+    const n = A.nMesh, nb = A.bun ? A.bun.n : 0;   // nb: female hair-bun vertices appended after the body
+    const cat = (T, a, b) => { const o = new T(a.length + b.length); o.set(a); o.set(b, a.length); return o; };
+    const tris = nb ? cat(Uint16Array, A.tris, A.bun.tris) : A.tris;
+    bufs.idx = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bufs.idx); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, tris, gl.STATIC_DRAW); nIdx = tris.length;
+    bufs.joint = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufs.joint);
+    gl.bufferData(gl.ARRAY_BUFFER, nb ? cat(Uint8Array, A.skinIdx.subarray(0, n * 4), new Uint8Array(nb * 4).fill(A.B.head)) : A.skinIdx.subarray(0, n * 4), gl.STATIC_DRAW);
+    const w8 = new Uint8Array((n + nb) * 4); for (let i = 0; i < n * 4; i++) w8[i] = Math.round(A.skinW[i] * 255);
+    for (let k = 0; k < nb; k++) w8[(n + k) * 4] = 255;
     bufs.weight = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufs.weight); gl.bufferData(gl.ARRAY_BUFFER, w8, gl.STATIC_DRAW);
-    bufs.canon = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufs.canon); gl.bufferData(gl.ARRAY_BUFFER, A.base.subarray(0, n * 3), gl.STATIC_DRAW);
+    const canon = nb ? cat(Float32Array, A.base.subarray(0, n * 3), new Float32Array(nb * 3).map((_, i) => A.bun.canon[i % 3])) : A.base.subarray(0, n * 3);
+    bufs.canon = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufs.canon); gl.bufferData(gl.ARRAY_BUFFER, canon, gl.STATIC_DRAW);
     // kind: 0 torso/legs (shorts + definition eligible), 1 head/neck, 2 arm, 3 eye — interpolates safely
-    const kind = new Uint8Array(n); for (let i = 0; i < n; i++) { const pt = A.part[i]; kind[i] = pt === 6 ? 3 : pt === 1 ? 1 : pt === 2 || pt === 3 ? 2 : 0; }
+    const kind = new Uint8Array(n + nb).fill(1); for (let i = 0; i < n; i++) { const pt = A.part[i]; kind[i] = pt === 6 ? 3 : pt === 1 ? 1 : pt === 2 || pt === 3 ? 2 : 0; }
     bufs.part = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufs.part); gl.bufferData(gl.ARRAY_BUFFER, kind, gl.STATIC_DRAW);
     for (const k of ['main', 'ghost']) { bufs[k + 'Pos'] = gl.createBuffer(); bufs[k + 'Nrm'] = gl.createBuffer(); bufs[k + 'Cav'] = gl.createBuffer(); bufs[k + 'Flare'] = gl.createBuffer(); }
     const mk = (k) => {
@@ -1781,10 +2030,12 @@ export function mountBody3D(el, opts = {}) {
   }
   function uploadFit(f, k) {
     if (!bufs.idx) uploadStatic();
-    gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k + 'Pos']); gl.bufferData(gl.ARRAY_BUFFER, f.rest, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k + 'Nrm']); gl.bufferData(gl.ARRAY_BUFFER, f.restNrm, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k + 'Cav']); gl.bufferData(gl.ARRAY_BUFFER, f.cavity, gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k + 'Flare']); gl.bufferData(gl.ARRAY_BUFFER, f.flare, gl.DYNAMIC_DRAW);
+    const b = f.bun, cat = (a, c) => { if (!b) return a; const o = new Float32Array(a.length + c.length); o.set(a); o.set(c, a.length); return o; };
+    const nb = b ? b.pos.length / 3 : 0;   // female hair bun (cavity −1 marks it: no hair-cap lift, no AO)
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k + 'Pos']); gl.bufferData(gl.ARRAY_BUFFER, cat(f.rest, b && b.pos), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k + 'Nrm']); gl.bufferData(gl.ARRAY_BUFFER, cat(f.restNrm, b && b.nrm), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k + 'Cav']); gl.bufferData(gl.ARRAY_BUFFER, cat(f.cavity, new Float32Array(nb).fill(-1)), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k + 'Flare']); gl.bufferData(gl.ARRAY_BUFFER, cat(f.flare, new Float32Array(nb * 3)), gl.DYNAMIC_DRAW);
   }
   function freeGL() {
     if (!gl) return;
@@ -1867,6 +2118,11 @@ export function mountBody3D(el, opts = {}) {
     gl.uniform4f(L.uCanon, c[lm.navelV * 3 + 1], c[lm.nippleV * 3 + 1], c[lm.crotchV * 3 + 1], Math.abs(c[lm.nippleV * 3]));
     gl.uniform4f(L.uCanon2, c[A.bones[A.B.uarm1L].head * 3 + 1], c[A.bones[A.B.shinL].head * 3 + 1], c[lm.chinV * 3 + 1], c[lm.crotchV * 3 + 1] + 0.55);
     gl.uniform4i(L.uUA, A.B.uarm1L, A.B.uarm2L, A.B.uarm1R, A.B.uarm2R);
+    const fem = A.sex === 'female';
+    gl.uniform1f(L.uFem, fem ? 1 : 0);
+    if (fem) {
+      gl.uniform4f(L.uBra, c[lm.imfV * 3 + 1], c[lm.nippleV * 3 + 1], Math.abs(c[lm.nippleV * 3]), c[A.notchV * 3 + 1]);
+    }
     const drawBody = (f, vao, ghost) => {
       const p = ghost ? currentPose(f, pt) : pose;
       const { M } = skinMatrices(A, f.heads, p, ghost ? footOffset(f, p) : off);
@@ -1875,8 +2131,10 @@ export function mountBody3D(el, opts = {}) {
       gl.uniform3fv(L.uArmA, [...aL.a, ...aR.a]); gl.uniform3fv(L.uArmB, [...aL.b, ...aR.b]); gl.uniform3fv(L.uArmF, [...aL.front, ...aR.front]);
       const fx = p.flex * f.flexAmp; gl.uniform2f(L.uFlex, fx, fx);
       gl.uniform1f(L.uLat, p.lat || 0);
-      const mAvg = Object.values({ ...DEF_MUSCLE, ...(f.muscle || {}) }).reduce((t, x) => t + x, 0) / 8;
-      gl.uniform1f(L.uDef, ghost ? 0 : clamp(sstep(18, 9, f.bf) * (0.55 + 0.7 * mAvg), 0, 1.2));
+      const mAvg = Object.values({ ...DEF_MUSCLE, ...(f.muscleEff || {}) }).reduce((t, x) => t + (num(x) ?? 0.4), 0) / 8;
+      const dl = definitionLevels(f.bf, mAvg, f.sex);   // BF_CAL heuristic (DXA-equivalent body fat)
+      gl.uniform1f(L.uDef, ghost ? 0 : 1);
+      gl.uniform3f(L.uDefMix, dl.upper, dl.full, dl.sep);
       gl.uniform1f(L.uGhost, ghost ? 1 : 0);
       gl.bindVertexArray(vao);
       gl.drawElements(gl.TRIANGLES, nIdx, gl.UNSIGNED_SHORT, 0);
@@ -1982,14 +2240,23 @@ export function mountBody3D(el, opts = {}) {
   }
 
   try { initGL(); } catch (err) { root.classList.add('b3m-failed'); loadEl.textContent = '3D unavailable'; }
-  loadBodyAsset().then(asset => {
-    if (dead) return;
-    A = asset;
-    if (gl && !lost) uploadStatic();
-    refit();
-    loadEl.style.display = 'none';
-    requestRender();
-  }).catch(err => { loadEl.textContent = '3D model failed to load'; console.warn('[body3d-mesh]', err); });
+  // the asset follows the sex (opts.sex › shape.sex › profile.body.sex); "now" and "projected" share it
+  let sex = sexOf(o);
+  function loadAsset(sx) {
+    loadBodyAsset(null, sx).then(asset => {
+      if (dead || sx !== sex) return;
+      if (A && A !== asset) {   // sex switched while mounted: new canonical mesh → fresh static buffers and fits
+        fitCache.clear(); fit = ghostFit = null; fitKey = ghostKey = '';
+        if (gl && !lost) { freeGL(); A = asset; initGL(); }
+      }
+      A = asset;
+      if (gl && !lost && !bufs.idx) uploadStatic();
+      refit();
+      loadEl.style.display = 'none';
+      requestRender();
+    }).catch(err => { loadEl.textContent = '3D model failed to load'; console.warn('[body3d-mesh]', err); });
+  }
+  loadAsset(sex);
 
   return {
     canvas,
@@ -1997,6 +2264,10 @@ export function mountBody3D(el, opts = {}) {
       o = { ...o, ...next };
       if ('label' in next) setLabel();
       if ('pose' in next && next.pose && next.pose !== poseName) setPose(next.pose);
+      if ('sex' in next || (next.shape && 'sex' in next.shape)) {
+        const sx = sexOf(o);
+        if (sx !== sex) { sex = sx; loadEl.style.display = ''; loadAsset(sx); return; }
+      }
       refit(); requestRender();
     },
     setPose,
@@ -2004,7 +2275,9 @@ export function mountBody3D(el, opts = {}) {
     setView(yaw, pitch = cam.pitch, zoom = cam.zoom, focus = null) {
       camAnim = null; cam.yaw = yaw; cam.pitch = pitch; cam.zoom = clamp(zoom, 0.8, 6); cam.focus = focus; cam.vy = cam.vp = 0; requestRender();
     },
-    stats: () => ({ fitMs: fit ? fit.ms : 0, frameMs, verts: A ? A.nMesh : 0, tris: A ? A.tris.length / 3 : 0, ready: !!fit, report: fit && fit.report }),
+    stats: () => ({ fitMs: fit ? fit.ms : 0, frameMs, verts: A ? A.nMesh : 0, tris: A ? A.tris.length / 3 : 0, ready: !!fit, report: fit && fit.report,
+      sex: A ? A.sex : sex, cup: fit ? fit.cup : 0 }),
+    getSex: () => sex,
     destroy() {
       dead = true; if (raf) cancelAnimationFrame(raf); raf = 0;
       if (ro) ro.disconnect();

@@ -45,6 +45,13 @@ const state = {
   muscle: { chest: 0.4, delts: 0.4, lats: 0.4, arms: 0.45, abs: 0.4, quads: 0.55, calves: 0.5, traps: 0.4 },
 };
 const qs = new URLSearchParams(location.search);
+// ?sex=female: the female mesh (CONTRACT §21) with a typical woman's tape (64 in, bust 35, natural waist 29, hips 39)
+const SEX = qs.get('sex') === 'female' ? 'female' : 'male';
+if (SEX === 'female') {
+  state.bodyFatPct = 29;
+  state.shape = { heightIn: 64, neck: 13, shoulders: 40, chest: 35, waist: 29, hips: 39, arm: 11.5, forearm: 9.5, thigh: 22, calf: 14 };
+  state.muscle = { chest: 0.26, delts: 0.26, lats: 0.26, arms: 0.26, abs: 0.26, quads: 0.3, calves: 0.26, traps: 0.26 };
+}
 if (qs.has('bf')) state.bodyFatPct = +qs.get('bf');
 if (qs.has('m')) for (const k in state.muscle) state.muscle[k] = +qs.get('m');
 for (const k of Object.keys(state.shape)) if (qs.has(k)) state.shape[k] = +qs.get(k);
@@ -68,18 +75,20 @@ function slider(label, get, set, min, max, step) {
   ctl.appendChild(l);
 }
 add('Body fat');
-slider('Body fat %', () => state.bodyFatPct, v => state.bodyFatPct = v, 6, 32, 0.5);
+slider('Body fat %', () => state.bodyFatPct, v => state.bodyFatPct = v, 6, 45, 0.5);
 add('Muscle scores');
 for (const k of Object.keys(state.muscle)) slider(k, () => state.muscle[k], v => state.muscle[k] = v, 0, 1, 0.05);
 add('Measurements (in)');
-const R = { neck: [12, 20], shoulders: [40, 60], chest: [34, 52], waist: [26, 46], hips: [32, 48], arm: [10, 20], forearm: [9, 15], thigh: [18, 30], calf: [12, 19], heightIn: [62, 78] };
+const R = SEX === 'female'
+  ? { neck: [10, 17], shoulders: [32, 52], chest: [28, 50], waist: [21, 44], hips: [30, 54], arm: [8, 17], forearm: [7.5, 13], thigh: [16, 32], calf: [11, 18], heightIn: [56, 74] }
+  : { neck: [12, 20], shoulders: [40, 60], chest: [34, 52], waist: [26, 46], hips: [32, 48], arm: [10, 20], forearm: [9, 15], thigh: [18, 30], calf: [12, 19], heightIn: [62, 78] };
 for (const k of Object.keys(state.shape)) if (R[k]) slider(k, () => state.shape[k], v => state.shape[k] = v, R[k][0], R[k][1], 0.25);
 
 let ghostOn = qs.has('ghost'), scaleOn = qs.has('scale'), auto = false, view = null;
 const mount = document.getElementById('mount');
 const statsEl = document.getElementById('stats');
 if (supported()) {
-  view = mountBody3D(mount, { ...state, pose: qs.get('pose') || 'relaxed', height: +(qs.get('h') || 420), showScale: scaleOn,
+  view = mountBody3D(mount, { ...state, sex: SEX, pose: qs.get('pose') || 'relaxed', height: +(qs.get('h') || 420), showScale: scaleOn,
     compareShape: ghostOn ? ghostShape() : null, onPose: p => syncPoseButtons(p) });
   window.viewer = view;
   // ?yaw=&pitch=&zoom=&fy= (fy: camera focus height as a fraction of stature, e.g. 0.92 for a head close-up)
@@ -112,7 +121,7 @@ setInterval(() => {
   const s = view.stats();
   if (!s.ready) { statsEl.textContent = 'loading…'; return; }
   const sh = s.report.shoulders;
-  statsEl.textContent = `fit ${s.fitMs.toFixed(0)} ms · frame ${s.frameMs.toFixed(2)} ms · ${s.verts} verts / ${s.tris} tris · shoulders loop ${sh.girth.toFixed(2)}/${sh.target.toFixed(2)} in`;
+  statsEl.textContent = `${s.sex} · fit ${s.fitMs.toFixed(0)} ms · frame ${s.frameMs.toFixed(2)} ms · ${s.verts} verts / ${s.tris} tris · shoulders loop ${sh.girth.toFixed(2)}/${sh.target.toFixed(2)} in` + (s.sex === 'female' ? ` · cup ${s.cup.toFixed(2)}` : '');
 }, 500);
 </script>
 </body>

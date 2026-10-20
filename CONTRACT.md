@@ -832,3 +832,67 @@ Tests: `test/accounts-store.test.js` (isolation: default keys byte-identical thr
 export/import/_reset scoping, recovery), `test/accounts-cloud.test.js` (fake GoTrue + PostgREST behind a mocked fetch:
 unconfigured, sign-up/in/refresh/sign-out, pull/push/merge/tombstones, first-sign-in choices, clock skew, OAuth fragment,
 deletion), e2e A1–A3 (A3 drives the cloud UI against a route-intercepted fake Supabase). Setup: `docs/accounts-setup.md`.
+## 21. Female 3D body (2026-10-20)
+Bob: female mode with female models, held to the same bar as the male 3D ("accurate and to scale", realistic poses,
+smooth head-to-neck transition). App Store review risk: the bodies must not read as nude.
+
+| Path | Owner |
+|---|---|
+| `scripts/build-body-mesh.mjs`, `assets/body/*`, `js/ui/body3d*.js`, `js/engine/anthro.js`, `js/ui/silhouette.js`, `tools/body3d*-demo.html`, `test/anthro-female.test.js`, `test/mesh-female.test.js`, e2e `S4` | FEMALE-3D |
+
+**Sex source.** `profile.body.sex` (`'male'` default). The 3D (`mountBody3D`) and the SVG fallback (`silhouetteSVG`)
+resolve it as `opts.sex` › `shape.sex` (or `measurements.sex`) › `store.getProfile().body.sex` › `'male'`, so callers
+need no change; `update({ sex })` switches a mounted view. "Now", "projected" (blink) and the ghost share one asset.
+
+**Asset.** `assets/body/body-female.{json,bin}` (≈ 6 KB + 689 KB), built with `node scripts/build-body-mesh.mjs <mh-data>
+assets/body --sex=female` from MakeHuman CC0 data at commit a8bc2d54ff0ac92e78ff71431b1023eda42bf482: base mesh,
+skeleton and skin weights as the male asset (same topology, 30-bone skeleton), default shape = young female ethnic
+blend (caucasian 0.7 / african 0.15 / asian 0.15, the male weights) + universal-female-young average muscle/weight,
+morph grid = `universal-female-young-*muscle-*weight`, plus two sparse cup-size morphs (breast min/max cup) and an
+inframammary-fold landmark `imfV`. Fetched lazily only for female profiles (male users download nothing extra; the
+service worker caches it at runtime on first view, it is deliberately not in the precache list). The male
+`body.{json,bin}` is byte-identical to the previous build (its meta has no `sex` key).
+
+**Anthropometry (`anthro.js`, `sex: 'female'`).** Female tables from the ANSUR II public FEMALE file (Gordon et al.
+2014, NATICK/TR-15/007, via Penn State OPEN Lab; n = 1,986, median stature 64.0 in), computed exactly like the male
+[AN2] numbers (median of length / stature; 0.1–99.9 pct). Skeletal heights / segments = male table value × the
+female ÷ male ratio of the defining ANSUR II measure (keeps the calibrated joint-centre conventions). Tape lengths:
+shoulder–elbow 0.2050 H, olecranon–ulnar styloid 0.1550 H, trochanterion–tibiale 0.2505 H, tibiale–lateral malleolus
+0.2300 H (women's legs are proportionally longer). Female tape sites: `chest` = bust (fullest, bust point 0.719 H),
+`waist` = natural waist (WHO midpoint of lowest rib and iliac crest, 0.628 H ≈ 1.8 in above the navel; `heights.navel`
+0.600 H is separate), `hips` = widest (0.512 H), `thigh` below the gluteal fold. Underbust (inframammary fold) is a
+model value — bust × (0.862 + 0.0035 × (28 − BF)), fold 0.030 H + 0.22 × (bust − underbust) below the bust point —
+or an optional `underbust` tape. Female head (ANSUR II medians: breadth 5.79, length 7.48, circumference 22.05,
+bizygomatic 5.28, height 8.6 in at 64 in), wider pelvis (bicristal ratio 1.067), female plausibility ranges, sanity
+rules (shoulders ≈ 1.0–1.2 × bust; hips up to 1.75 × natural waist) and per-side bone overrides with female landmark
+offsets. `proportions(sex)` exposes the tables. The old "male ratios scaled by height" warning is gone. Every girth is
+reproduced within ±1 % on the fitted mesh (tests). Male output is unchanged.
+
+**Renderer.** Same fit pipeline (macro morphs → pose to anthro's rest pose → vertical remap → station girths →
+Taubin-smoothed field → un-skin), with: the navel anchored to `heights.navel` and the fold to `landmarks.underbust`;
+cup weight from bust ÷ underbust; ANSUR II female head targets; muscle scores (absolute FFMI scale from the engine)
+shifted by +3.5/9 onto MakeHuman's sex-relative muscle axis (FFMI medians ≈ 18.9 men vs 15.4 women); the pec sculpt
+and pec-border groove kept off the breasts; all five poses unchanged (they work on the female skeleton).
+Modesty: the base mesh's nipples and crotch crease are Taubin-smoothed before the fit (girths still exact); the
+female body wears a sports top (scoop neck, racer-back, under-bust band) and the same shorts as the male body, all as
+shader material regions in canonical space (no geometry; fitting uses the body surface). The male body keeps its
+shorts. A hair bun (small ellipsoid on the head bone) is renderer-only geometry appended after the body vertices.
+
+**Visual body-fat calibration (both sexes; `BF_CAL`, `definitionLevels`).** `bodyFatPct` is treated as
+DXA-equivalent. Average-look anchor (MakeHuman average weight) = population-median DXA body fat of young adults:
+25 % men, 36 % women (NHANES DXA, Kelly et al. 2009; rounded); the weight morph's character is modest (±0.35 of its
+axis over ±14 points) because the tapes already carry the fat volume. Definition is a HEURISTIC (no validated
+visual-body-fat data exists; coaching rules of thumb converted to DXA): men — upper-ab outline from ≈ 18 %, full abs
+by ≈ 12.5 %, delt/arm/chest separation from ≈ 23 % (to ≈ 14 %), all scaled by the mean muscle score; women ≈ +8
+points on every threshold (26 / 20.5 / 31 → 22) and slightly softer lines. All terms are smoothsteps (no cutoffs).
+Muscle-shape sculpt stays full through the separation range and softens only above it (−40 % at avg + 10).
+
+**SVG fallback.** `silhouetteSVG(m, { …, sex })`: female outline (narrower shoulders, bust and under-bust curve,
+natural waist, wider hips, closer knees, hair bun), female defaults / ranges, softer definition lines. Male output is
+byte-identical.
+
+**Tests.** `test/anthro-female.test.js` (tables, landmarks, ±1 % girths, length medians, bone overrides, shoulder
+frame, male unchanged), `test/mesh-female.test.js` (asset selection by sex incl. a fetch stub, asset structure,
+three female bodies fitted within ±1 % on bust / natural waist / hips and ±3 % elsewhere, head, poses, cup, modesty,
+bun, muscle shift, BF calibration smooth/monotone/shifted), e2e `S4` (female profile mounts the female 3D on Body and
+Projection, fetches `body-female.bin` and not `body.bin`, no page errors).
