@@ -4,7 +4,7 @@
 // user's tape measurements:
 //   1. MakeHuman macro targets (muscle × weight grid) give the body its muscular / fat character, per region
 //      (muscle scores) and from body-fat %.
-//   2. The mesh is posed into anthro.js' rest pose (arms hanging, palms to thighs) with linear-blend skinning.
+//   2. The mesh is posed into anthro.js' rest pose (arms hanging, semi-pronated) with linear-blend skinning.
 //   3. In that pose every landmark height is remapped (monotone cubic) onto anthro's heights, the arm joints
 //      are moved onto anthro's joints, and horizontal cross-sections are scaled about their centres so the
 //      convex-hull perimeter (what a tape reads) hits anthro's section at every profile station (all tape
@@ -36,10 +36,19 @@
 //     by stature only, so swapping shape (e.g. "now" ↔ "projected" blink) keeps floor, scale and framing fixed.
 //     The last 4 fitted bodies are cached by (shape, bodyFatPct, muscle), so switching back and forth never refits.
 //   - Pure helpers for tests/tools: decodeBodyAsset, fitBody, poseGlobals, skinMatrices, skinPositions,
-//     sliceHull, flexGirthAt, POSE_SPECS, HEAD_REF, headTargets, headDims, sideJoints, taubinField, fieldRoughness.
+//     sliceHull, flexGirthAt, POSE_SPECS, FIT_POSE, POSE_MS, poseEase, HEAD_REF, headTargets, headDims, sideJoints,
+//     taubinField, fieldRoughness.
 //     fit.src = posed source before fitting (for smoothness metrics), fit.joints = per-side joints used.
 //   - Flexed poses (front/back double biceps, side chest) bulge the upper arm to the flexed biceps tape
 //     (anthro: arm/forearm tapes are flexed; the hanging rest arm uses the relaxed girth).
+//   - Poses (MESH-4): the fit runs in POSE_SPECS.rest (FIT_POSE, anthro's rest joints, no weight shift); 'relaxed' is
+//     that body with a subtle contrapposto (weight on the right leg, pelvis 4°, counter-tilted shoulders, level head,
+//     soft left knee), so it keeps the fitted girths. Hands: the bind hand's ~15° palmar flexion is removed (wrist on
+//     the forearm axis) and the relaxed fingers curl in a soft cascade, which puts the fingertip at ≈ 0.38 H (it hung
+//     at 0.395 H and made the upper arm read long). Legs of authored poses are two-bone IK to foot placements (toe-out,
+//     heel raise pivoting on the toe pads, knee aim); the pelvis drops just enough that both feet reach (pose.root).
+//     Transitions: POSE_MS (450 ms) with poseEase (smootherstep, no overshoot); the lowest ankle stays at its fitted
+//     height. Pure extras for tests: FIT_POSE, POSE_MS, poseEase.
 import { bodyGeometry } from '../engine/anthro.js';
 
 export const POSES = ['relaxed', 'front_double_biceps', 'lat_spread', 'side_chest', 'back_double_biceps'];
@@ -622,37 +631,72 @@ function restFrames(A, sk) {
 function boneLen(heads, A, a, b) { return vlen(vsub(heads[A.B[b]], heads[A.B[a]])); }
 
 // Pose authoring: directions in body space (x = subject's left, y up, z forward) for the LEFT side; the right
-// side mirrors x unless given. u = upper arm (shoulder→elbow), f = forearm (elbow→wrist), palm = palm normal.
+// side mirrors x unless given. u = upper arm (shoulder→elbow), f = forearm (elbow→wrist), palm = palm normal,
+// wrist = hand flexion toward the palm (rad) from the forearm axis, curl = finger curl (0 open … 1 fist).
+// Torso (degrees unless noted): pelvis { yaw (rad), tilt (+ = subject's left hip up), pitch (+ = anterior tilt) },
+// spine { twist (rad, chest yaw), side (+ = left shoulder up), lean (rad, − = chest lifted / extended) },
+// head { yaw (rad), roll, pitch } (default: level, facing with the chest). clav / clavL / clavR { elev (deg),
+// retract (rad, − = protracted) }. shift = [lateral, forward] root shift in inches (weight over the standing leg).
+// feet { L, R }: { at: [outward, forward] ankle offset from the rest stance (inches at 69 in, scaled with stature),
+// out (deg toe-out, the knee follows), heel (deg heel raise, pivoting on the toe pads), knee (deg extra knee aim
+// inward + / outward −) }. Legs are solved with two-bone IK to those ankle targets; the pelvis drops just enough
+// that both feet reach, so no pose floats or sinks. Poses without `feet` keep anthro's rest legs.
+// 'rest' is the FIT pose (not a user pose): anthro's rest joints, no weight shift. Every girth / length / height is
+// fitted in it; 'relaxed' is the same arms and body with a subtle contrapposto, so it keeps the fitted girths.
+const RELAXED_ARMS = { palm: [-0.94, 0, -0.34], wrist: 0.03, curl: [0.07, 0.28] };   // semi-pronated (thumbs forward), wrist ~neutral, fingers softly curled
 export const POSE_SPECS = {
-  relaxed: { view: { yaw: 0.32, pitch: 0.06 }, curl: 0.12, flex: 0 },
-  // upper arms ~horizontal (abducted ~95°), elbows flexed ~110° so fists come up beside the head
+  rest: { view: { yaw: 0.32, pitch: 0.06 }, flex: 0, ...RELAXED_ARMS },
+  // weight on the right leg: the left hip drops ~4°, the left knee softens with the foot a little forward and out,
+  // the shoulder line counter-tilts, the head stays level, a slight lumbar curve (pelvis tipped forward 3°)
+  relaxed: {
+    view: { yaw: 0.32, pitch: 0.06 }, flex: 0, ...RELAXED_ARMS,
+    pelvis: { tilt: -4, pitch: 3 }, spine: { side: 2.5, lean: -0.02 }, shift: [-0.6, 0],
+    feet: { L: { at: [0.5, 1.4], out: 10, knee: 4 }, R: { at: [-0.4, -0.2], out: 4 } },
+  },
+  // upper arms just above horizontal and a little forward of the frontal plane, elbows ~105°, fists supinated
+  // toward the head with the wrists slightly flexed; chest up, lats slightly flared; feet ~shoulder width, the left
+  // foot a touch forward and turned out, legs straight (quads set)
   front_double_biceps: {
-    view: { yaw: 0.0, pitch: 0.04 }, flex: 1, curl: 1, lat: 0.7,
-    arm: { u: [0.985, -0.02, 0.17], f: [-0.1, 0.995, -0.03], palm: [-0.5, -0.1, -0.86] },
-    clav: 4, legs: { t: [0.07, -1, 0.0], s: [0.035, -1, -0.02] },
+    view: { yaw: 0.0, pitch: 0.04 }, flex: 1, curl: 1, lat: 0.7, wrist: 0.32,
+    arm: { u: [0.945, 0.15, 0.29], f: [-0.5, 0.86, 0.08], palm: [-0.8, 0.05, -0.6] },
+    clav: { elev: 6, retract: 0.04 }, spine: { lean: -0.06 },
+    feet: { L: { at: [2.2, 1.6], out: 16 }, R: { at: [1.8, -0.4], out: 10 } },
   },
-  // fists on the waist, elbows forward, lats flared
+  // fists on the top of the hips / lower waist (knuckles on the obliques), elbows driven forward and out, scapulae
+  // protracted so the lats flare wide, chest lifted
   lat_spread: {
-    view: { yaw: 0.0, pitch: 0.04 }, flex: 0.3, curl: 1, lat: 1.6,
-    ik: { target: 'waist', pole: [0.45, -0.1, 0.9] }, palm: [-0.4, 0.2, -0.9],
-    clav: 3, chestScale: [1.02, 1, 1.02], legs: { t: [0.07, -1, 0.0], s: [0.035, -1, -0.02] },
+    view: { yaw: 0.0, pitch: 0.04 }, flex: 0.3, curl: 1, lat: 1.8, wrist: 0.15,
+    ik: { target: 'waist', pole: [0.55, -0.1, 0.83] }, palm: [-0.7, 0.3, 0.65], hand: [0.3, -0.75, -0.6],
+    clav: { elev: 5, retract: -0.26 }, spine: { lean: -0.07 }, chestScale: [1.03, 1, 1.02],
+    feet: { L: { at: [2.0, 1.2], out: 14 }, R: { at: [1.8, -0.4], out: 10 } },
   },
-  // left side to the camera: hips turned ~15°, chest ~45°, chest lifted, front (left) arm across the body, hands clasped
+  // left side to the camera (the camera sits ~80° to the left): hips nearly in profile, chest turned ~45° toward the
+  // camera and lifted, near (left) shoulder raised and forward; the front arm bent ~90° across the abdomen with the
+  // fist clenched, the rear hand gripping the front wrist; head turned to the camera; front (left) leg bent, knee
+  // forward and in, heel raised; rear leg straight, foot turned out
   side_chest: {
     view: { yaw: 1.42, pitch: 0.05 }, flex: 0.85, curl: 1, lat: 0.4,
-    pelvisTwist: 0.14, twist: 0.74, lean: -0.1, clav: 4,
-    armL: { ik: { target: 'clasp', offset: [0.9, 0, -0.1], pole: [0.9, -0.25, -0.6] }, palm: [-0.2, 0.9, -0.3] },
-    armR: { ik: { target: 'clasp', offset: [-0.9, -0.5, 0.5], pole: [-0.8, -0.55, -0.35] }, palm: [0.3, -0.2, -0.9] },
+    pelvis: { yaw: 0.16 }, spine: { twist: 0.76, lean: -0.11 }, head: { yaw: 1.12 },
+    clavL: { elev: 9, retract: -0.18 }, clavR: { elev: 3, retract: 0.12 },
+    armL: { ik: { target: 'clasp', offset: [0.3, 2.6, 1.6], pole: [0.75, -0.5, -0.45] }, palm: [-0.35, 0.85, -0.4], wrist: 0.2 },
+    armR: { ik: { target: 'wristL', offset: [-0.3, -0.8, -0.3], pole: [-0.85, -0.45, -0.25] }, palm: [0.25, 0.6, 0.75], wrist: 0.1 },
     chestScale: [1.0, 1, 1.05],
-    legsL: { t: [0.06, -0.97, 0.24], s: [0.0, -0.99, -0.14] }, legsR: { t: [-0.05, -1, -0.03], s: [-0.03, -1, -0.02] },
+    feet: { L: { at: [-0.5, 3.4], out: 0, heel: 22, knee: 5 }, R: { at: [0.6, -0.6], out: 26 } },
   },
-  // the front double biceps from behind: scapulae retracted, elbows slightly back
+  // the front double biceps from behind: elbows slightly back, scapulae retracted, the left leg stepped back onto the
+  // ball of the foot (calf shown), right leg straight
   back_double_biceps: {
-    view: { yaw: Math.PI, pitch: 0.06 }, flex: 1, curl: 1, lat: 1.0, retract: 0.2,
-    arm: { u: [0.98, -0.02, -0.17], f: [-0.1, 0.995, -0.06], palm: [-0.5, -0.1, -0.86] },
-    clav: 7, legs: { t: [0.07, -1, 0.0], s: [0.035, -1, -0.02] },
+    view: { yaw: Math.PI, pitch: 0.06 }, flex: 1, curl: 1, lat: 1.0, wrist: 0.32,
+    arm: { u: [0.95, 0.19, -0.16], f: [-0.5, 0.86, -0.08], palm: [-0.78, 0.05, -0.62] },
+    clav: { elev: 10, retract: 0.22 }, spine: { lean: -0.05 },
+    feet: { L: { at: [0.6, -7.5], out: 6, heel: 22 }, R: { at: [1.4, 0.6], out: 12 } },
   },
 };
+export const FIT_POSE = 'rest';
+
+export const POSE_MS = 450;
+/** Pose-transition ease: smootherstep (zero velocity and acceleration at both ends, monotone, no overshoot). */
+export function poseEase(t) { t = clamp(t, 0, 1); return t * t * t * (t * (6 * t - 15) + 10); }
 
 function twoBoneIK(S, T, Lu, Lf, pole) {
   let d = vsub(T, S); let L = vlen(d);
@@ -661,31 +705,36 @@ function twoBoneIK(S, T, Lu, Lf, pole) {
   const a = (Lu * Lu - Lf * Lf + L * L) / (2 * L), h = Math.sqrt(Math.max(0, Lu * Lu - a * a));
   const pn = vnorm(vsub(pole, vmul(dn, vdot(pole, dn))));
   const E = vadd(vadd(S, vmul(dn, a)), vmul(pn, h));
-  return { u: vnorm(vsub(E, S)), f: vnorm(vsub(vadd(S, vmul(dn, L)), E)) };
+  return { u: vnorm(vsub(E, S)), f: vnorm(vsub(vadd(S, vmul(dn, L)), E)), pn, dn };
 }
 
 /**
- * Global bone rotations for a pose. ctx = { A, rest (bind heads), frames, geom, sections }.
- * Returns { q: [quat per bone], scale: {boneIdx: [sx,sy,sz]}, flex: [L, R] }.
+ * Global bone rotations for a pose. ctx = { A, rest (bind heads), frames, geom, sections, joints }.
+ * Returns { q: [quat per bone], scale: {boneIdx: [sx,sy,sz]}, root: [x,y,z] (root shift, inches), flex, lat }.
  */
 export function poseGlobals(ctx, name) {
   const { A, frames } = ctx;
   const nb = A.bones.length, B = A.B, q = new Array(nb).fill(null).map(QI), scale = {};
   const spec = POSE_SPECS[name] || POSE_SPECS.relaxed;
-  const heads = ctx.rest;
-  // torso chain: pelvis turn, cumulative spine twist, chest lift (extension)
-  const twist = spec.twist || 0, pt = spec.pelvisTwist || 0, lean = spec.lean || 0, Y = [0, 1, 0], X = [1, 0, 0];
-  const qPel = qAxis(Y, pt);
+  const heads = ctx.rest, G = ctx.joints || ctx.geom.joints, kH = (ctx.geom.heightIn || 69) / 69;
+  const X = [1, 0, 0], Y = [0, 1, 0], Z = [0, 0, 1], D = Math.PI / 180;
+  // torso chain: yaw · lateral bend · pitch per bone, blended pelvis → chest; the head is level unless told otherwise
+  const pel = spec.pelvis || {}, sp = spec.spine || {}, hs = spec.head || {};
+  const pYaw = pel.yaw || 0, twist = sp.twist ?? pYaw, lean = sp.lean || 0;
+  const tilt = (pel.tilt || 0) * D, pitch = (pel.pitch || 0) * D, side = (sp.side || 0) * D;
+  const hYaw = hs.yaw ?? twist * 1.08, hRoll = (hs.roll || 0) * D, hPitch = (hs.pitch || 0) * D;
+  const tq = (yaw, roll, pit) => qMul(qAxis(Y, yaw), qMul(qAxis(Z, roll), qAxis(X, pit)));
+  const qPel = tq(pYaw, tilt, pitch);
   q[B.pelvis] = qPel;
-  q[B.spine1] = qMul(qAxis(Y, mix(pt, twist, 0.3)), qAxis(X, lean * 0.3));
-  q[B.spine2] = qMul(qAxis(Y, mix(pt, twist, 0.65)), qAxis(X, lean * 0.7));
-  q[B.chest] = qMul(qAxis(Y, twist), qAxis(X, lean));
-  q[B.neck] = qAxis(Y, twist * 1.02); q[B.head] = qAxis(Y, twist * 1.08);
+  q[B.spine1] = tq(mix(pYaw, twist, 0.3), mix(tilt, side, 0.3), mix(pitch, lean, 0.3));
+  q[B.spine2] = tq(mix(pYaw, twist, 0.65), mix(tilt, side, 0.75), mix(pitch, lean, 0.7));
+  q[B.chest] = tq(twist, side, lean);
+  q[B.neck] = tq(mix(twist, hYaw, 0.4), mix(side, hRoll, 0.6), mix(lean, hPitch, 0.6));
+  q[B.head] = tq(hYaw, hRoll, hPitch);
   if (spec.chestScale) scale[B.chest] = spec.chestScale;
   for (const s of SIDES) {
-    const sg = s === 'L' ? 1 : -1;
-    const elev = (spec.clav || 0) * Math.PI / 180;
-    q[B['clav' + s]] = qMul(q[B.chest], qMul(qAxis([0, 1, 0], sg * (spec.retract || 0)), qAxis([0, 0, 1], sg * elev)));
+    const sg = s === 'L' ? 1 : -1, c = spec['clav' + s] || spec.clav || {};
+    q[B['clav' + s]] = qMul(q[B.chest], qMul(qAxis(Y, sg * (c.retract || 0)), qAxis(Z, sg * (c.elev || 0) * D)));
   }
   const qT = q[B.chest], bodyDir = v => qRot(qT, v);
   // FK helper to get the posed head of a bone from the current q (scale ignored for the IK targets)
@@ -698,32 +747,35 @@ export function poseGlobals(ctx, name) {
   const armSpec = (s) => {
     const own = spec['arm' + s];
     if (own) return own;
-    if (spec.arm) return s === 'L' ? spec.arm : { u: mirrorX(spec.arm.u), f: mirrorX(spec.arm.f), palm: mirrorX(spec.arm.palm) };
-    if (spec.ik) return { ik: spec.ik, palm: s === 'L' ? spec.palm : mirrorX(spec.palm) };
+    if (spec.arm) return s === 'L' ? spec.arm : { ...spec.arm, u: mirrorX(spec.arm.u), f: mirrorX(spec.arm.f), palm: mirrorX(spec.arm.palm) };
+    if (spec.ik) return { ik: spec.ik, palm: s === 'L' ? spec.palm : mirrorX(spec.palm), hand: spec.hand && (s === 'L' ? spec.hand : mirrorX(spec.hand)) };
     return null;
   };
-  const order = spec.armR && spec.armR.ik ? ['L', 'R'] : ['L', 'R'];
-  for (const s of order) {
+  let wristL = null;
+  for (const s of SIDES) {
     const F = frames[s], sg = s === 'L' ? 1 : -1;
     let u, f, palm;
     const as = armSpec(s);
     const S = posedHead(B['uarm1' + s]);
     const Lu = boneLen(heads, A, 'uarm1' + s, 'farm1' + s), Lf = boneLen(heads, A, 'farm1' + s, 'hand' + s);
-    if (!as) { // relaxed: aim at anthro's rest joints
-      const g = ctx.joints || ctx.geom.joints;
-      const gS = g['shoulder' + s], gE = g['elbow' + s], gW = g['wrist' + s];
+    if (!as) { // relaxed / rest: aim at anthro's rest joints (arms hang plumb whatever the torso does)
+      const gS = G['shoulder' + s], gE = G['elbow' + s], gW = G['wrist' + s];
       u = vnorm([gE.x - gS.x, gE.y - gS.y, gE.z - gS.z]); f = vnorm([gW.x - gE.x, gW.y - gE.y, gW.z - gE.z]);
-      palm = [-sg, 0, 0.12];
+      const pm = spec.palm || [-1, 0, 0.12];
+      palm = s === 'L' ? pm : mirrorX(pm);
     } else if (as.ik) {
       let T;
       const sec = ctx.sections || {};
       const w = sec.waist || { w: 6, d: 4.5, cz: 0, y: ctx.geom.landmarks.waist.y };
-      if (as.ik.target === 'waist') {
-        T = [sg * (w.w + 0.6), w.y + 0.8, w.cz - 0.6];
+      const off = as.ik.offset || [0, 0, 0];
+      if (as.ik.target === 'waist') {          // wrist at the side of the waist, a little behind: fist on the obliques
+        T = bodyDir([sg * (w.w + 1.1), w.y - 0.9, w.cz - 0.12 * w.d]);
       } else if (as.ik.target === 'clasp') {   // in front of the abdomen, turned with the chest
-        const C = [1.0 + as.ik.offset[0], w.y + 3.2 + as.ik.offset[1], w.cz + w.d + 2.2 + as.ik.offset[2]];
+        const C = [1.0 + off[0], w.y + 3.2 + off[1], w.cz + w.d + 2.2 + off[2]];
         T = qRot(qAxis(Y, twist * 0.85), C);
-      }
+      } else if (as.ik.target === 'wristL' && wristL) {   // grip the other wrist
+        T = vadd(wristL, bodyDir(off));
+      } else T = vadd(S, [0, -Lu - Lf, 0]);
       // the IK solves for the wrist; hand length is carried by the hand bone
       const pole = bodyDir(spec['arm' + s] ? as.ik.pole : (s === 'L' ? as.ik.pole : mirrorX(as.ik.pole)));
       ({ u, f } = twoBoneIK(S, T, Lu, Lf, pole));
@@ -735,7 +787,8 @@ export function poseGlobals(ctx, name) {
     h = vnorm(h);
     const qU = qFrames(F.u0, F.h0, u, h);
     const qSw = qFromTo(F.u0, u);
-    const tw = 2 * Math.atan2(vdot([qMul(qConj(qSw), qU)[0], qMul(qConj(qSw), qU)[1], qMul(qConj(qSw), qU)[2]], F.u0), qMul(qConj(qSw), qU)[3]);
+    const qTw = qMul(qConj(qSw), qU);
+    const tw = 2 * Math.atan2(vdot([qTw[0], qTw[1], qTw[2]], F.u0), qTw[3]);
     q[B['uarm1' + s]] = qMul(qAxis(u, tw * 0.5), qSw);
     q[B['uarm2' + s]] = qU;
     let qF = qFrames(F.f0, F.h0, f, h);
@@ -743,36 +796,83 @@ export function poseGlobals(ctx, name) {
     q[B['farm1' + s]] = qMul(qAxis(f, pr * 0.5), qF);
     qF = qMul(qAxis(f, pr), qF);
     q[B['farm2' + s]] = qF;
-    q[B['hand' + s]] = qF;
+    // wrist: the bind hand is flexed ~15° toward the palm; put it on the forearm axis, then flex it by `wrist`
+    // (or aim it along an explicit body-space `hand` direction, e.g. fists set against the obliques)
+    const wr = (as && as.wrist != null) ? as.wrist : (spec.wrist ?? 0);
+    const pN0 = qRot(qF, F.p0), pPerp = vnorm(vsub(pN0, vmul(f, vdot(pN0, f))));
+    const hdT = as && as.hand ? bodyDir(vnorm(as.hand)) : vnorm(vadd(vmul(f, Math.cos(wr)), vmul(pPerp, Math.sin(wr))));
+    const qH = qMul(qFromTo(qRot(qF, F.hd0), hdT), qF);
+    q[B['hand' + s]] = qH;
     // fingers: curl about the knuckle axis toward the palm
-    const curl = spec.curl ?? 0.2;
-    const kAx = qRot(qF, F.k0), pN = qRot(qF, F.p0), hd = qRot(qF, F.hd0);
+    // (a number: 0 open … 1 fist; or [knuckle, finger] angles in rad for a relaxed cascade)
+    const cv = (as && as.curl != null) ? as.curl : (spec.curl ?? 0.2);
+    const curl = Array.isArray(cv) ? (cv[0] + cv[1]) / 2.8 : cv, c1a = Array.isArray(cv) ? cv[0] : curl * 1.35, c2a = Array.isArray(cv) ? cv[1] : curl * 1.45;
+    const kAx = qRot(qH, F.k0), pN = qRot(qH, F.p0), hd = qRot(qH, F.hd0);
     const sgn = Math.sign(vdot(vcross(kAx, hd), pN)) || 1;   // rotating hd toward the palm
-    const c1 = qMul(qAxis(kAx, sgn * curl * 1.35), qF);
+    const c1 = qMul(qAxis(kAx, sgn * c1a), qH);
     q[B['fing1' + s]] = c1;
-    q[B['fing2' + s]] = qMul(qAxis(kAx, sgn * curl * 1.45), c1);
-    q[B['thumb' + s]] = qMul(qAxis(hd, -sg * curl * 0.35), qMul(qAxis(kAx, sgn * curl * 0.45), qF));
+    q[B['fing2' + s]] = qMul(qAxis(kAx, sgn * c2a), c1);
+    // thumb (one rigid bone): in a fist it is tucked against the curled index/middle fingers instead of sticking out
+    q[B['thumb' + s]] = qMul(qAxis(pN, -sg * curl * 0.5), qMul(qAxis(hd, -sg * curl * 0.6), qMul(qAxis(kAx, -sgn * curl * 0.2), qH)));
     if (s === 'L') { // remember the posed left wrist for two-handed poses
-      const qtmp = q.slice();
-      const J = (() => { let J0 = S; J0 = vadd(J0, qRot(qtmp[B['uarm2' + s]], vsub(heads[B['farm1' + s]], heads[B['uarm1' + s]]))); return vadd(J0, qRot(qF, vsub(heads[B['hand' + s]], heads[B['farm1' + s]]))); })();
-      ctx._wristL = J;
+      wristL = vadd(vadd(S, qRot(q[B['uarm2' + s]], vsub(heads[B['farm1' + s]], heads[B['uarm1' + s]]))), qRot(qF, vsub(heads[B['hand' + s]], heads[B['farm1' + s]])));
+      ctx._wristL = wristL;
     }
   }
   // legs
-  for (const s of SIDES) {
-    const F = frames[s];
-    const ls = spec['legs' + s] || (spec.legs ? (s === 'L' ? spec.legs : { t: mirrorX(spec.legs.t), s: mirrorX(spec.legs.s) }) : null);
-    let t, sh;
-    if (!ls) {
-      const g = ctx.joints || ctx.geom.joints;
-      const gH = g['hip' + s], gK = g['knee' + s], gA = g['ankle' + s];
-      t = vnorm([gK.x - gH.x, gK.y - gH.y, gK.z - gH.z]); sh = vnorm([gA.x - gK.x, gA.y - gK.y, gA.z - gK.z]);
-    } else { t = vnorm(ls.t); sh = vnorm(ls.s); }
-    q[B['thigh' + s]] = qMul(qPel, qFromTo(F.t0, t));
-    q[B['shin' + s]] = qMul(qPel, qFromTo(F.s0, sh));
-    q[B['foot' + s]] = qPel;
+  let root = [0, 0, 0];
+  const restLeg = s => {
+    const gH = G['hip' + s], gK = G['knee' + s], gA = G['ankle' + s];
+    return { t: vnorm([gK.x - gH.x, gK.y - gH.y, gK.z - gH.z]), s: vnorm([gA.x - gK.x, gA.y - gK.y, gA.z - gK.z]) };
+  };
+  if (!spec.feet) {
+    for (const s of SIDES) {
+      const F = frames[s], { t, s: sh } = restLeg(s);
+      q[B['thigh' + s]] = qMul(qPel, qFromTo(F.t0, t));
+      q[B['shin' + s]] = qMul(qPel, qFromTo(F.s0, sh));
+      q[B['foot' + s]] = qPel;
+    }
+  } else {
+    const shift = spec.shift ? [spec.shift[0] * kH, 0, (spec.shift[1] || 0) * kH] : [0, 0, 0];
+    const qPy = qAxis(Y, pYaw), pc = heads[B.pelvis];
+    const sol = {};
+    for (const s of SIDES) {
+      const sg = s === 'L' ? 1 : -1, fs = spec.feet[s] || {};
+      const Lt = boneLen(heads, A, 'thigh' + s, 'shin' + s), Ls = boneLen(heads, A, 'shin' + s, 'foot' + s);
+      const { t, s: sh } = restLeg(s);
+      const ank0 = vadd(heads[B['thigh' + s]], vadd(vmul(t, Lt), vmul(sh, Ls)));   // rest ankle (world)
+      const at = fs.at || [0, 0], yawF = pYaw + sg * (fs.out || 0) * D, heel = (fs.heel || 0) * D;
+      const rel = vsub(ank0, [pc[0], ank0[1], pc[2]]);
+      let T = vadd(vadd([pc[0], ank0[1], pc[2]], qRot(qPy, rel)), qRot(qPy, [sg * at[0] * kH, 0, at[1] * kH]));
+      if (heel) {   // heel raise pivoting on the toe pads (≈ 85 % of the way ankle → toe tip)
+        const gA = G['ankle' + s], gT = G['toe' + s] || { x: gA.x, y: 0, z: gA.z + 0.55 * 0.152 * kH * 69 };
+        const dv = qRot(qAxis(Y, yawF - (pYaw || 0)), [gT.x - gA.x, 0, gT.z - gA.z]);
+        const d = 0.85 * Math.hypot(dv[0], dv[2]), hgt = ank0[1], fwd = vnorm(qRot(qPy, [dv[0], 0, dv[2]]));
+        T = vadd(T, vadd([0, hgt * (Math.cos(heel) - 1) + d * Math.sin(heel), 0], vmul(fwd, d * (1 - Math.cos(heel)) + hgt * Math.sin(heel))));
+      }
+      sol[s] = { T, Lt, Ls, yawF, heel, knee: (fs.knee || 0) * D, sg };
+    }
+    // drop the pelvis just enough that both feet reach their targets (a straight leg stays straight)
+    let drop = 0;
+    for (const s of SIDES) {
+      const S = sol[s], hip = vadd(posedHead(B['thigh' + s]), shift), L = (S.Lt + S.Ls) * 0.9995;
+      const dx = S.T[0] - hip[0], dz = S.T[2] - hip[2];
+      drop = Math.max(drop, hip[1] - (S.T[1] + Math.sqrt(Math.max(0, L * L - dx * dx - dz * dz))));
+    }
+    root = [shift[0], -drop, shift[2]];
+    for (const s of SIDES) {
+      const S = sol[s], F = frames[s];
+      const hip = vadd(posedHead(B['thigh' + s]), root);
+      const ka = S.yawF - S.sg * S.knee, pole = [Math.sin(ka), 0, Math.cos(ka)];
+      const ik = twoBoneIK(hip, S.T, S.Lt, S.Ls, pole);
+      const hinge = vnorm(vcross(ik.pn, ik.dn));
+      q[B['thigh' + s]] = qFrames(F.t0, X, ik.u, hinge);
+      q[B['shin' + s]] = qFrames(F.s0, X, ik.f, hinge);
+      const qy = qAxis(Y, S.yawF);
+      q[B['foot' + s]] = qMul(qAxis(qRot(qy, X), S.heel), qy);
+    }
   }
-  return { q, scale, flex: spec.flex || 0, lat: spec.lat || 0 };
+  return { q, scale, root, flex: spec.flex || 0, lat: spec.lat || 0 };
 }
 
 /** Skinning matrices (column-major 4×4 per bone) + posed joint heads, given bind heads and global rotations. */
@@ -785,7 +885,7 @@ export function skinMatrices(A, heads, pose, rootOffset = [0, 0, 0]) {
     const sc = pose.scale && pose.scale[b];
     const Lm = sc ? [R[0] * sc[0], R[1] * sc[0], R[2] * sc[0], R[3] * sc[1], R[4] * sc[1], R[5] * sc[1], R[6] * sc[2], R[7] * sc[2], R[8] * sc[2]] : R;
     lin[b] = Lm;
-    if (p < 0) J[b] = vadd(heads[b], rootOffset);
+    if (p < 0) J[b] = pose.root ? vadd(vadd(heads[b], rootOffset), pose.root) : vadd(heads[b], rootOffset);
     else { const d = vsub(heads[b], heads[p]); const Lp = lin[p]; J[b] = vadd(J[p], [Lp[0] * d[0] + Lp[3] * d[1] + Lp[6] * d[2], Lp[1] * d[0] + Lp[4] * d[1] + Lp[7] * d[2], Lp[2] * d[0] + Lp[5] * d[1] + Lp[8] * d[2]]); }
     // M = T(J) * L * T(-head)
     const h = heads[b], o = b * 16;
@@ -922,7 +1022,7 @@ export function fitBody(A, opts = {}) {
 
   // 2. pose the unfitted mesh into anthro's rest pose
   const ctx0 = { A, rest: sk0.heads, frames, geom, joints: GJ };
-  const relax = poseGlobals(ctx0, 'relaxed');
+  const relax = poseGlobals(ctx0, FIT_POSE);
   const { M: M0, J: J0 } = skinMatrices(A, sk0.heads, relax);
   const Q = skinPositions(A, P, M0);
   let qMin = Infinity, qMax = -Infinity;
@@ -1579,7 +1679,7 @@ export function mountBody3D(el, opts = {}) {
   let A = null, fit = null, ghostFit = null, gl = null, dead = false, lost = false;
   let progBody = null, progBg = null, vaoMain = null, vaoGhost = null, vaoBg = null, bufs = {}, nIdx = 0;
   let poseName = POSES.includes(o.pose) ? o.pose : 'relaxed';
-  let poseFrom = null, poseTo = null, poseT0 = 0; const POSE_MS = 520;
+  let poseFrom = null, poseTo = null, poseT0 = 0;
   const cam = { yaw: POSE_SPECS[poseName].view.yaw, pitch: POSE_SPECS[poseName].view.pitch, zoom: 1, vy: 0, vp: 0 };
   let camAnim = null, raf = 0, lastMs = 0, frameMs = 0, userTouched = false;
   let W = 1, Hh = 1, dpr = 1, VP = null, eye = [0, 0, 0];
@@ -1619,22 +1719,23 @@ export function mountBody3D(el, opts = {}) {
   function ctxOf(f) { return { A, rest: f.heads, frames: f.frames, geom: f.geom, sections: f.sections, joints: f.joints }; }
   function poseState(f, name) {
     const g = poseGlobals(ctxOf(f), name);
-    return { q: g.q, scale: g.scale, flex: g.flex, lat: g.lat };
+    return { q: g.q, scale: g.scale, root: g.root || [0, 0, 0], flex: g.flex, lat: g.lat };
   }
   function currentPose(f, t) {
     const target = poseState(f, poseName);
     if (!poseFrom || t >= 1) return target;
     const from = poseState(f, poseFrom);
-    const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    const e = poseEase(t);
     const q = target.q.map((qq, i) => qSlerp(from.q[i], qq, e));
     const scale = {};
     const keys = new Set([...Object.keys(from.scale), ...Object.keys(target.scale)]);
     for (const k of keys) { const a = from.scale[k] || [1, 1, 1], b = target.scale[k] || [1, 1, 1]; scale[k] = vlerp(a, b, e); }
-    return { q, scale, flex: mix(from.flex, target.flex, e), lat: mix(from.lat || 0, target.lat || 0, e) };
+    return { q, scale, root: vlerp(from.root, target.root, e), flex: mix(from.flex, target.flex, e), lat: mix(from.lat || 0, target.lat || 0, e) };
   }
-  function footOffset(f, pose) {   // keep the lowest foot planted
+  function footOffset(f, pose) {   // keep the lowest ankle at its fitted (rest-pose) height: feet stay on the floor
     const { J } = skinMatrices(A, f.heads, pose);
-    const dy = Math.min(J[A.B.footL][1] - f.heads[A.B.footL][1], J[A.B.footR][1] - f.heads[A.B.footR][1]);
+    if (!f.restAnkle) { const r = skinMatrices(A, f.heads, f.relax).J; f.restAnkle = [r[A.B.footL][1], r[A.B.footR][1]]; }
+    const dy = Math.min(J[A.B.footL][1] - f.restAnkle[0], J[A.B.footR][1] - f.restAnkle[1]);
     return [0, -dy, 0];
   }
 
@@ -1727,7 +1828,7 @@ export function mountBody3D(el, opts = {}) {
     let animating = false;
     // camera inertia / auto-rotate / pose camera animation
     if (camAnim) {
-      const t = clamp((ts - camAnim.t0) / camAnim.dur, 0, 1), e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      const t = clamp((ts - camAnim.t0) / camAnim.dur, 0, 1), e = poseEase(t);
       cam.yaw = mix(camAnim.from.yaw, camAnim.to.yaw, e); cam.pitch = mix(camAnim.from.pitch, camAnim.to.pitch, e);
       if (camAnim.to.zoom) cam.zoom = mix(camAnim.from.zoom, camAnim.to.zoom, e);
       if (t >= 1) camAnim = null; else animating = true;
@@ -1875,7 +1976,7 @@ export function mountBody3D(el, opts = {}) {
     poseFrom = poseName; poseName = name; poseT0 = performance.now(); syncChips();
     if (!userTouched || true) {
       const v = POSE_SPECS[name].view;
-      camAnim = { from: { ...cam }, to: { yaw: nearestYaw(v.yaw), pitch: v.pitch }, t0: performance.now(), dur: 650 };
+      camAnim = { from: { ...cam }, to: { yaw: nearestYaw(v.yaw), pitch: v.pitch }, t0: performance.now(), dur: POSE_MS + 150 };
     }
     requestRender();
   }
