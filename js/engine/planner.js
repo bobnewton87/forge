@@ -34,14 +34,26 @@
 //   targets.finisherCap(minutes)) until the week's planned cardio reaches the target; what still
 //   doesn't fit shows as a shortfall warning in weekPlanSummary (cardioMinutes.capacity/shortfall).
 //   Lift days use profile.defaultStyle as the buildWorkout style.
+// CONTRACT-NOTE (weekly minimums): after the cardio + balance passes, balanceVolume() tops up every
+//   muscle group still under its weekly minimum (done + planned this calendar week): extra sets on
+//   auto-planned exercises that hit it (≤5 sets each), else a new exercise from exercisesFor() at the
+//   session's location (addExercise), within per-session per-group caps (~10 big / ~8 small) and
+//   recovery (no new back-to-back hits). Sessions that run past their slot are extended per
+//   targets.volumePolicyOf(profile) (extend ≤ maxMinutes; 'fixed'/'ask' stay within the slot) and
+//   carry plan.extended = { from, to, reason }, session.minutes = to. planRange accepts an optional
+//   `volumePolicy` override (the UI's 'ask' mode plans with 'extend' to build the proposal) and
+//   `topUp:false` (skip the minimums pass; the greedy walk alone, e.g. to compare decisions).
+//   weekPlanSummary warns per group "Triceps 9/13 sets: short 4" and returns `minimums`
+//   ({ met, short:[{ group, name, total, min, short }] }) and `extended` ([{ date, from, to, reason }]).
 import { recommend, groupStatus, muscleStatus, sessionVolume } from './recovery.js';
-import { buildWorkout } from './generator.js';
+import { buildWorkout, estimateMinutes, addExercise, exercisesFor } from './generator.js';
+import { getEx } from '../data/exercises.js';
 import { CARDIO, INTENSITIES, cardioOptions } from '../data/cardio.js';
 import { classify } from '../classes/classify.js';
 import { GROUPS, REGIONS } from '../data/muscles.js';
 import { DEFAULT_LOCATIONS, expandEquipment } from '../data/equipment.js';
 import { ds, parseDs, addDays, weekStart as weekStartOf, clamp, rng } from '../util.js';
-import { cardioPrefs, finisherCap, cardioCapacity, weekCardioCapacity } from './targets.js';
+import { cardioPrefs, finisherCap, cardioCapacity, weekCardioCapacity, volumePolicyOf } from './targets.js';
 
 const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const PRIORITY_GROUPS = ['triceps', 'shoulders', 'core', 'back', 'chest'];
@@ -664,6 +676,150 @@ function balanceCardio(ctx, out, ws, we, last) {
 }
 const round5 = x => Math.round(x / 5) * 5;
 
+// ---------------------------------------------------------------- weekly minimums top-up
+const BIG_GROUPS = new Set(['chest', 'back', 'shoulders', 'quads', 'hamstrings', 'glutes']);
+const sessionCap = g => (BIG_GROUPS.has(g) ? 10 : 8);
+const MAX_SETS_PER_EX = 5;
+// Credit of one set of `ex` for group g (max region weight in g), as recovery.sessionVolume counts it.
+function groupW(ex, g) {
+  let w = 0;
+  for (const [r, x] of Object.entries(ex?.muscles || {})) if (REGIONS[r]?.group === g && x > w) w = x;
+  return w;
+}
+function groupCredits(ex) {
+  const out = {};
+  for (const [r, x] of Object.entries(ex?.muscles || {})) { const g = REGIONS[r]?.group; if (g && x > (out[g] || 0)) out[g] = x; }
+  return out;
+}
+const setsOf = b => Math.max(Number(b.target?.sets) || 0, (b.sets || []).length);
+function plannedGroupVol(s, g) {
+  let v = 0;
+  for (const b of s.blocks || []) if (b.kind === 'lift') v += setsOf(b) * groupW(getEx(b.exId), g);
+  return v;
+}
+function addSet(b) {
+  const n = setsOf(b) + 1;
+  b.target = { ...(b.target || {}), sets: n };
+  b.sets = [...(b.sets || []), ...Array.from({ length: Math.max(0, n - (b.sets || []).length) }, () => ({ w: null, r: null, done: false }))];
+}
+const ceilTo = (est) => { const t = Math.ceil(est / 5) * 5; return (t - est) / t > 0.1 ? Math.ceil(est) : t; };
+
+function balanceVolume(ctx, out, ws, we) {
+  const pol = ctx.volumePolicy || volumePolicyOf(ctx.profile);
+  const T = weeklyTargets(ctx.profile).groups;
+  const avoid = new Set(ctx.profile?.avoidExercises || []);
+  const sculptGoals = ctx.profile?.sculptGoals || [];
+  const days = out.filter(s => s.date >= ws && s.date <= we && s.date >= ctx.today && s.plan?.auto !== false && s.plan?.kind === 'lift' && (s.blocks || []).some(b => b.kind === 'lift'));
+  if (!days.length) return;
+  const totals = weekGroupTotals(ctx.history, ws, we);
+  const W = days.map(s => ({ orig: s, s: clone(s), slot: Number(s.minutes) || 45, added: {}, changed: false }));
+  for (const w of W) w.limit = pol.mode === 'extend' ? Math.max(w.slot, pol.maxMinutes) : w.slot;
+  const credit = (ex, n) => { for (const [g, x] of Object.entries(groupCredits(ex))) totals[g] = (totals[g] || 0) + n * x; };
+  const okReadiness = new Map(), okAdj = new Map();
+  const adjOK = (w, g) => {
+    const k = w.orig.id + '|' + g;
+    if (okAdj.has(k)) return okAdj.get(k);
+    // Only the NEXT day matters for already-trained groups (today's own readiness was checked when
+    // the day was planned); groups new to the day also pass a readiness check in canTrain.
+    const next = ds(addDays(parseDs(w.s.date), 1));
+    const ok = !ctx.history.some(h => h.id !== w.orig.id && h.date === next && (vol(h).groups[g] || 0) >= 1.5);
+    okAdj.set(k, ok);
+    return ok;
+  };
+  // Volume of g the day before (back-to-back: after ≥6 sets yesterday, today stays under 4).
+  const prevCache = new Map();
+  const prevVol = (w, g) => {
+    const k = w.orig.id + '|' + g;
+    if (!prevCache.has(k)) { const prev = ds(addDays(parseDs(w.s.date), -1)); prevCache.set(k, ctx.history.filter(h => h.id !== w.orig.id && h.date === prev).reduce((n, h) => n + (vol(h).groups[g] || 0), 0)); }
+    return prevCache.get(k);
+  };
+  const capOf = (w, g) => (prevVol(w, g) >= 6 ? 3.9 : sessionCap(g));
+  // Every group an exercise works hard (≥0.5) must be clear of the next day and under its cap.
+  const exOK = (w, ex, n = 1) => Object.entries(groupCredits(ex)).every(([g2, x]) => x < 0.5 || (adjOK(w, g2) && plannedGroupVol(w.s, g2) + n * x <= capOf(w, g2) + 0.01));
+  const canTrain = (w, g) => {
+    const k = w.orig.id + '|' + g;
+    if (okReadiness.has(k)) return okReadiness.get(k);
+    const hi = ctx.history.findIndex(h => h.id === w.orig.id);
+    const hist = ctx.history.filter((_, j) => j !== hi);
+    // Never add to a group the next day trains (more volume here would cut its readiness); a group
+    // new to this day also needs its own readiness (which reflects the day before).
+    let ok = adjOK(w, g);
+    if (ok && (plannedGroupVol(w.s, g) < 1 || prevVol(w, g) >= 1.5)) {
+      const gs = groupStatus(hist, { now: noonOf(w.s.date), profile: ctx.profile, upcoming: hist.filter(h => h.date > w.s.date) });
+      ok = (gs[g]?.readiness ?? 1) >= 0.65 && (gs[g]?.aheadReadiness ?? 1) >= 0.6;
+    }
+    okReadiness.set(k, ok);
+    return ok;
+  };
+  const fits = (w, blocks) => estimateMinutes(blocks) <= w.limit;
+  const deficit = g => T[g].target.min - (totals[g] || 0);
+  const order = Object.keys(T).filter(g => T[g].target.min > 0 && deficit(g) > 0.25)
+    .sort((a, b) => T[b].priority * deficit(b) - T[a].priority * deficit(a));
+  for (const g of order) {
+    // Days already training g first, then the rest (earliest first keeps recovery honest).
+    const cands = W.filter(w => canTrain(w, g)).sort((a, b) => (plannedGroupVol(b.s, g) >= 1) - (plannedGroupVol(a.s, g) >= 1) || a.s.date.localeCompare(b.s.date));
+    let progress = true;
+    while (deficit(g) > 0.25 && progress) {
+      progress = false;
+      for (const w of cands) {
+        if (deficit(g) <= 0.25) break;
+        if (plannedGroupVol(w.s, g) + 0.5 > capOf(w, g)) continue;
+        // a) one more set on the best existing exercise for g
+        const blocks = (w.s.blocks || []).map((b, i) => ({ b, i, ex: b.kind === 'lift' ? getEx(b.exId) : null }))
+          .filter(x => x.ex && groupW(x.ex, g) >= 0.5 && setsOf(x.b) < MAX_SETS_PER_EX && exOK(w, x.ex))
+          .sort((a, b) => groupW(b.ex, g) - groupW(a.ex, g) || setsOf(a.b) - setsOf(b.b));
+        let done = false;
+        for (const x of blocks) {
+          const trial = w.s.blocks.map((b, i) => (i === x.i ? clone(b) : b));
+          addSet(trial[x.i]);
+          if (!fits(w, trial) || plannedGroupVol({ blocks: trial }, g) > capOf(w, g) + 0.01) continue;
+          w.s.blocks = trial; credit(x.ex, 1);
+          w.added[g] = (w.added[g] || 0) + groupW(x.ex, g); w.changed = done = progress = true;
+          break;
+        }
+        if (done) continue;
+        // b) a well-chosen new exercise for g at this location
+        const loc = locationFor(ctx.profile, w.s.location);
+        const have = new Set((w.s.blocks || []).map(b => b.exId).filter(Boolean));
+        const pick = exercisesFor(g, expandEquipment(loc.equipment || []), { sculptGoals })
+          .filter(e => !have.has(e.id) && !avoid.has(e.id) && groupW(e, g) >= 0.8 && exOK(w, e, 2)).slice(0, 4);
+        for (const e of pick) {
+          const hist = ctx.history.filter(h => h.id !== w.orig.id);
+          let ns = addExercise(w.s, e.id, { sessions: hist, now: noonOf(w.s.date) });
+          const nb = ns.blocks.find(b => b.exId === e.id);
+          if (!nb) continue;
+          const want = clamp(Math.ceil(deficit(g) / groupW(e, g)), 2, 3);
+          while (setsOf(nb) > want) { nb.target = { ...nb.target, sets: setsOf(nb) - 1 }; nb.sets = nb.sets.slice(0, nb.target.sets); }
+          const over = () => Object.entries(groupCredits(e)).some(([g2, x]) => x >= 0.5 && plannedGroupVol(ns, g2) > capOf(w, g2) + 0.01);
+          while (setsOf(nb) > 2 && (!fits(w, ns.blocks) || over())) { nb.target = { ...nb.target, sets: setsOf(nb) - 1 }; nb.sets = nb.sets.slice(0, nb.target.sets); }
+          if (!fits(w, ns.blocks) || over()) continue;
+          w.s = { ...w.s, blocks: ns.blocks };
+          credit(e, setsOf(nb));
+          w.added[g] = (w.added[g] || 0) + setsOf(nb) * groupW(e, g); w.changed = done = progress = true;
+          break;
+        }
+      }
+    }
+  }
+  for (const w of W) {
+    if (!w.changed) continue;
+    const est = estimateMinutes(w.s.blocks);
+    const parts = Object.entries(w.added).filter(([, v]) => v >= 0.5).map(([g, v]) => `${gName(g).toLowerCase()} +${fmt(v)}`);
+    const repl = { ...w.s, estMinutes: est, plan: { ...w.s.plan, topUp: Object.fromEntries(Object.entries(w.added).map(([g, v]) => [g, r1(v)])) } };
+    if (est > w.slot + 1) {
+      const to = Math.min(w.limit, ceilTo(est));
+      repl.minutes = to;
+      repl.plan.extended = { from: w.slot, to, reason: `weekly minimums: ${parts.join(', ')}` };
+      repl.rationale = [repl.rationale?.[0], `Extended ${w.slot}→${to} min to hit weekly minimums (${parts.join(', ')})`, ...(repl.rationale || []).slice(1)].filter(Boolean).slice(0, 8);
+    } else if (parts.length) {
+      repl.rationale = [...(repl.rationale || []), `Extra sets toward weekly minimums: ${parts.join(', ')}`].slice(0, 8);
+    }
+    const hi = ctx.history.findIndex(h => h.id === w.orig.id);
+    if (hi >= 0) ctx.history[hi] = simulateDone(repl);
+    out[out.indexOf(w.orig)] = repl;
+  }
+}
+
 function seedHistory(ctx, sessions, from, keep) {
   for (const s of sessions || []) {
     if (!s || !s.date) continue;
@@ -684,12 +840,13 @@ function hasWork(s) { const v = vol(s); return v.liftSets > 0 || v.cardioMin > 0
 
 // ---------------------------------------------------------------- planRange
 export function planRange({ from, days = 7, profile, sessions = [], schedule, classSchedule = null,
-  keep = s => s.plan && !s.plan.auto, now = new Date(), seed } = {}) {
+  keep = s => s.plan && !s.plan.auto, now = new Date(), seed, volumePolicy = null, topUp = true } = {}) {
   now = toDate(now);
   profile = profile || {};
   schedule = schedule || profile.schedule || {};
   const fromDs = toDs(from) || ds(now);
   const ctx = makeCtx({ profile, sessions, schedule, classSchedule, now, seed });
+  if (volumePolicy) ctx.volumePolicy = { ...volumePolicyOf(profile), ...volumePolicy };
   seedHistory(ctx, sessions, fromDs, keep);
   ctx.firstDate = fromDs < ctx.today ? ctx.today : fromDs;
   const out = [];
@@ -706,7 +863,7 @@ export function planRange({ from, days = 7, profile, sessions = [], schedule, cl
         ctx.history.push(simulateDone(s));
       }
     }
-    if (isLast) { const { ws, we } = weekBounds(date); balanceCardio(ctx, out, ws, we, date); balanceWeek(ctx, out, ws, we); }
+    if (isLast) { const { ws, we } = weekBounds(date); balanceCardio(ctx, out, ws, we, date); balanceWeek(ctx, out, ws, we); if (topUp) balanceVolume(ctx, out, ws, we); }
   }
   return out;
 }
@@ -768,7 +925,10 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
   const warnings = [];
   const prio = priorityGroups(profile);
   const underPrio = prio.filter(g => groups[g]?.status === 'under');
-  for (const g of underPrio) warnings.push(`${gName(g)} only ${fmt(groups[g].total)}/${Math.round(groups[g].target.min)} sets planned`);
+  // Every group under its weekly minimum (priority groups first): "Triceps 9/13 sets: short 4".
+  const underAll = [...underPrio, ...Object.keys(groups).filter(g => !prio.includes(g) && groups[g].status === 'under' && groups[g].target.min - groups[g].total >= 0.5)];
+  const short = underAll.map(g => ({ group: g, name: gName(g), total: groups[g].total, min: groups[g].target.min, short: r1(groups[g].target.min - groups[g].total) }));
+  for (const x of short) warnings.push(`${x.name} ${fmt(x.total)}/${fmt(x.min)} sets: short ${fmt(x.short)}`);
   for (const [r, x] of Object.entries(regions)) {
     if (x.status !== 'under' || underPrio.includes(REGIONS[r].group) || x.target.min < 3) continue;
     if (x.total < x.target.min * 0.75) warnings.push(`${REGIONS[r].name} only ${fmt(x.total)}/${Math.round(x.target.min)} sets planned`);
@@ -807,8 +967,11 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
   const liftCov = den ? num / den : 1;
   const cardioCov = target > 0 ? Math.min(1, cTot / target) : 1;
   const score = Math.round(100 * (0.8 * liftCov + 0.2 * cardioCov));
+  const extended = (sessions || []).filter(s => s && s.status === 'planned' && s.date >= from && s.date <= to && s.date >= today && s.plan?.extended)
+    .map(s => ({ date: s.date, ...s.plan.extended }));
   return {
     groups, regions, cardioMinutes, sessions: { done: sDone, planned: sPlan },
+    minimums: { met: !short.length, short }, extended,
     liftSets: { done: lDone, planned: lPlan }, capacity: { liftMinutes: Math.round(liftMinutes), setsNeeded },
     warnings, score,
   };

@@ -326,7 +326,9 @@ test('suggestForDay returns null on rest days and a session otherwise', () => {
 
 test('suggestForDay builds on planned sessions before the date and honors a slot override', () => {
   const p = profile();
-  const plan = week({ profile: p });
+  // INTEGRATOR: the weekly-minimums top-up edits earlier days after later ones were decided, so
+  // compare decisions against the greedy walk itself (topUp:false).
+  const plan = week({ profile: p, topUp: false });
   // PLAN-FIX: suggestForDay also sees planned days AFTER the date (planRange's forward pass can't),
   // so compare like with like: only the days up to Thursday as context.
   const thu = suggestForDay('2026-10-22', { profile: p, sessions: plan.filter(s => s.date <= '2026-10-22'), now: NOW });

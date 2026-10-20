@@ -10,6 +10,7 @@ import { resolveTargets, LIMITS } from '../engine/targets.js';
 // CONTRACT-NOTE (INTEGRATOR §18): goal, sculpt focus, muscle priority, default length/style, the
 //   weekly cardio target and adherence all read resolveTargets and write through setTargets (planning
 //   changes re-plan upcoming auto days). The cardio slider spans 0–600 (the API allows up to 900).
+//   Volume policy (lengthen / ask / keep times + longest workout) is edited here too.
 
 const CAT_ORDER = [['free', 'Free weights & benches'], ['cable', 'Cables'], ['machine', 'Machines'], ['bodyweight', 'Bodyweight stations'], ['cardio', 'Cardio'], ['other', 'Other']];
 const GOALS = [['recomp', 'Recomp', 'Lose fat, build muscle'], ['lean_bulk', 'Lean bulk', 'Small surplus, max growth'], ['cut', 'Cut', 'Get lean, keep muscle']];
@@ -120,6 +121,11 @@ function renderSettings(ctx) {
     ${T.warnings.length ? `<p class="tiny" style="color:var(--warn);margin-top:6px">${esc(T.warnings[0])}</p>` : `<p class="tiny muted" style="margin-top:6px">Your availability fits ~${T.capacity.cardio} cardio min/week. Same target as Body and Plan.</p>`}
     <div class="label mt2">Adherence <span class="tiny muted" style="text-transform:none;letter-spacing:0">share of planned sessions you actually do (used by the projection)</span></div>
     <div class="row mt"><input type="range" min="${LIMITS.adherence[0]}" max="${LIMITS.adherence[1]}" step="0.05" value="${T.adherence}" data-adh style="--pct:${((T.adherence - LIMITS.adherence[0]) / (LIMITS.adherence[1] - LIMITS.adherence[0])) * 100}%" class="grow" aria-label="Adherence"><span class="num bold" style="width:72px;text-align:right" data-adh-v>${Math.round(T.adherence * 100)}%</span></div>
+    <div class="label mt2">When the week's set minimums don't fit your slot times</div>
+    ${seg('volumeMode', [['extend', 'Lengthen'], ['ask', 'Ask me'], ['fixed', 'Keep times']], T.training.volumePolicy.mode)}
+    <div class="label mb mt">Longest workout</div>
+    <div class="chips">${[60, 75, 90, 105, 120].map(m => `<button class="chip ${T.training.volumePolicy.maxMinutes === m ? 'active' : ''}" data-vmax="${m}">${m}′</button>`).join('')}</div>
+    <p class="tiny muted" style="margin-top:6px">Plan my week adds sets (and minutes, up to this cap) until every muscle reaches its weekly minimum.</p>
     <button class="btn btn-sm btn-ghost mt" data-tg-all>All targets in one place ›</button>
   </div>
 
@@ -207,6 +213,7 @@ function bindSettings(root, ctx, params) {
     if (k === 'nutrition') setTargets(ctx, { nutrition: { mode: v } }, { replan: false });
     else if (k === 'goal') setTargets(ctx, { goals: { goal: v } }, { replan: false });
     else if (k === 'defaultStyle') setTargets(ctx, { training: { style: v } });
+    else if (k === 'volumeMode') setTargets(ctx, { training: { volumePolicy: { mode: v } } });
     else up({ [k]: v });
   }));
   root.querySelectorAll('[data-goal]').forEach(b => b.onclick = () => toggleGoal(ctx, b.dataset.goal));
@@ -222,6 +229,7 @@ function bindSettings(root, ctx, params) {
   };
   root.querySelectorAll('[data-loc]').forEach(b => b.onclick = () => locationSheet(ctx, b.dataset.loc));
   root.querySelector('[data-addloc]').onclick = () => locationSheet(ctx, null);
+  root.querySelectorAll('[data-vmax]').forEach(b => b.onclick = () => setTargets(ctx, { training: { volumePolicy: { maxMinutes: Number(b.dataset.vmax) } } }));
   root.querySelectorAll('[data-min]').forEach(b => b.onclick = () => setTargets(ctx, { training: { defaultMinutes: Number(b.dataset.min) } }, { replan: false }));
   const cr = root.querySelector('[data-cardio]'), crv = root.querySelector('[data-cardio-v]');
   cr.addEventListener('input', () => { crv.textContent = cr.value + ' min'; cr.style.setProperty('--pct', (cr.value / Number(cr.dataset.max || 600)) * 100 + '%'); });

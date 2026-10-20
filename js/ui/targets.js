@@ -5,9 +5,11 @@
 // CONTRACT-NOTE: extra exports: planUpdate({ profile, sessions, classSchedule, now, days }) (pure),
 //   bindTargetsSummary(root, ctx), cardioTargetHTML(ctx, { compact }) + bindCardioTarget(root, ctx)
 //   (the editable weekly cardio card used on Body), openMakeRoomSheet(ctx) + makeRoomHTML(ctx) (one-tap
-//   availability fix when the cardio target doesn't fit; buttons carry data-tg-room), REPLAN_DAYS, ensureTargetStyles(). Styles are injected
+//   availability fix when the cardio target doesn't fit; buttons carry data-tg-room), openMinimumsInfo(ctx)
+//   ("Why these numbers?"), openVolumeRoomSheet(ctx, short), openExtendSheet(ctx, { extended, onApply }),
+//   extendedToast(list), REPLAN_DAYS, ensureTargetStyles(). Styles are injected
 //   at runtime (a <style id="tg-css">) because INTEGRATOR owns no CSS file.
-import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, LIMITS, CARDIO_CHIPS, STYLES, GOALS } from '../engine/targets.js';
+import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, volumeRoomOptions, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES } from '../engine/targets.js';
 import { planRange } from '../engine/planner.js';
 import { CARDIO } from '../data/cardio.js';
 import { ds, addDays, weekStart } from '../util.js';
@@ -59,6 +61,11 @@ const CSS = `
 .tg-roomline{display:flex;gap:10px;align-items:center;justify-content:space-between}
 .tg-roomline .tg-room{flex:none;border-color:var(--warn);color:var(--warn)}
 .tg-diff .tg-from{color:var(--muted);text-decoration:line-through}
+.tg-mins{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.pl-ext{background:var(--card2);border:1px solid var(--accent);color:var(--accent);font-weight:750;border-radius:999px;padding:1px 7px;font-size:11px;margin-left:6px;cursor:pointer}
+.pl-mins{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;font-size:13px}
+.pl-mins .ok{color:var(--good);font-weight:750}.pl-mins .bad{color:var(--warn);font-weight:750}
+.pl-mins button{background:none;border:0;color:var(--accent);font-weight:700;font-size:13px;padding:6px 2px;min-height:32px}
 `;
 export function ensureTargetStyles() { ensureStyles(); }
 function ensureStyles() {
@@ -105,6 +112,7 @@ async function runReplan(ctx) {
   store.replacePlanned(from, to, list);
   const w = cardioWeek(profile, store.getSessions(), { now: new Date() });
   let msg = `Plan updated for ${lastReason || 'your targets'}`;
+  const ext = extendedToast(list); if (ext) msg += `. ${ext}`;
   if (w.target && w.capacity < w.target - 5) msg += `. This week fits ~${w.capacity} cardio min; tap "Make room" for the rest`;
   toast(ctx, msg);
 }
@@ -165,6 +173,61 @@ export function openMakeRoomSheet(ctx) {
       close();
       setTargets(ctx, { training: { schedule: prop.schedule } }, { replan: true, reason: `room for ${prop.target} min/wk cardio` });
     };
+  });
+}
+
+// ---------------------------------------------------------------- weekly minimums sheets
+const DOWS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const dayName = date => DOWS[new Date(date + 'T12:00:00').getDay()];
+// "Extended Mon 45→60′ and Thu 45→55′ to hit weekly minimums" (null when nothing was extended).
+export function extendedToast(list) {
+  const ext = (list || []).filter(s => s?.plan?.extended).sort((a, b) => a.date.localeCompare(b.date));
+  if (!ext.length) return null;
+  const parts = ext.slice(0, 3).map(s => `${dayName(s.date)} ${s.plan.extended.from}→${s.plan.extended.to}′`);
+  const more = ext.length > 3 ? ` +${ext.length - 3} more` : '';
+  return `Extended ${parts.length > 1 ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1] : parts[0]}${more} to hit weekly minimums`;
+}
+export function openMinimumsInfo(ctx) {
+  ensureStyles();
+  const p = ctx.store.getProfile();
+  const t = resolveTargets(p);
+  const rows = Object.entries(t.minimums.groups).filter(([, x]) => x.min > 0);
+  const nm = g => g[0].toUpperCase() + g.slice(1);
+  ctx.openSheet(`<div class="tg-sheet"><h2>Why these numbers?</h2>
+    <p class="muted small">Your weekly minimums are hard sets per muscle group, counting done plus planned this week. Priority and sculpt goals raise some of them.</p>
+    <ul class="tip-list mt">${MINIMUMS_EVIDENCE.map(e => `<li>${esc(e.claim)} <span class="tiny muted">(${esc(e.source)})</span></li>`).join('')}</ul>
+    <div class="label mt">Your minimums (sets / week)</div>
+    <div class="tg-mins">${rows.map(([g, x]) => `<span class="badge">${esc(nm(g))} <b>${x.min}</b></span>`).join('')}</div>
+    <p class="tiny muted mt">Workouts get longer (up to ${t.training.volumePolicy.maxMinutes}′) when the week can't fit these in your slot times${t.training.volumePolicy.mode === 'fixed' ? ', but you chose fixed lengths, so Forge only warns' : t.training.volumePolicy.mode === 'ask' ? '. Forge asks first' : ''}. Change it in Settings → Training defaults.</p>
+    <div class="sheet-actions"><button type="button" class="btn btn-block" data-close>Got it</button></div></div>`, (el, close) => { el.querySelector('[data-close]').onclick = () => close(); });
+}
+// Short after the cap: options to raise the cap, add a lift day, or lengthen days.
+export function openVolumeRoomSheet(ctx, short = []) {
+  ensureStyles();
+  const opts = volumeRoomOptions(ctx.store.getProfile());
+  ctx.openSheet(`<div class="tg-sheet"><h2>Make room for your minimums</h2>
+    <p class="muted small">${short.length ? esc(short.map(x => `${x.name} ${Math.round(x.total * 10) / 10}/${x.min} sets: short ${x.short}`).join(' · ')) : 'Every weekly minimum is covered.'}</p>
+    <div class="list mt">${opts.map(o => `<button type="button" class="list-item" data-opt="${o.id}"><div class="grow"><div class="t">${esc(o.label)}</div></div><span class="chev">›</span></button>`).join('') || '<p class="muted small">No automatic option: add a lift day in Availability.</p>'}</div>
+    <div class="sheet-actions"><button type="button" class="btn btn-ghost btn-block" data-cancel>Cancel</button></div></div>`, (el, close) => {
+    el.querySelector('[data-cancel]').onclick = () => close();
+    el.querySelectorAll('[data-opt]').forEach(b => b.onclick = () => {
+      const o = opts.find(x => x.id === b.dataset.opt); close();
+      if (o) setTargets(ctx, o.patch, { replan: true, reason: o.label.toLowerCase() });
+    });
+  });
+}
+// 'ask' policy: show the proposed extensions; Apply saves the extended plan.
+export function openExtendSheet(ctx, { extended = [], onApply } = {}) {
+  ensureStyles();
+  const ext = extended.filter(s => s?.plan?.extended).sort((a, b) => a.date.localeCompare(b.date));
+  ctx.openSheet(`<div class="tg-sheet"><h2>Lengthen workouts to hit your minimums?</h2>
+    <p class="muted small">Your slot times can't fit this week's weekly set minimums. Forge proposes:</p>
+    <div class="list mt">${ext.map(s => `<div class="list-item tg-diff"><div class="grow"><div class="t">${dayName(s.date)} ${esc(s.title || 'Lift')}</div>
+      <div class="s"><span class="tg-from">${s.plan.extended.from}′</span> → <b>${s.plan.extended.to}′</b> · ${esc(s.plan.extended.reason)}</div></div></div>`).join('')}</div>
+    <div class="sheet-actions"><button type="button" class="btn btn-primary btn-block" data-apply>Apply</button>
+    <button type="button" class="btn btn-ghost btn-block" data-cancel>Keep my times (show what's short)</button></div></div>`, (el, close) => {
+    el.querySelector('[data-cancel]').onclick = () => close();
+    el.querySelector('[data-apply]').onclick = () => { close(); try { onApply && onApply(); } catch (e) { console.error(e); } };
   });
 }
 
@@ -248,6 +311,8 @@ function sheetHTML(ctx, focus) {
     <div class="label">Default session length</div>
     <div class="chips">${[15, 20, 30, 45, 60, 75, 90].map(m => `<button type="button" class="chip sm ${t.training.defaultMinutes === m ? 'active' : ''}" data-s-min="${m}">${m}</button>`).join('')}</div>
     <div class="label mt">Default style</div>${seg('s-style', STYLES.map(s => [s, STYLE_NAMES[s]]), t.training.style)}
+    <div class="label mt">When the week's set minimums don't fit</div>${seg('s-vmode', [['extend', 'Lengthen'], ['ask', 'Ask me'], ['fixed', 'Keep times']], t.training.volumePolicy.mode)}
+    ${step('s-vmax', 'Longest workout', t.training.volumePolicy.maxMinutes, '′')}
     <button type="button" class="btn btn-ghost btn-block mt" data-s-avail>🗓 Weekly availability (Plan)</button>`);
   const nutrition = sec('nutrition', '🍽️ Nutrition', `
     ${seg('s-mode', Object.entries(MODE_NAMES), n.mode)}
@@ -279,6 +344,8 @@ export function openTargetsSheet(ctx, { focus = 'cardio' } = {}) {
       else if (d.sMod) { const m = new Set(t.cardio.modalities); m.has(d.sMod) ? m.delete(d.sMod) : m.add(d.sMod); set({ cardio: { modalities: [...m] } }); }
       else if (d.sMin) set({ training: { defaultMinutes: Number(d.sMin) } }, { replan: false });
       else if (d.sStyle) set({ training: { style: d.sStyle } });
+      else if (d.sVmode) set({ training: { volumePolicy: { mode: d.sVmode } } });
+      else if (d.sVmax) set({ training: { volumePolicy: { maxMinutes: t.training.volumePolicy.maxMinutes + Number(d.sVmax) * 15 } } });
       else if (d.sMode) set({ nutrition: { mode: d.sMode } }, { replan: false });
       else if (d.sSur) {
         const n = t.nutrition;

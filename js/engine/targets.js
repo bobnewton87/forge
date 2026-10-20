@@ -11,13 +11,30 @@
 // CONTRACT-NOTE: extra exports: LIMITS, CARDIO_CHIPS, cardioPrefs(profile), finisherCap(minutes),
 //   cardioCapacity(profile), cardioWeek(profile, sessions, { now }), suggestFinisher(...),
 //   describeChange(before, after), needsReplan(before, after), weekCardioCapacity(profile, sessions, { now, weekStart }),
-//   makeRoomProposal(profile, target) (availability changes so the week can hold the cardio target). resolveTargets also returns
+//   makeRoomProposal(profile, target) (availability changes so the week can hold the cardio target),
+//   volumePolicyOf(profile), weeklyMinimums(profile), volumeRoomOptions(profile, short), MINIMUMS_EVIDENCE.
+// CONTRACT-NOTE (weekly minimums, 2026-10-20): profile.volumePolicy = { mode:'extend'|'ask'|'fixed', maxMinutes }
+//   (default extend, 90). resolveTargets().training.volumePolicy and resolveTargets().minimums
+//   ({ groups:{ [g]:{min,max} }, evidence }) expose it. Minimums are the same resolved weekly group
+//   targets the planner and weekPlanSummary use (recovery.groupStatus target incl. priority + sculpt extras).
+//
+// Evidence basis for the weekly set minimums (MINIMUMS_EVIDENCE below, shown in the Plan UI):
+//  - ~10+ hard weekly sets per muscle maximizes hypertrophy for most trainees, with a graded
+//    dose-response below that (Schoenfeld, Ogborn & Krieger 2017, J Sports Sci, meta-analysis).
+//  - Indirect work counts fractionally (e.g. pressing gives triceps partial credit): Pelland et al.
+//    2024 (SportRxiv preprint, dose-response meta-regression) found fractional counting of indirect
+//    sets predicts growth best, which is how sets are credited here (exercise muscle weights).
+//  - Maintaining muscle takes roughly 1/3 of the volume used to build it (Bickel, Cross & Bamman
+//    2011, Med Sci Sports Exerc), so Bob's legs (maintenance priority) have intentionally lower minimums.
+//  - Per-session returns diminish beyond ~8-10 sets per muscle, so the planner caps additions per
+//    session (~10 big / ~8 small groups) and spreads the rest across the week. resolveTargets also returns
 //   `capacity` ({ cardio, total, finishers, cardioDays, flex }) and `warnings`.
 // CONTRACT-NOTE: nutrition.phases entries: { label, start:'YYYY-MM-DD', end:'YYYY-MM-DD'|null,
 //   surplus:number|null, calories:number|null } sorted by start (max 12). Consumers may ignore them.
 import { CARDIO, cardioOptions } from '../data/cardio.js';
 import { DEFAULT_LOCATIONS, expandEquipment } from '../data/equipment.js';
-import { sessionVolume } from './recovery.js';
+import { sessionVolume, groupStatus } from './recovery.js';
+import { GROUPS } from '../data/muscles.js';
 import { ds, parseDs, addDays, weekStart } from '../util.js';
 
 export const LIMITS = {
@@ -29,6 +46,14 @@ export const CARDIO_CHIPS = [90, 150, 225, 300];
 export const STYLES = ['hypertrophy', 'pump', 'strength', 'circuit'];
 export const GOALS = ['recomp', 'lean_bulk', 'cut'];
 export const MODES = ['off', 'simple', 'cycling'];
+export const VOLUME_MODES = ['extend', 'ask', 'fixed'];
+export const MINIMUMS_EVIDENCE = [
+  { claim: 'About 10 or more hard sets per muscle per week maximizes growth for most people; fewer still works, just less (graded dose-response).', source: 'Schoenfeld, Ogborn & Krieger 2017, J Sports Sci (meta-analysis)' },
+  { claim: 'Indirect sets count partly: a bench press gives your triceps partial credit. Forge credits each exercise by how much it works each muscle.', source: 'Pelland et al. 2024, SportRxiv preprint (dose-response meta-regression)' },
+  { claim: 'Keeping muscle takes roughly a third of the volume it took to build it, so your legs (maintenance priority) have lower minimums on purpose.', source: 'Bickel, Cross & Bamman 2011, Med Sci Sports Exerc' },
+  { claim: 'Returns per session flatten past ~8-10 sets for one muscle, so extra sets are spread across the week before a session gets longer.', source: 'Same dose-response literature; per-session caps are a conservative planning rule' },
+];
+const DEF_VOLUME = { mode: 'extend', maxMinutes: 90 };
 const DEF = { cardioMin: 120, hardPerWeek: 1, adherence: 0.85, defaultMinutes: 45, style: 'hypertrophy', proteinGPerLb: 1.0, fatPct: 25, goalBodyFatPct: 12, goal: 'recomp' };
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
@@ -249,6 +274,44 @@ export function makeRoomProposal(profile, target = cardioPrefs(profile).minPerWe
   return { target, before, after: cap, enough: target - cap <= tol, short: Math.max(0, target - cap), changes: merged, schedule: cur };
 }
 
+// ---------------------------------------------------------------- weekly minimums
+export function volumePolicyOf(profile) {
+  const v = profile?.volumePolicy && typeof profile.volumePolicy === 'object' ? profile.volumePolicy : {};
+  return { mode: VOLUME_MODES.includes(v.mode) ? v.mode : DEF_VOLUME.mode, maxMinutes: fin(v.maxMinutes) ? clamp(Math.round(num(v.maxMinutes)), [30, 180]) : DEF_VOLUME.maxMinutes };
+}
+const minCache = new WeakMap();
+// Resolved weekly set targets per muscle group ({min, max}), as the planner uses them.
+export function weeklyMinimums(profile) {
+  const key = profile && typeof profile === 'object' ? profile : minCache;
+  const hit = minCache.get(key);
+  const sig = JSON.stringify([profile?.groupPriority, profile?.sculptGoals]);
+  if (hit && hit.sig === sig) return hit.v;
+  let gs = {};
+  try { gs = groupStatus([], { now: new Date(2026, 0, 5, 12), profile }); } catch (e) { gs = {}; }
+  const v = Object.fromEntries(Object.entries(gs).filter(([g]) => GROUPS[g]).map(([g, x]) => [g, { min: Math.round((x.target?.min || 0) * 10) / 10, max: Math.round((x.target?.max || 0) * 10) / 10 }]));
+  minCache.set(key, { sig, v });
+  return v;
+}
+// Ways to fit the weekly minimums when the cap/availability can't: raise the cap, add a lift day
+// (flex/rest → lift), lengthen short lift days. → [{ id, label, patch }] (patch for setTargets).
+export function volumeRoomOptions(profile) {
+  const pol = volumePolicyOf(profile);
+  const sch = normSchedule(profile?.schedule);
+  const out = [];
+  if (pol.mode !== 'extend') out.push({ id: 'extend', label: `Let Forge lengthen workouts (up to ${pol.maxMinutes}′)`, patch: { training: { volumePolicy: { mode: 'extend' } } } });
+  if (pol.maxMinutes < 120) out.push({ id: 'cap', label: `Raise the workout cap ${pol.maxMinutes}→${pol.maxMinutes + 15}′`, patch: { training: { volumePolicy: { maxMinutes: pol.maxMinutes + 15, mode: pol.mode === 'fixed' ? 'extend' : pol.mode } } } });
+  const flex = DAYS.find(d => sch[d].kind === 'flex' && sch[d].minutes >= 30);
+  if (flex) out.push({ id: 'flex', label: `Make ${flex[0].toUpperCase() + flex.slice(1)} (flex) a lift day, ${sch[flex].minutes}′`, patch: { training: { schedule: { [flex]: { ...sch[flex], kind: 'lift' } } } } });
+  const rests = DAYS.filter(d => sch[d].kind === 'rest');
+  if (rests.length >= 2 || (!flex && rests.length)) { const d = rests[rests.length - 1]; out.push({ id: 'rest', label: `Add a 45′ lift day on ${d[0].toUpperCase() + d.slice(1)}`, patch: { training: { schedule: { [d]: { kind: 'lift', minutes: 45, location: 'home' } } } } }); }
+  const short = DAYS.filter(d => sch[d].kind === 'lift' && sch[d].minutes < 45);
+  if (short.length) {
+    const patch = {}; short.forEach(d => { patch[d] = { ...sch[d], minutes: 45 }; });
+    out.push({ id: 'longer', label: `Lengthen ${short.map(d => `${d[0].toUpperCase() + d.slice(1)} ${sch[d].minutes}→45′`).join(', ')}`, patch: { training: { schedule: patch } } });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- resolveTargets
 function activeStack(profile, today) {
   return (Array.isArray(profile?.supplements) ? profile.supplements : [])
@@ -288,7 +351,9 @@ export function resolveTargets(profile = {}, { now = new Date(), sessions } = {}
       style: STYLES.includes(profile.defaultStyle) ? profile.defaultStyle : DEF.style,
       defaultMinutes: fin(profile.defaultMinutes) ? clamp(Math.round(num(profile.defaultMinutes)), LIMITS.defaultMinutes) : DEF.defaultMinutes,
       groupPriority: { ...(profile.groupPriority || {}) },
+      volumePolicy: volumePolicyOf(profile),
     },
+    minimums: { groups: weeklyMinimums(profile), evidence: MINIMUMS_EVIDENCE },
     nutrition: nutritionOf(profile),
     adherence: fin(profile.adherence) ? clamp(num(profile.adherence), LIMITS.adherence) : DEF.adherence,
     stack: { active: stack, count: stack.length },
@@ -353,6 +418,12 @@ export function applyTargetChange(profile, patch = {}) {
     }
     p.schedule = sch;
   }
+  if (t.volumePolicy && typeof t.volumePolicy === 'object') {
+    const cur = { ...volumePolicyOf(p) };
+    if (VOLUME_MODES.includes(t.volumePolicy.mode)) cur.mode = t.volumePolicy.mode;
+    if ('maxMinutes' in t.volumePolicy) { const v = vNum(t.volumePolicy.maxMinutes, [30, 180], { step: 5 }); if (v !== undefined) cur.maxMinutes = v; }
+    p.volumePolicy = cur;
+  }
   if (t.groupPriority && typeof t.groupPriority === 'object') {
     const gp = {};
     for (const [g, v] of Object.entries(t.groupPriority)) { const x = vNum(v, [0.5, 1.5], { round: 2 }); if (x !== undefined) gp[g] = x; }
@@ -388,7 +459,7 @@ export function applyTargetChange(profile, patch = {}) {
 export function needsReplan(before, after) {
   const a = resolveTargets(before), b = resolveTargets(after);
   const k = t => JSON.stringify([t.cardio.minPerWeek, t.cardio.modalities, t.cardio.hardSessionsPerWeek, t.training.schedule, t.training.style,
-    t.training.defaultMinutes, t.training.groupPriority, t.goals.sculptGoals]);
+    t.training.defaultMinutes, t.training.groupPriority, t.training.volumePolicy, t.goals.sculptGoals]);
   return k(a) !== k(b);
 }
 
@@ -402,6 +473,8 @@ export function describeChange(before, after) {
   if (a.training.defaultMinutes !== b.training.defaultMinutes) out.push(`${b.training.defaultMinutes}-min default sessions`);
   if (a.training.style !== b.training.style) out.push(`${b.training.style} style`);
   if (JSON.stringify(a.training.groupPriority) !== JSON.stringify(b.training.groupPriority)) out.push('muscle priorities');
+  const va = a.training.volumePolicy, vb = b.training.volumePolicy;
+  if (va.mode !== vb.mode || va.maxMinutes !== vb.maxMinutes) out.push(vb.mode === 'fixed' ? 'fixed workout lengths' : `${vb.mode === 'ask' ? 'ask before lengthening' : 'lengthen workouts'} up to ${vb.maxMinutes}′`);
   if (JSON.stringify(a.nutrition) !== JSON.stringify(b.nutrition)) out.push('nutrition targets');
   if (a.adherence !== b.adherence) out.push(`${Math.round(b.adherence * 100)}% adherence`);
   if (a.goals.goal !== b.goals.goal) out.push(`goal: ${b.goals.goal.replace('_', ' ')}`);

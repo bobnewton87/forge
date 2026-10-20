@@ -25,12 +25,16 @@ import { loadSchedule } from '../classes/crunch.js';
 import { renderClassPicker, bindClassPicker } from './classes.js';
 import { startSession, sessionGroups } from './today.js';
 import { summarize, detailSheet } from './history.js';
-import { setTargets, targetsSummaryHTML, bindTargetsSummary, makeRoomHTML, bindMakeRoom } from './targets.js';
-import { resolveTargets } from '../engine/targets.js';
+import { setTargets, targetsSummaryHTML, bindTargetsSummary, makeRoomHTML, bindMakeRoom, extendedToast, openMinimumsInfo, openVolumeRoomSheet, openExtendSheet } from './targets.js';
+import { resolveTargets, volumePolicyOf } from '../engine/targets.js';
 // CONTRACT-NOTE (INTEGRATOR §18): the coverage card's cardio target reads resolveTargets and its
 //   stepper calls setTargets (which re-plans upcoming auto days, debounced). Saving availability goes
 //   through setTargets too (its own re-plan prompt stays). params.avail opens the availability sheet.
 //   A "Your targets" strip sits under the week navigator.
+// CONTRACT-NOTE (weekly minimums): Plan my week / 4 weeks toasts the extensions ("Extended Mon 45→60′ …")
+//   or "All weekly minimums met ✓"; with volumePolicy 'ask' it saves the in-slot plan and offers the
+//   extended one in an Apply sheet. Day cards show a "+15′" badge (tap = why); the coverage card has a
+//   "Minimums" line with "Why these numbers?" and, when short, "Make room".
 import {
   esc, chip, fmtNum, exName, unitLabel, safe, cardioFormHtml, bindCardioForm, readCardioForm, cardioName, intensityName,
 } from './components.js';
@@ -165,7 +169,7 @@ function dayCard(date, sessions, profile, t) {
     const mins = Math.round(plan.estMinutes || plan.minutes || 0);
     main = `<button type="button" class="pl-line planned" data-day="${date}">
       <span class="grow">
-        <span class="pl-top"><span class="pl-title">${esc(plan.title || 'Workout')}</span>${plan.plan ? `<span class="pl-tag ${plan.plan.auto ? 'auto' : 'custom'}">${plan.plan.auto ? 'Auto' : 'Custom'}</span>` : ''}</span>
+        <span class="pl-top"><span class="pl-title">${esc(plan.title || 'Workout')}</span>${plan.plan?.extended ? `<span class="pl-ext" data-ext="${date}" role="button" aria-label="Why longer">+${plan.plan.extended.to - plan.plan.extended.from}′</span>` : ''}${plan.plan ? `<span class="pl-tag ${plan.plan.auto ? 'auto' : 'custom'}">${plan.plan.auto ? 'Auto' : 'Custom'}</span>` : ''}</span>
         <span class="pl-meta">${mins ? `${mins} min · ` : ''}${esc(loc.icon || '')} ${esc(loc.name)}${clsB?.time ? ` · ${esc(clsB.time)}` : ''}</span>
         <span class="pl-chips">${groups.map(g => `<span class="pl-mchip">${esc(g.name)}</span>`).join('')}${k === 'class' || clsB ? '<span class="badge warn">🎟️ Class</span>' : ''}${cmin && k !== 'class' ? `<span class="badge cardio">${k === 'cardio' ? '🏃 ' : '+'}${cmin} min cardio</span>` : ''}</span>
       </span><span class="chev">›</span></button>`;
@@ -275,9 +279,18 @@ function summaryCard(sessions, profile, ws, roomLine = '') {
     <div class="pl-ctarget"><span class="muted small">Weekly cardio target</span>
       <span class="pl-step" role="group" aria-label="Weekly cardio target"><button type="button" data-a="ct-dec" aria-label="Lower cardio target" ${ctarget <= 0 ? 'disabled' : ''}>−</button><b>${ctarget}′</b><button type="button" data-a="ct-inc" aria-label="Raise cardio target" ${ctarget >= 900 ? 'disabled' : ''}>+</button></span></div>
     ${roomLine}
+    ${minsLine(sum)}
     ${capLine ? `<div class="pl-cap muted small">${esc(capLine)}</div>` : ''}
     ${warnings.length ? `<details class="pl-notes"><summary>Notes <span class="pl-notes-n">${warnings.length}</span></summary><ul>${warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul></details>` : ''}
   </div>`;
+}
+
+function minsLine(sum) {
+  const m = sum.minimums;
+  if (!m) return '';
+  const ext = (sum.extended || []).reduce((n, x) => n + (x.to - x.from), 0);
+  return `<div class="pl-mins"><span>Minimums:</span>${m.met ? '<span class="ok">✓ met</span>' : `<span class="bad">✗ ${m.short.length} short</span><span class="muted small">${esc(m.short.slice(0, 3).map(x => `${x.name} ${fmtNum(x.total, 0)}/${fmtNum(x.min, 0)}`).join(', '))}</span>`}
+    ${ext ? `<span class="muted small">· +${ext}′ added</span>` : ''}<button type="button" data-a="why-min">Why these numbers?</button>${m.met ? '' : '<button type="button" data-a="vol-room">Make room</button>'}</div>`;
 }
 
 // ---------- day sheet ----------
@@ -543,11 +556,25 @@ async function runPlan(ctx, from, to, label) {
     await new Promise(r => setTimeout(r, 30));
     const days = daysBetween(from, to) + 1;
     // Anything the user touched (or saved without a plan tag) is kept and planned around.
-    const res = safe(() => planRange({ from, days, profile, sessions: store.getSessions(), schedule: profile.schedule, classSchedule, now: new Date(), keep: x => !(x.plan && x.plan.auto) }), []);
-    const list = (Array.isArray(res) ? res : []).filter(s => s && s.date >= from && s.date <= to)
-      .map(s => stampAuto({ ...s, id: s.id || store.newSessionId() }, s.plan?.kind, s.plan?.reason));
+    const pol = volumePolicyOf(profile);
+    const run = vp => {
+      const res = safe(() => planRange({ from, days, profile, sessions: store.getSessions(), schedule: profile.schedule, classSchedule, now: new Date(), keep: x => !(x.plan && x.plan.auto), volumePolicy: vp }), []);
+      // keep the planner's plan fields (extended, topUp, …) and just stamp it auto
+      return (Array.isArray(res) ? res : []).filter(s => s && s.date >= from && s.date <= to)
+        .map(s => { const st = stampAuto({ ...s, id: s.id || store.newSessionId() }, s.plan?.kind, s.plan?.reason); st.plan = { ...(s.plan || {}), ...st.plan }; return st; });
+    };
+    const list = run(pol.mode === 'ask' ? { mode: 'fixed' } : null);
     store.replacePlanned(from, to, list);
-    toast(ctx, list.length ? `Planned ${list.length} session${list.length === 1 ? '' : 's'}` : 'Nothing new to plan (custom and rest days are kept)');
+    const wk = safe(() => weekPlanSummary(store.getSessions(), { weekStart: parseDs(from), profile, now: new Date() }), null);
+    const shortN = wk?.minimums?.short?.length || 0;
+    const ext = extendedToast(list);
+    if (!list.length) toast(ctx, 'Nothing new to plan (custom and rest days are kept)');
+    else if (ext) toast(ctx, ext);
+    else toast(ctx, shortN ? `Planned ${list.length} session${list.length === 1 ? '' : 's'} · ${shortN} weekly minimum${shortN === 1 ? '' : 's'} short (see Week coverage)` : `Planned ${list.length} session${list.length === 1 ? '' : 's'} · All weekly minimums met ✓`);
+    if (pol.mode === 'ask' && shortN) {
+      const longer = run({ mode: 'extend' });
+      if (longer.some(s => s.plan?.extended)) openExtendSheet(ctx, { extended: longer, onApply: () => { store.replacePlanned(from, to, longer); toast(ctx, extendedToast(longer) || 'Plan updated'); } });
+    }
   } finally { busy = false; }
 }
 
@@ -622,6 +649,17 @@ export function bind(root, ctx) {
   safe(() => { bindTargetsSummary(root, ctx); bindMakeRoom(root.querySelector('.pl-sum') || root, ctx); return true; }, null);
   if (ctx.params && ctx.params.avail) { ctx.nav('plan', {}, { replace: true }); setTimeout(() => openAvailability(ctx), 0); }
   pl.onclick = e => {
+    const ex = e.target.closest('[data-ext]');
+    if (ex) {
+      const s = mainPlanned(ctx.store.getSessions(), ex.dataset.ext); const x = s?.plan?.extended;
+      if (x) ctx.openSheet(`<div class="pl-sheet"><h2>Why ${x.to} minutes?</h2><p class="small mt">Your slot was ${x.from}′. Forge added ${x.to - x.from}′ so this week reaches its weekly set minimums: <b>${esc(x.reason.replace(/^weekly minimums: /, ''))}</b> sets.</p>
+        <p class="tiny muted mt">Change this in Settings → Training defaults (lengthen / ask / keep times, longest workout).</p>
+        <div class="sheet-actions"><button type="button" class="btn btn-block" data-why>Why these numbers?</button><button type="button" class="btn btn-ghost btn-block" data-ok>OK</button></div></div>`, (el, close) => {
+        el.querySelector('[data-ok]').onclick = () => close();
+        el.querySelector('[data-why]').onclick = () => { close(); setTimeout(() => openMinimumsInfo(ctx), 50); };
+      });
+      return;
+    }
     const qc = e.target.closest('[data-qc]');
     if (qc) { addCardio(ctx, qc.dataset.date, Number(qc.dataset.qc)); return; }
     const sid = e.target.closest('[data-sid]');
@@ -650,6 +688,11 @@ export function bind(root, ctx) {
         const cur = resolveTargets(ctx.store.getProfile()).cardio.minPerWeek;
         setTargets(ctx, { cardio: { minPerWeek: cur + (a.dataset.a === 'ct-inc' ? CARDIO_STEP : -CARDIO_STEP) } });
         break;
+      }
+      case 'why-min': openMinimumsInfo(ctx); break;
+      case 'vol-room': {
+        const sum = safe(() => weekPlanSummary(ctx.store.getSessions(), { weekStart: ws, profile: ctx.store.getProfile(), now: new Date() }), null);
+        openVolumeRoomSheet(ctx, sum?.minimums?.short || []); break;
       }
       case 'projection': ctx.nav('projection'); break;
       case 'history': ctx.nav('history'); break;
