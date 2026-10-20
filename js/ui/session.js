@@ -133,7 +133,7 @@ function renderInner(ctx) {
     if (isLift(b) && b.group) {
       const j = (() => { let j = i; while (j + 1 < s.blocks.length && isLift(s.blocks[j + 1]) && s.blocks[j + 1].group === b.group) j++; return j; })();
       if (j > i) {
-        blocks += `<div class="tr-ss tr-ss-live"><div class="tr-ss-label">${j - i > 1 ? 'Circuit' : 'Superset'} ${esc(b.group)} <span class="muted">· rest after the last one</span></div>`;
+        blocks += `<div class="tr-ss tr-ss-live"><div class="tr-ss-label">${j - i > 1 ? 'Circuit' : S.style === 'efficient' || S.styleDef?.pairing === 'antagonist' ? 'Pair' : 'Superset'} ${esc(b.group)} <span class="muted">· rest after the last one</span></div>`;
         for (let k = i; k <= j; k++) blocks += renderBlock(k, profile);
         blocks += '</div>';
         i = j + 1; continue;
@@ -302,7 +302,13 @@ function commitSet(root, i, k) {
 function afterSetDone(i) {
   const b = S.blocks[i];
   const end = groupEnd(S, i);
-  if (end === i) { startRest(CTX, b.target?.rest || 60); return; }
+  if (end === i) {
+    // End of a pair / superset / circuit round (or a solo set): the shared rest. If the round's later
+    // members are skipped, this block carries only the short transition, so use the round's longest rest.
+    let rest = b.target?.rest || 60;
+    if (b.group) for (let j = groupStart(S, i); j < S.blocks.length && isLift(S.blocks[j]) && S.blocks[j].group === b.group; j++) rest = Math.max(rest, S.blocks[j].target?.rest || 0);
+    startRest(CTX, rest); return;
+  }
   // superset: go straight to the next exercise
   const next = S.blocks[i + 1];
   if (next && isLift(next)) toast(CTX, `Superset → ${exName(next.exId)}`);

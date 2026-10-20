@@ -16,6 +16,12 @@
 //   ('longer' default | 'balanced' | 'finishers') + profile.cardio.minSession (default 30/20/10): no
 //   cardio block shorter than minSession is planned; capacity counts finishers only when ≥ minSession.
 //   volumePolicyOf(profile), weeklyMinimums(profile), volumeRoomOptions(profile, short), MINIMUMS_EVIDENCE.
+// CONTRACT-NOTE (STYLES, 2026-10-20): profile.customStyles = [{ id:'cs_<ts>', name, base, restCompound,
+//   restIsolation, pairing, repMin?, repMax?, setsPerExercise? }] (validated by generator.normalizeCustomStyle:
+//   rests 30-300 s, reps 3-30, sets 1-6, name ≤30, max 20) and optional schedule[day].style. Read via
+//   resolveTargets().training.styles (built-ins + custom, for pickers) / .customStyles; written via
+//   applyTargetChange({ training: { customStyles:[…] (full list), style, schedule:{ [day]:{ style } } } })
+//   (style null clears a day's style; deleting a style drops its references). STYLES = built-in ids.
 // CONTRACT-NOTE (weekly minimums, 2026-10-20): profile.volumePolicy = { mode:'extend'|'ask'|'fixed', maxMinutes }
 //   (default extend, 90). resolveTargets().training.volumePolicy and resolveTargets().minimums
 //   ({ groups:{ [g]:{min,max} }, evidence }) expose it. Minimums are the same resolved weekly group
@@ -40,6 +46,7 @@ import { sessionVolume, groupStatus } from './recovery.js';
 import { GROUPS, REGIONS, VOLUME_UNITS, UNIT_ORDER } from '../data/muscles.js';
 import { SCULPT_GOALS } from '../data/sculpt.js';
 import { ds, parseDs, addDays, weekStart } from '../util.js';
+import { BUILTIN_STYLES, STYLE_LIMITS, normalizeCustomStyle, styleOptions, isStyleId, resolveStyle } from './generator.js';
 
 export const LIMITS = {
   cardioMin: [0, 900], cardioStep: 15, hardPerWeek: [0, 4], defaultMinutes: [10, 180],
@@ -47,7 +54,7 @@ export const LIMITS = {
   adherence: [0.5, 1], goalBodyFatPct: [5, 30],
 };
 export const CARDIO_CHIPS = [90, 150, 225, 300];
-export const STYLES = ['hypertrophy', 'pump', 'strength', 'circuit'];
+export const STYLES = [...BUILTIN_STYLES];   // built-in style ids; custom ones live in profile.customStyles
 export const GOALS = ['recomp', 'lean_bulk', 'cut'];
 export const MODES = ['off', 'simple', 'cycling'];
 export const VOLUME_MODES = ['extend', 'ask', 'fixed'];
@@ -117,7 +124,7 @@ function normSchedule(schedule) {
   const out = {};
   for (const k of DAYS) {
     const s = schedule?.[k];
-    out[k] = s && s.kind ? { kind: s.kind, minutes: Math.max(0, Number(s.minutes) || 0), location: s.location || 'home' } : { kind: 'rest', minutes: 0, location: 'home' };
+    out[k] = s && s.kind ? { kind: s.kind, minutes: Math.max(0, Number(s.minutes) || 0), location: s.location || 'home', ...(typeof s.style === 'string' && s.style ? { style: s.style } : {}) } : { kind: 'rest', minutes: 0, location: 'home' };
   }
   return out;
 }
@@ -398,7 +405,9 @@ export function resolveTargets(profile = {}, { now = new Date(), sessions } = {}
     training: {
       schedule, daysPerWeek: train.length, totalMinPerWeek: cap.total,
       liftMinPerWeek: Math.max(0, liftish - cardioOnLiftish),
-      style: STYLES.includes(profile.defaultStyle) ? profile.defaultStyle : DEF.style,
+      style: isStyleId(profile.defaultStyle, profile) ? profile.defaultStyle : DEF.style,
+      styles: styleOptions(profile),                       // built-ins + custom, for every style picker
+      customStyles: customStylesOf(profile),
       defaultMinutes: fin(profile.defaultMinutes) ? clamp(Math.round(num(profile.defaultMinutes)), LIMITS.defaultMinutes) : DEF.defaultMinutes,
       groupPriority: { ...(profile.groupPriority || {}) },
       volumePolicy: volumePolicyOf(profile),
@@ -420,6 +429,10 @@ export function resolveTargets(profile = {}, { now = new Date(), sessions } = {}
   }
   if (sessions) out.cardio = { ...cardio, week: cardioWeek(profile, sessions, { now }) };
   return out;
+}
+
+export function customStylesOf(profile) {
+  return (Array.isArray(profile?.customStyles) ? profile.customStyles : []).map(x => normalizeCustomStyle(x)).filter(Boolean).slice(0, STYLE_LIMITS.count);
 }
 
 // ---------------------------------------------------------------- applyTargetChange
@@ -458,15 +471,31 @@ export function applyTargetChange(profile, patch = {}) {
     p.cardio = cur;
   }
   const t = patch.training || {};
+  if (Array.isArray(t.customStyles)) {
+    // Custom styles: validated + clamped (rests 30-300 s, reps 3-30, sets 1-6, name ≤30); unique ids.
+    const seen = new Set(), list = [];
+    t.customStyles.forEach((x, i) => {
+      const c = normalizeCustomStyle(x, { now: Date.now() + i });
+      if (!c) return;
+      while (seen.has(c.id)) c.id += '_';
+      seen.add(c.id); list.push(c);
+    });
+    p.customStyles = list.slice(0, STYLE_LIMITS.count);
+    // drop references to deleted styles
+    if (typeof p.defaultStyle === 'string' && p.defaultStyle.startsWith('cs_') && !isStyleId(p.defaultStyle, p)) p.defaultStyle = DEF.style;
+    for (const k of DAYS) if (p.schedule?.[k]?.style && !isStyleId(p.schedule[k].style, p)) { p.schedule = { ...p.schedule, [k]: { ...p.schedule[k] } }; delete p.schedule[k].style; }
+  }
   if ('defaultMinutes' in t) { const v = vNum(t.defaultMinutes, LIMITS.defaultMinutes); if (v !== undefined) p.defaultMinutes = v; }
-  if ('style' in t && STYLES.includes(t.style)) p.defaultStyle = t.style;
+  if ('style' in t && isStyleId(t.style, p)) p.defaultStyle = t.style;
   if (t.schedule && typeof t.schedule === 'object') {
     const kinds = ['lift', 'cardio', 'class', 'flex', 'rest'];
     const sch = { ...(p.schedule || {}) };
     for (const k of DAYS) {
       const d = t.schedule[k]; if (!d || typeof d !== 'object') continue;
       const kind = kinds.includes(d.kind) ? d.kind : (sch[k]?.kind || 'rest');
-      sch[k] = { kind, minutes: kind === 'rest' ? 0 : (vNum(d.minutes, [0, 240]) ?? sch[k]?.minutes ?? 45), location: d.location || sch[k]?.location || 'home' };
+      // optional per-day training style: a valid id sets it, null/'' clears it (→ default style), absent keeps it
+      const style = 'style' in d ? (isStyleId(d.style, p) ? d.style : null) : (isStyleId(sch[k]?.style, p) ? sch[k].style : null);
+      sch[k] = { kind, minutes: kind === 'rest' ? 0 : (vNum(d.minutes, [0, 240]) ?? sch[k]?.minutes ?? 45), location: d.location || sch[k]?.location || 'home', ...(style ? { style } : {}) };
     }
     p.schedule = sch;
   }
@@ -512,8 +541,14 @@ export function applyTargetChange(profile, patch = {}) {
 export function needsReplan(before, after) {
   const a = resolveTargets(before), b = resolveTargets(after);
   const k = t => JSON.stringify([t.cardio.minPerWeek, t.cardio.modalities, t.cardio.hardSessionsPerWeek, t.cardio.style, t.cardio.minSession, t.training.schedule, t.training.style,
-    t.training.defaultMinutes, t.training.groupPriority, t.training.volumePolicy, t.goals.sculptGoals]);
+    t.training.defaultMinutes, t.training.groupPriority, t.training.volumePolicy, t.goals.sculptGoals, usedStyles(t.training)]);
   return k(a) !== k(b);
+}
+
+// Custom styles the plan actually uses (default style or a weekday's style): editing others needs no re-plan.
+function usedStyles(tr) {
+  const ids = new Set([tr.style, ...Object.values(tr.schedule || {}).map(d => d.style)].filter(Boolean));
+  return tr.customStyles.filter(c => ids.has(c.id));
 }
 
 // Short human summary of what changed (for toasts), e.g. "225 min/wk cardio".
@@ -526,7 +561,8 @@ export function describeChange(before, after) {
   if (JSON.stringify(a.cardio.modalities) !== JSON.stringify(b.cardio.modalities)) out.push(b.cardio.modalities.length ? `cardio: ${b.cardio.modalities.map(m => CARDIO[m]?.name || m).join(', ')}` : 'any cardio type');
   if (JSON.stringify(a.training.schedule) !== JSON.stringify(b.training.schedule)) out.push('your availability');
   if (a.training.defaultMinutes !== b.training.defaultMinutes) out.push(`${b.training.defaultMinutes}-min default sessions`);
-  if (a.training.style !== b.training.style) out.push(`${b.training.style} style`);
+  if (a.training.style !== b.training.style) out.push(`${resolveStyle(b.training.style, after).name.toLowerCase()} style`);
+  if (JSON.stringify(a.training.customStyles) !== JSON.stringify(b.training.customStyles)) out.push('your training styles');
   if (JSON.stringify(a.training.groupPriority) !== JSON.stringify(b.training.groupPriority)) out.push('muscle priorities');
   const va = a.training.volumePolicy, vb = b.training.volumePolicy;
   if (va.fillTargets !== vb.fillTargets) out.push(vb.fillTargets === 'extend' ? 'lengthen workouts to reach targets' : 'targets only in spare time');

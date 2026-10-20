@@ -12,6 +12,7 @@
 import { esc } from './components.js';
 import { ds, fmtShort, addDays } from '../util.js';
 import * as BC from '../engine/bodycomp.js';
+import { bodyGeometry } from '../engine/anthro.js';
 import * as NU from '../engine/nutrition.js';
 import { silhouetteSVG } from './silhouette.js';
 import { lineChart, bindCharts, f1, safe, mount3D, body3d, supports3D, estMuscle, maintenanceEstimate, shapeOf } from './projection.js';
@@ -36,16 +37,16 @@ const SITES = [
 // Bone lengths (§16c): tape between bony landmarks, both sides. Optional; they sharpen the 3D model's proportions.
 const LEN_HOW = ' Use a flexible (sewing) tape held straight from point to point (not wrapped around the muscle), or mark both points with a washable pen and have a partner measure. Measure twice and average; do both sides the same way.';
 const LENGTHS = [
-  { seg: 'UpperArm', name: 'Upper arm', short: 'U-arm', pair: 'Upper arm · shoulder → elbow',
-    tip: 'Stand tall, upper arm hanging straight down, elbow bent 90° (forearm level, thumb up). From the acromion (the bony outer tip on top of the shoulder: follow the ridge of the shoulder blade outward until it ends) straight down the back of the arm to the bottom of the elbow point (olecranon).' },
-  { seg: 'Forearm', name: 'Forearm', short: 'F-arm', pair: 'Forearm · elbow → wrist',
+  { seg: 'UpperArm', name: 'Upper arm', short: 'U-arm', pair: 'Upper arm · shoulder tip → elbow point (bent 90°)', bone: 'upperArm',
+    tip: 'This is a bony-point tape length, so it reads about 3 in longer than the shoulder-joint-to-elbow-joint bone: the shoulder tip sits above the joint and the elbow point sticks out behind it. The app converts it for the 3D model. Stand tall, upper arm hanging straight down, elbow bent 90° (forearm level, thumb up). From the acromion (the bony outer tip on top of the shoulder: follow the ridge of the shoulder blade outward until it ends) straight down the back of the arm to the bottom of the elbow point (olecranon).' },
+  { seg: 'Forearm', name: 'Forearm', short: 'F-arm', pair: 'Forearm · elbow point → wrist bone', bone: 'forearm',
     tip: 'Keep the elbow bent 90°, forearm level, thumb up. From the point of the elbow (olecranon) along the pinky side of the forearm to the bony bump on the pinky side of the wrist (ulnar styloid).' },
-  { seg: 'Thigh', name: 'Thigh length', short: 'Th-len', pair: 'Thigh · hip → knee',
+  { seg: 'Thigh', name: 'Thigh length', short: 'Th-len', pair: 'Thigh · hip knob → knee joint line', bone: 'thigh',
     tip: 'Stand tall, weight on both feet. From the greater trochanter (the bony knob on the side of the hip, about a hand below the top of the hip bone; it rolls under your fingers when you turn the foot in and out) straight down the outside of the leg to the outer knee joint line (the soft gap between thigh bone and shin bone; easiest to find with the knee slightly bent, then stand straight).' },
-  { seg: 'Shank', name: 'Lower leg', short: 'Sh-len', pair: 'Lower leg · knee → ankle',
+  { seg: 'Shank', name: 'Lower leg', short: 'Sh-len', pair: 'Lower leg · knee joint line → ankle bone', bone: 'shank',
     tip: 'Standing, from the same outer knee joint line straight down the outside of the shin to the centre of the outer ankle bone (lateral malleolus). Keep the tape straight; don\'t follow the calf curve.' },
 ];
-const LEN_SITES = LENGTHS.flatMap(L => ['L', 'R'].map(S => ({ k: `len${L.seg}${S}`, label: `${L.name} ${S}`, short: `${L.short} ${S}`,
+const LEN_SITES = LENGTHS.flatMap(L => ['L', 'R'].map(S => ({ k: `len${L.seg}${S}`, seg: L.seg, bone: L.bone, label: `${L.name} ${S}`, short: `${L.short} ${S}`,
   tip: (S === 'L' ? L.tip : `Same as the left: ${L.tip.charAt(0).toLowerCase()}${L.tip.slice(1)}`) + LEN_HOW, pair: S === 'L' ? L.pair : null })));
 const LABEL = { ...Object.fromEntries(SITES.map(s => [s.k, s.label])), ...Object.fromEntries(LEN_SITES.map(s => [s.k, s.label])), thigh: 'Thigh (both)', calf: 'Calf (both)', arm: 'Arm' };
 // Latest value per site, with legacy single thigh/calf filling both sides.
@@ -98,7 +99,7 @@ function profileCard(p, open) {
   </div>`;
 }
 
-function formCard(meas, log) {
+function formCard(meas, log, heightIn = null) {
   const last = latestSites(meas);
   const lastW = log.length ? log[log.length - 1].w : null;
   const field = (k, label, tip, ph, req, unit = 'in') => `<div class="field bd-field">
@@ -113,7 +114,7 @@ function formCard(meas, log) {
       ${field('weight', 'Weight', 'Morning, after the bathroom, before eating or drinking. Same scale each time.', lastW, true, 'lb')}
       ${SITES.map(s => (s.pair ? `<div class="bd-pairhead">${esc(s.pair)} · left / right</div>` : '') + field(s.k, s.label, s.tip, last[s.k], s.req)).join('')}
       <div class="bd-pairhead bd-lenhead">Bone lengths (optional, improves the 3D model)<div class="tiny muted" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:2px">Bony landmark to bony landmark, left and right. Measure once; redo only if unsure.</div></div>
-      ${LEN_SITES.map(s => (s.pair ? `<div class="bd-pairhead">${esc(s.pair)} · left / right</div>` : '') + field(s.k, s.label, s.tip, last[s.k], false)).join('')}
+      ${LEN_SITES.map(s => (s.pair ? `<div class="bd-pairhead">${esc(s.pair)} · left / right${typicalLen(s, heightIn) ? `<div class="tiny muted" style="text-transform:none;letter-spacing:0;font-weight:400;margin-top:2px">${esc(typicalLen(s, heightIn))}</div>` : ''}</div>` : '') + field(s.k, s.label, s.tip, last[s.k], false)).join('')}
       ${field('bodyFat', 'Body fat (optional)', 'Only if you have a reading from a smart scale, calipers or a DEXA scan. DEXA is the most accurate; smart scales swing with hydration. Leave blank to use the tape formula.', last.bodyFat, false, '%')}
     </div>
     <button class="btn btn-primary btn-block" data-savem>Save measurements</button>
@@ -254,7 +255,7 @@ export function render(ctx, params = {}) {
     <div class="section-title">Snapshot <button class="link" data-nav="projection">Projection ›</button></div>
     ${snapshot(b, meas)}
     <div class="section-title">Log measurements</div>
-    ${formCard(meas, log)}
+    ${formCard(meas, log, p.body?.heightIn || H)}
     <div class="section-title">History</div>
     ${history(meas, log)}
     <div class="section-title">Food log <span class="tiny muted" style="text-transform:none;letter-spacing:0">optional</span></div>
@@ -358,4 +359,18 @@ export function bind(root, ctx) {
     });
   }
   bindCharts(root);
+}
+
+// "Typical for your height: 14.4 in on the tape (≈ 11.2 in joint to joint)" under each bone-length pair.
+let typCache = { h: null, g: null };
+function typicalLen(site, heightIn) {
+  try {
+    const h = Number(heightIn) || 69;
+    if (typCache.h !== h) typCache = { h, g: bodyGeometry({ heightIn: h }) };
+    const g = typCache.g; if (!g) return '';
+    const key = site.seg.charAt(0).toLowerCase() + site.seg.slice(1);
+    const tape = g.lengths?.[key + 'L'], bone = g.bones?.[site.bone + 'L'];
+    if (!(tape > 0) || !(bone > 0)) return '';
+    return `Typical at ${Math.floor(h / 12)}′${Math.round(h % 12)}″: ≈ ${tape.toFixed(1)} in on the tape (≈ ${bone.toFixed(1)} in joint to joint)`;
+  } catch (e) { return ''; }
 }

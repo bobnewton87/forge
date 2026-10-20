@@ -28,6 +28,10 @@ import { summarize, detailSheet } from './history.js';
 import { setTargets, targetsSummaryHTML, bindTargetsSummary, makeRoomHTML, bindMakeRoom, extendedToast, openMinimumsInfo, openVolumeRoomSheet, openExtendSheet, openHitTargetsSheet } from './targets.js';
 import { resolveTargets, volumePolicyOf, CARDIO_STYLES, CARDIO_STYLE_NAMES } from '../engine/targets.js';
 import { UNIT_ORDER } from '../data/muscles.js';
+import { styleChipsHTML } from './styles.js';
+import { resolveStyle } from '../engine/generator.js';
+// CONTRACT-NOTE (STYLES): availability rows for lift / flex days have a style picker (schedule[day].style;
+//   "Default" = profile.defaultStyle); day cards show a non-default style's short name.
 // CONTRACT-NOTE (INTEGRATOR §18): the coverage card's cardio target reads resolveTargets and its
 //   stepper calls setTargets (which re-plans upcoming auto days, debounced). Saving availability goes
 //   through setTargets too (its own re-plan prompt stays). params.avail opens the availability sheet.
@@ -173,7 +177,7 @@ function dayCard(date, sessions, profile, t) {
     main = `<button type="button" class="pl-line planned" data-day="${date}">
       <span class="grow">
         <span class="pl-top"><span class="pl-title">${esc(plan.title || 'Workout')}</span>${plan.plan?.extended ? `<span class="pl-ext" data-ext="${date}" role="button" aria-label="Why longer">+${plan.plan.extended.to - plan.plan.extended.from}′</span>` : ''}${plan.plan ? `<span class="pl-tag ${plan.plan.auto ? 'auto' : 'custom'}">${plan.plan.auto ? 'Auto' : 'Custom'}</span>` : ''}</span>
-        <span class="pl-meta">${mins ? `${mins} min · ` : ''}${esc(loc.icon || '')} ${esc(loc.name)}${clsB?.time ? ` · ${esc(clsB.time)}` : ''}</span>
+        <span class="pl-meta">${mins ? `${mins} min · ` : ''}${esc(loc.icon || '')} ${esc(loc.name)}${clsB?.time ? ` · ${esc(clsB.time)}` : ''}${k === 'lift' && plan.style && plan.style !== 'hypertrophy' ? ` · ${esc(resolveStyle(plan.styleDef || plan.style, profile).short)}` : ''}</span>
         <span class="pl-chips">${groups.map(g => `<span class="pl-mchip">${esc(g.name)}</span>`).join('')}${k === 'class' || clsB ? '<span class="badge warn">🎟️ Class</span>' : ''}${cmin && k !== 'class' ? `<span class="badge cardio">${k === 'cardio' ? '🏃 ' : '+'}${cmin} min cardio</span>` : ''}</span>
       </span><span class="chev">›</span></button>`;
     cls = `kind-${k}`;
@@ -612,7 +616,8 @@ function availHtml(sched, profile) {
         <div class="pl-av-name">${DOW_NAME[k]}</div>
         <div class="pl-seg">${KINDS.map(([id, n, ic]) => `<button type="button" class="${d.kind === id ? 'active' : ''}" data-kind="${id}"><span>${ic}</span>${n}</button>`).join('')}</div>
         ${d.kind === 'rest' ? '' : `<div class="pl-av-row scroll">${MINUTES.map(m => chip(`${m}′`, { active: Number(d.minutes) === m, attrs: `data-min="${m}"`, cls: 'sm' })).join('')}</div>
-        <div class="pl-av-row scroll">${(profile.locations || []).map(l => chip(`${l.icon || ''} ${l.name}`, { active: d.location === l.id, attrs: `data-loc="${esc(l.id)}"`, cls: 'sm' })).join('')}</div>`}
+        <div class="pl-av-row scroll">${(profile.locations || []).map(l => chip(`${l.icon || ''} ${l.name}`, { active: d.location === l.id, attrs: `data-loc="${esc(l.id)}"`, cls: 'sm' })).join('')}</div>
+        ${d.kind === 'lift' || d.kind === 'flex' ? `<div class="pl-av-style"><span class="tiny muted">Style</span>${styleChipsHTML(profile, d.style || '', { attr: 'data-dstyle', withDefault: true })}</div>` : ''}`}
       </div>`;
     }).join('')}
     <div class="pl-av-total muted small" data-total></div>
@@ -650,10 +655,11 @@ function openAvailability(ctx) {
       }
       if (!day) return;
       const d = sched[day.dataset.k] = { kind: 'rest', minutes: 0, location: profile.currentLocation, ...(sched[day.dataset.k] || {}) };
-      const kb = e.target.closest('[data-kind]'), mb = e.target.closest('[data-min]'), lb = e.target.closest('[data-loc]');
+      const kb = e.target.closest('[data-kind]'), mb = e.target.closest('[data-min]'), lb = e.target.closest('[data-loc]'), sb = e.target.closest('[data-dstyle]');
       if (kb) { d.kind = kb.dataset.kind; if (d.kind !== 'rest' && !Number(d.minutes)) d.minutes = profile.defaultMinutes || 45; if (d.kind === 'rest') d.minutes = 0; if (d.kind === 'class' && !locById(profile, d.location)?.hasClasses) { const c = (profile.locations || []).find(l => l.hasClasses); if (c) d.location = c.id; } }
       else if (mb) d.minutes = Number(mb.dataset.min);
       else if (lb) d.location = lb.dataset.loc;
+      else if (sb) d.style = sb.dataset.dstyle || null;   // '' = default style
       else return;
       paint();
     };

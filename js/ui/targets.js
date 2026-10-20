@@ -11,12 +11,13 @@
 //   at runtime (a <style id="tg-css">) because INTEGRATOR owns no CSS file.
 import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, volumeRoomOptions, unitTargets, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
 import { planRange } from '../engine/planner.js';
+import { resolveStyle } from '../engine/generator.js';
 import { CARDIO } from '../data/cardio.js';
 import { ds, addDays, weekStart } from '../util.js';
 import { esc } from './components.js';
 
 export const REPLAN_DAYS = 28;
-const STYLE_NAMES = { hypertrophy: 'Hypertrophy', pump: 'Pump', strength: 'Strength', circuit: 'Circuit' };
+const styleShort = (id, p) => { const d = resolveStyle(id, p); return d.short || d.name; };
 const GOAL_NAMES = { recomp: 'Recomp', lean_bulk: 'Lean bulk', cut: 'Cut' };
 const MODE_NAMES = { off: 'Off', simple: 'Simple', cycling: 'Carb cycling' };
 const MOD_CHOICES = ['run', 'treadmill', 'bike', 'spin', 'walk_incline', 'row', 'elliptical', 'stairmaster', 'swim', 'walk'];
@@ -314,7 +315,7 @@ export function targetsSummaryHTML(ctx, { title = 'Your targets' } = {}) {
     <div class="tg-head"><span>${esc(title)}</span><button type="button" class="tg-edit" data-tgt="cardio">Edit</button></div>
     <div class="tg-row">
       ${item('cardio', '🏃', `${t.cardio.minPerWeek}′ cardio/wk`, w ? `${w.done} done · ${w.planned} planned` : 'weekly target', short)}
-      ${item('training', '🏋️', `${t.training.daysPerWeek} days · ${Math.round(t.training.totalMinPerWeek / 60 * 10) / 10}h`, `${t.training.defaultMinutes}′ default · ${STYLE_NAMES[t.training.style]}`)}
+      ${item('training', '🏋️', `${t.training.daysPerWeek} days · ${Math.round(t.training.totalMinPerWeek / 60 * 10) / 10}h`, `${t.training.defaultMinutes}′ default · ${styleShort(t.training.style, p)}`)}
       ${item('nutrition', '🍽️', kcal, n.mode === 'off' ? 'tap to set targets' : `${n.proteinGPerLb} g/lb protein · ${n.fatPct}% fat`)}
       ${item('adherence', '🎯', `${Math.round(t.adherence * 100)}% adherence`, `${GOAL_NAMES[t.goals.goal]} → ${t.goals.goalBodyFatPct}% BF`)}
     </div>
@@ -382,7 +383,7 @@ function sheetHTML(ctx, focus) {
     <p class="tiny muted">${t.training.daysPerWeek} days · ${t.training.totalMinPerWeek} min/week available · ~${t.training.liftMinPerWeek} lift min after cardio.</p>
     <div class="label">Default session length</div>
     <div class="chips">${[15, 20, 30, 45, 60, 75, 90].map(m => `<button type="button" class="chip sm ${t.training.defaultMinutes === m ? 'active' : ''}" data-s-min="${m}">${m}</button>`).join('')}</div>
-    <div class="label mt">Default style</div>${seg('s-style', STYLES.map(s => [s, STYLE_NAMES[s]]), t.training.style)}
+    <div class="label mt">Default style</div><div class="chips">${t.training.styles.map(o => `<button type="button" class="chip sm ${o.id === t.training.style ? 'active' : ''}" data-s-style="${esc(o.id)}">${esc(o.short || o.name)}</button>`).join('')}</div>
     <div class="label mt">When the week's set minimums don't fit</div>${seg('s-vmode', [['extend', 'Lengthen'], ['ask', 'Ask me'], ['fixed', 'Keep times']], t.training.volumePolicy.mode)}
     ${step('s-vmax', 'Longest workout', t.training.volumePolicy.maxMinutes, '′')}
     <div class="label mt">Targets (above the minimums)</div>${seg('s-vfill', [['time', 'Spare time only'], ['extend', 'May lengthen']], t.training.volumePolicy.fillTargets)}

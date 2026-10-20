@@ -135,6 +135,9 @@ button.pl-line:active { background: var(--card2); }
 .pl-av-row { display: flex; gap: 6px; margin-top: 8px; }
 .pl-av-row.scroll { overflow-x: auto; scrollbar-width: none; margin-left: -10px; margin-right: -10px; padding: 0 10px; }
 .pl-av-row.scroll::-webkit-scrollbar { display: none; }
+.pl-av-style { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; }
+.pl-av-style > .tiny { padding-top: 9px; min-width: 34px; }
+.pl-av-style .st-chips .chip { min-height: 32px; }
 .pl-av-total { margin: 12px 2px 0; text-align: center; }
 
 /* ---------- Today: today's plan card + planning mode ---------- */

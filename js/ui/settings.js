@@ -6,15 +6,18 @@ import { EQUIPMENT } from '../data/equipment.js';
 import { esc } from './components.js';
 import { ds } from '../util.js';
 import { setTargets } from './targets.js';
+import { styleChipsHTML, customStylesListHTML, openStyleEditor, openStyleInfo, deleteStyle } from './styles.js';
+import { buildWorkout } from '../engine/generator.js';
 import { resolveTargets, LIMITS, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY } from '../engine/targets.js';
 // CONTRACT-NOTE (INTEGRATOR §18): goal, sculpt focus, muscle priority, default length/style, the
 //   weekly cardio target and adherence all read resolveTargets and write through setTargets (planning
 //   changes re-plan upcoming auto days). The cardio slider spans 0–600 (the API allows up to 900).
 //   Volume policy (lengthen / ask / keep times + longest workout) is edited here too.
+// CONTRACT-NOTE (STYLES): default style chips list built-ins + custom styles; "My training styles" (#sec-styles)
+//   edits / deletes custom styles (ui/styles.js editor).
 
 const CAT_ORDER = [['free', 'Free weights & benches'], ['cable', 'Cables'], ['machine', 'Machines'], ['bodyweight', 'Bodyweight stations'], ['cardio', 'Cardio'], ['other', 'Other']];
 const GOALS = [['recomp', 'Recomp', 'Lose fat, build muscle'], ['lean_bulk', 'Lean bulk', 'Small surplus, max growth'], ['cut', 'Cut', 'Get lean, keep muscle']];
-const STYLES = [['hypertrophy', 'Hypertrophy'], ['pump', 'Pump'], ['strength', 'Strength'], ['circuit', 'Circuit']];
 const NUTRI = [['off', 'Off'], ['simple', 'Simple'], ['cycling', 'Carb cycling']];
 
 export function title(ctx, params) { return ctx.route === 'more' ? '' : 'Settings'; }
@@ -115,7 +118,8 @@ function renderSettings(ctx) {
   <div class="card">
     <div class="label mb">Default session length</div>
     <div class="chips">${[15, 20, 30, 45, 60, 75, 90].map(m => `<button class="chip ${T.training.defaultMinutes === m ? 'active' : ''}" data-min="${m}">${m}</button>`).join('')}</div>
-    <div class="label mb mt2">Default style</div>${seg('defaultStyle', STYLES, T.training.style)}
+    <div class="label mb mt2">Default style</div>${styleChipsHTML(p, T.training.style, { attr: 'data-dstyle' })}
+    <div class="label mb mt2" id="sec-styles">My training styles</div>${customStylesListHTML(p)}
     <div class="label mt2">Weekly cardio target</div>
     <div class="row mt"><input type="range" min="0" max="${cmax}" step="15" value="${T.cardio.minPerWeek}" data-cardio data-max="${cmax}" style="--pct:${(T.cardio.minPerWeek / cmax) * 100}%" class="grow" aria-label="Weekly cardio target"><span class="num bold" style="width:72px;text-align:right" data-cardio-v>${T.cardio.minPerWeek} min</span></div>
     ${T.warnings.length ? `<p class="tiny" style="color:var(--warn);margin-top:6px">${esc(T.warnings[0])}</p>` : `<p class="tiny muted" style="margin-top:6px">Your availability fits ~${T.capacity.cardio} cardio min/week. Same target as Body and Plan.</p>`}
@@ -243,6 +247,16 @@ function bindSettings(root, ctx, params) {
   const ad = root.querySelector('[data-adh]'), adv = root.querySelector('[data-adh-v]');
   ad.addEventListener('input', () => { adv.textContent = Math.round(ad.value * 100) + '%'; ad.style.setProperty('--pct', ((ad.value - LIMITS.adherence[0]) / (LIMITS.adherence[1] - LIMITS.adherence[0])) * 100 + '%'); });
   ad.addEventListener('change', () => { ad.blur(); setTargets(ctx, { adherence: Number(ad.value) }, { replan: false }); });
+  root.querySelectorAll('[data-dstyle]').forEach(b => b.onclick = () => setTargets(ctx, { training: { style: b.dataset.dstyle } }));
+  const sampleRef = () => {   // the style editor's "≈ N min" uses a 45-min upper workout here
+    const p = ctx.store.getProfile();
+    const loc = (p.locations || []).find(l => l.id === p.currentLocation) || (p.locations || [])[0];
+    try { return buildWorkout({ targets: ['upper'], minutes: 45, location: loc, profile: p, sessions: ctx.store.getSessions(), style: 'hypertrophy', seed: 1 }); } catch (e) { return null; }
+  };
+  root.querySelector('[data-st-new]')?.addEventListener('click', () => openStyleEditor(ctx, { style: 'efficient', refSession: sampleRef(), refLabel: 'a 45-min upper workout' }));
+  root.querySelectorAll('[data-st-edit]').forEach(b => b.onclick = () => { const cs = (ctx.store.getProfile().customStyles || []).find(x => x && x.id === b.dataset.stEdit); if (cs) openStyleEditor(ctx, { style: cs, refSession: sampleRef(), refLabel: 'a 45-min upper workout' }); });
+  root.querySelectorAll('[data-st-del]').forEach(b => b.onclick = () => deleteStyle(ctx, b.dataset.stDel));
+  root.querySelector('[data-st-why]')?.addEventListener('click', () => openStyleInfo(ctx));
   root.querySelector('[data-tg-all]')?.addEventListener('click', () => import('./targets.js').then(m => m.openTargetsSheet(ctx, { focus: 'cardio' })));
   root.querySelectorAll('[data-sw]').forEach(i => i.addEventListener('change', () => {
     const p = ctx.store.getProfile(); const rt = { ...(p.restTimer || {}) };

@@ -28,7 +28,8 @@ import { expandEquipment } from '../data/equipment.js';
 import { cardioOptions, CARDIO, INTENSITIES } from '../data/cardio.js';
 import { getEx } from '../data/exercises.js';
 import { recommend, groupStatus, weekSummary, cardioStatus, streak } from '../engine/recovery.js';
-import { buildWorkout, estimateMinutes, swapBlock, addExercise } from '../engine/generator.js';
+import { buildWorkout, estimateMinutes, swapBlock, addExercise, resolveStyle, isStyleId, restyle } from '../engine/generator.js';
+import { styleChipsHTML, openStyleEditor, openStyleInfo } from './styles.js';
 import { contextFor, suggestForDay } from '../engine/planner.js';
 import { renderClassPicker, bindClassPicker } from './classes.js';
 import { resolveTargets, suggestFinisher } from '../engine/targets.js';
@@ -44,8 +45,10 @@ import {
 } from './components.js';
 
 const TIMES = [15, 20, 30, 45, 60, 75, 90];
-const STYLES = [['hypertrophy', 'Hypertrophy'], ['pump', 'Pump'], ['strength', 'Strength'], ['circuit', 'Circuit']];
-const STYLE_HINT = { hypertrophy: '8-12 reps, 60-120 s rest', pump: 'Supersets, short rests', strength: 'Heavier, 5-8 reps, longer rests', circuit: 'Circuit, minimal rest' };
+// CONTRACT-NOTE (STYLES): the builder's style row lists built-ins + custom styles (profile.customStyles)
+//   and "＋ Custom style" (editor sheet with a live "≈ N min for this workout"); "Save as my style" copies
+//   the selected style into the editor, "Edit" edits the selected custom style. The preview shows how long
+//   the same workout takes as plain Hypertrophy when another style is picked.
 const PRESET_CHIPS = ['push', 'pull', 'legs', 'upper', 'arms', 'full', 'v_taper'];
 const FINISHER_STEP = 5, FINISHER_MAX = 60;
 const FINISHER_PREF = ['bike', 'walk_incline', 'elliptical', 'row', 'treadmill', 'run', 'walk'];
@@ -125,7 +128,7 @@ function builderState(ctx, profile) {
   const b = ctx.store.kv('builder') || {};
   return {
     minutes: Number(b.minutes) || profile.defaultMinutes || 45,
-    style: b.style || profile.defaultStyle || 'hypertrophy',
+    style: isStyleId(b.style, profile) ? b.style : (isStyleId(profile.defaultStyle, profile) ? profile.defaultStyle : 'hypertrophy'),
     targets: Array.isArray(b.targets) ? b.targets.filter(t => GROUPS[t] || SCULPT_GOALS[t] || PRESETS[t]) : [],
     cardio: { on: false, modality: null, minutes: 10, intensity: 'moderate', ...(b.cardio || {}) },
   };
@@ -303,8 +306,7 @@ function builderSection(sessions, profile, loc) {
     <div class="tr-tiles">${tiles}</div>
     <div class="tr-legend"><span style="--rc:var(--good)">Needs work</span><span style="--rc:var(--accent)">Ready</span><span style="--rc:var(--warn)">Almost</span><span style="--rc:var(--bad)">Recovering</span></div>
     ${sculpt.length ? `<div class="tr-label">Sculpt focus</div><div class="tr-chiprow wrap">${sculpt.map(id => chip(`✦ ${SCULPT_GOALS[id].name}`, { active: B.targets.includes(id), attrs: `data-t="sculpt" data-id="${id}"`, cls: 'sm chip-sculpt' })).join('')}</div>` : ''}
-    <div class="tr-label">Style <span class="muted">· ${esc(STYLE_HINT[B.style] || '')}</span></div>
-    <div class="tr-seg">${STYLES.map(([id, n]) => `<button type="button" class="${B.style === id ? 'active' : ''}" data-t="style" data-id="${id}">${n}</button>`).join('')}</div>
+    ${styleRow(profile)}
     <div class="tr-label tr-label-row"><span>Cardio finisher</span>
       <span class="tr-cardio-ctl">${copts.length ? `<span class="tr-step ${c.on ? 'on' : ''}" role="group" aria-label="Cardio minutes">
         <button type="button" data-t="c-dec" aria-label="Less cardio" ${c.on && c.minutes > FINISHER_STEP ? '' : c.on ? 'disabled' : ''}>−</button>
@@ -318,6 +320,30 @@ function builderSection(sessions, profile, loc) {
     </div>` : ''}
     <button type="button" class="btn btn-primary tr-big" data-t="build">${B.targets.length ? `Build ${B.minutes}-min ${esc(B.targets.slice(0, 3).map(targetName).join(' + '))}${B.targets.length > 3 ? '…' : ''}` : `Build ${B.minutes}-min smart workout`}</button>
   </section>`;
+}
+
+function styleRow(profile) {
+  const d = resolveStyle(B.style, profile);
+  const link = d.custom ? '<button type="button" class="tr-link" data-t="style-edit">Edit</button>'
+    : `${d.id === 'efficient' ? '<button type="button" class="tr-link" data-t="style-why">Why?</button> · ' : ''}<button type="button" class="tr-link" data-t="style-save">Save as my style</button>`;
+  return `<div class="tr-label tr-label-row"><span>Style</span><span class="small">${link}</span></div>
+    ${styleChipsHTML(profile, d.id, { attr: 'data-id', withNew: true, extraAttrs: 'data-t="style"' })}
+    <div class="muted small" style="margin-top:6px" data-style-hint>${esc(d.hint || '')}</div>`;
+}
+
+// A reference workout for the style editor's "≈ N min": the visible draft, else a quick plain-hypertrophy
+// build of the builder's current targets / time / place.
+function styleRef(ctx) {
+  const d = getDraft(ctx);
+  if (d?.session && (d.session.blocks || []).some(b => b.kind === 'lift')) return { refSession: d.session, refLabel: 'this workout' };
+  const profile = ctx.store.getProfile();
+  const loc = currentLoc(ctx, profile);
+  const ec = engineCtx(ctx.store.getSessions());
+  const s = safe(() => buildWorkout({ targets: B.targets, minutes: B.minutes, location: loc, profile, sessions: ec.history, upcoming: ec.upcoming, now: refNow(), style: 'hypertrophy', seed: 1 }), null);
+  return { refSession: s, refLabel: `a ${B.minutes}-min ${B.targets.length ? B.targets.slice(0, 2).map(targetName).join(' + ') : 'smart'} workout` };
+}
+function openEditor(ctx, style) {
+  openStyleEditor(ctx, { style, ...styleRef(ctx), onSaved: id => { B.style = id; saveB(ctx); setTimeout(() => ctx.rerender(), 0); } });
 }
 
 function othersSection(loc) {
@@ -399,12 +425,13 @@ function preview(draft, profile) {
 
   let items = '';
   let i = 0;
+  const pairWord = resolveStyle(s.styleDef || s.style, profile).pairing === 'antagonist' ? 'Pair' : 'Superset';
   while (i < blocks.length) {
     const g = blocks[i].kind === 'lift' ? blocks[i].group : null;
     if (g) {
       let j = i; while (j < blocks.length && blocks[j].kind === 'lift' && blocks[j].group === g) j++;
       if (j - i > 1) {
-        items += `<div class="tr-ss"><div class="tr-ss-label">${j - i > 2 ? 'Circuit' : 'Superset'} ${esc(g)}</div>${blocks.slice(i, j).map((b, k) => planItem(b, i + k, blocks.length, units)).join('')}</div>`;
+        items += `<div class="tr-ss"><div class="tr-ss-label">${j - i > 2 ? 'Circuit' : pairWord} ${esc(g)}</div>${blocks.slice(i, j).map((b, k) => planItem(b, i + k, blocks.length, units)).join('')}</div>`;
         i = j; continue;
       }
     }
@@ -415,13 +442,14 @@ function preview(draft, profile) {
   return `<section class="tr-sec tr-preview">
     <div class="tr-prev-head">
       <button type="button" class="tr-link" data-t="back">‹ Builder</button>
-      <span class="muted small">${esc(loc ? `${loc.icon || ''} ${loc.name}` : s.location || '')}${draft.params?.style ? ' · ' + esc(STYLES.find(x => x[0] === draft.params.style)?.[1] || '') : ''}</span>
+      <span class="muted small">${esc(loc ? `${loc.icon || ''} ${loc.name}` : s.location || '')}${s.style || draft.params?.style ? ' · ' + esc(resolveStyle(s.styleDef || s.style || draft.params.style, profile).short || '') : ''}</span>
     </div>
     <div class="tr-prev-title">
       <h2>${esc(s.title || 'Workout')}</h2>
       ${est ? `<div class="tr-est ${over ? 'over' : ''}"><b>~${Math.round(est)}</b><span>/ ${budget || '?'} min</span></div>` : ''}
     </div>
     ${rebuiltNote ? `<div class="tr-rebuilt">↻ ${esc(rebuiltNote)}</div>` : ''}
+    ${styleCompare(s, profile)}
     ${(s.rationale || []).length ? `<ul class="tr-rationale">${s.rationale.slice(0, 6).map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
     <div class="tr-plan">${items || '<div class="empty muted">No exercises. Add one below.</div>'}</div>
     <div class="tr-plan-tools">
@@ -437,6 +465,17 @@ function preview(draft, profile) {
       <button type="button" class="btn btn-ghost tr-danger-text" data-t="discard">Discard</button>
     </div>`}
   </section>`;
+}
+
+// Time-saver / custom styles: what the same exercises and sets would take as plain Hypertrophy.
+function styleCompare(s, profile) {
+  const d = resolveStyle(s.styleDef || s.style, profile);
+  if (d.id === 'hypertrophy' || d.builtin && d.id !== 'efficient') return '';
+  const lifts = (s.blocks || []).filter(b => b.kind === 'lift');
+  if (lifts.length < 2) return '';
+  const h = safe(() => restyle(s, 'hypertrophy', { profile }).estMinutes, null), m = safe(() => estimateMinutes(s.blocks), null);
+  if (!h || !m || h - m < 2) return '';
+  return `<div class="tr-rebuilt" data-style-compare>⏱ ${esc(d.short || d.name)}: this much work takes ≈ ${h} min as plain Hypertrophy (${Math.round((1 - m / h) * 100)}% less time)</div>`;
 }
 
 function planItem(b, i, n, units) {
@@ -671,7 +710,12 @@ export function bind(root, ctx, params = {}) {
         saveB(ctx); ctx.rerender(); break;
       }
       case 'clear': B.targets = []; saveB(ctx); ctx.rerender(); break;
-      case 'style': B.style = el.dataset.id; saveB(ctx); ctx.rerender(); break;
+      case 'style':
+        if (el.dataset.id === '__new') { openEditor(ctx, B.style); break; }
+        B.style = el.dataset.id; saveB(ctx); ctx.rerender(); break;
+      case 'style-save': openEditor(ctx, B.style); break;
+      case 'style-edit': { const cs = (profile.customStyles || []).find(x => x && x.id === B.style); if (cs) openEditor(ctx, cs); break; }
+      case 'style-why': openStyleInfo(ctx); break;
       case 'cardio-on': {
         B.cardio.on = !B.cardio.on;
         if (B.cardio.on) { const sug = safe(() => suggestFinisher(profile, store.getSessions(), { now: refNow(), minutes: B.minutes }), null); if (sug) { B.cardio.minutes = sug.minutes; B.cardio.intensity = 'easy'; } }

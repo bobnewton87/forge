@@ -33,7 +33,9 @@
 //   greedy walk, balanceCardio() grows easy finishers on auto lift days of each week (up to
 //   targets.finisherCap(minutes)) until the week's planned cardio reaches the target; what still
 //   doesn't fit shows as a shortfall warning in weekPlanSummary (cardioMinutes.capacity/shortfall).
-//   Lift days use profile.defaultStyle as the buildWorkout style.
+//   Lift days use the weekday's style (schedule[day].style, optional; STYLES builder) → else
+//   profile.defaultStyle as the buildWorkout style (plan.slot.style records it); rebuild passes keep the
+//   day's style. Time-saver days fit more sets per minute, so the minimums need fewer extensions.
 // CONTRACT-NOTE (weekly minimums): after the cardio + balance passes, balanceVolume() tops up every
 //   muscle group still under its weekly minimum (done + planned this calendar week): extra sets on
 //   auto-planned exercises that hit it (≤5 sets each), else a new exercise from exercisesFor() at the
@@ -47,7 +49,7 @@
 //   weekPlanSummary warns per group "Triceps 9/13 sets: short 4" and returns `minimums`
 //   ({ met, short:[{ group, name, total, min, short }] }) and `extended` ([{ date, from, to, reason }]).
 import { recommend, groupStatus, muscleStatus, sessionVolume } from './recovery.js';
-import { buildWorkout, estimateMinutes, addExercise, exercisesFor, swapBlock, alternatives } from './generator.js';
+import { buildWorkout, estimateMinutes, addExercise, exercisesFor, swapBlock, alternatives, isStyleId } from './generator.js';
 import { getEx } from '../data/exercises.js';
 import { CARDIO, INTENSITIES, cardioOptions } from '../data/cardio.js';
 import { classify } from '../classes/classify.js';
@@ -129,7 +131,7 @@ function locationFor(profile, id) {
 function slotFor(schedule, date) {
   const s = schedule?.[DOW[parseDs(date).getDay()]];
   if (!s || !s.kind) return { kind: 'rest', minutes: 0, location: 'home' };
-  return { kind: s.kind, minutes: Number(s.minutes) || 0, location: s.location || 'home' };
+  return { kind: s.kind, minutes: Number(s.minutes) || 0, location: s.location || 'home', ...(s.style ? { style: s.style } : {}) };
 }
 
 function classesOn(classSchedule, date) {
@@ -250,7 +252,11 @@ function prefList(profile, opts, pref) {
   const mine = cardioPrefs(profile).modalities.filter(m => opts.has(m));
   return mine.length ? mine : pref;   // stated preferences win whenever one is available here
 }
-const styleOf = profile => (['hypertrophy', 'pump', 'strength', 'circuit'].includes(profile?.defaultStyle) ? profile.defaultStyle : 'hypertrophy');
+const styleOf = profile => (isStyleId(profile?.defaultStyle, profile) ? profile.defaultStyle : 'hypertrophy');
+// A lift day's style: the weekday's own style (availability schedule[day].style) → else profile.defaultStyle.
+const styleFor = (profile, slot) => (slot && isStyleId(slot.style, profile) ? slot.style : styleOf(profile));
+// Rebuilding an already planned day keeps the style it was planned with.
+const styleKept = (ctx, old) => old?.styleDef || (isStyleId(old?.style, ctx.profile) ? old.style : styleFor(ctx.profile, old?.plan?.slot));
 
 // Prio-weighted fraction of the weekly minimums still missing (0 = all met, 1 = nothing done).
 function liftDeficitFrac(ctx, st) {
@@ -349,7 +355,7 @@ function liftDay(ctx, date, slot, st, R, why = null) {
   }
 
   const seed = hashStr(date + '|lift|' + ctx.seed);
-  const w = buildWorkout({ targets, minutes, location: loc, profile: ctx.profile, sessions: ctx.history, now, seed, cardio, upcoming, style: styleOf(ctx.profile) });
+  const w = buildWorkout({ targets, minutes, location: loc, profile: ctx.profile, sessions: ctx.history, now, seed, cardio, upcoming, style: styleFor(ctx.profile, slot) });
   const label = pick.label + (nudged.length ? ' + ' + nudged.map(gName).join(' & ') : '');
   const recWhy = (pick.reasons || []).filter(x => !/^Cardio:/.test(x)).slice(0, 2);
   const reason = why || `${label}: best fit for recovery and this week's targets`;
@@ -604,7 +610,7 @@ function balanceWeek(ctx, out, ws, we) {
       const loc = locationFor(ctx.profile, old.location);
       const targets = [...old.targets, g];
       const cardio = (old.blocks || []).filter(b => b.kind === 'cardio').map(b => ({ modality: b.modality, minutes: b.minutes, intensity: b.intensity }))[0] || null;
-      const w = buildWorkout({ targets, minutes: old.minutes, location: loc, profile: ctx.profile, sessions: hist, now, seed: old.seed, cardio, style: styleOf(ctx.profile) });
+      const w = buildWorkout({ targets, minutes: old.minutes, location: loc, profile: ctx.profile, sessions: hist, now, seed: old.seed, cardio, style: styleKept(ctx, old) });
       const repl = {
         ...w, id: old.id, date: old.date, status: 'planned', startedAt: null, endedAt: null, location: old.location, minutes: old.minutes,
         rationale: [old.rationale[0], `Added ${gName(g).toLowerCase()} to close this week's gap (${fmt(totals[g] || 0)}/${Math.round(T[g].target.min)} sets)`, ...(w.rationale || [])].slice(0, 7),
@@ -683,7 +689,7 @@ function balanceCardio(ctx, out, ws, we, last) {
     const hist = ctx.history.filter((_, j) => j !== hi);
     const now = noonOf(old.date);
     const cardio = { modality: c.mod, minutes: mins, intensity: 'easy' };
-    const w = buildWorkout({ targets: old.targets, minutes: old.minutes, location: c.loc, profile: ctx.profile, sessions: hist, now, seed: old.seed, cardio, upcoming: hist.filter(h => h.date > old.date), style: styleOf(ctx.profile) });
+    const w = buildWorkout({ targets: old.targets, minutes: old.minutes, location: c.loc, profile: ctx.profile, sessions: hist, now, seed: old.seed, cardio, upcoming: hist.filter(h => h.date > old.date), style: styleKept(ctx, old) });
     const why = `Weekly cardio target ${target} min: a ${mins}-min easy ${CARDIO[c.mod]?.name.toLowerCase() || c.mod} finisher (lifting gets the other ${old.minutes - mins} min)`;
     const repl = {
       ...w, id: old.id, date: old.date, status: 'planned', startedAt: null, endedAt: null, location: old.location, minutes: old.minutes, title: old.title,
@@ -1129,7 +1135,8 @@ export function suggestForDay(date, { profile, sessions = [], schedule, classSch
   profile = profile || {};
   schedule = schedule || profile.schedule || {};
   date = toDs(date) || ds(now);
-  const sl = slot ? { kind: slot.kind || 'lift', minutes: Number(slot.minutes) || profile.defaultMinutes || 45, location: slot.location || profile.currentLocation || 'home' } : slotFor(schedule, date);
+  const day = slotFor(schedule, date);
+  const sl = slot ? { kind: slot.kind || 'lift', minutes: Number(slot.minutes) || profile.defaultMinutes || 45, location: slot.location || profile.currentLocation || 'home', ...((slot.style || day.style) ? { style: slot.style || day.style } : {}) } : day;
   if (sl.kind === 'rest' || sl.minutes < 10) return null;
   const ctx = makeCtx({ profile, sessions, schedule, classSchedule, now, seed });
   // Planned days before AND after `date` are context (simulated as done); planned sessions on

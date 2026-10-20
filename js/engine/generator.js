@@ -16,6 +16,15 @@
 //   (3 at 60+ min); fill-in (complement) groups prefer isolations and go after the requested work.
 // CONTRACT-NOTE: alternatives()/exercisesFor() accept equipment as an array of ids or a Set;
 //   undefined means "no equipment filter".
+// CONTRACT-NOTE (STYLES, 2026-10-20): `style` is a built-in id ('hypertrophy' | 'efficient' (Hypertrophy ·
+//   Time-saver) | 'pump' | 'strength' | 'circuit'), a custom id 'cs_…' from profile.customStyles, or a
+//   custom-style object. STYLE_DEFS / resolveStyle(styleOrObj, profile) hold every style parameter (rep
+//   base, restCompound/restHeavy/restIsolation, pairing, sets, time-fit flex). Sessions built with a
+//   custom style also carry `styleDef` (the validated custom style) + `styleName`, so swapBlock /
+//   addExercise / restyle work without the profile. Extra exports: STYLE_DEFS, BUILTIN_STYLES, PAIRINGS,
+//   PAIRING_NAMES, STYLE_BASES, STYLE_LIMITS, STYLE_EVIDENCE, normalizeCustomStyle, resolveStyle,
+//   styleOptions, isStyleId, restyle(session, style, { profile, sessions, now }) (same exercises/sets
+//   re-arranged + re-rested for another style), sharesLimiter, competes.
 
 import { EXERCISES, getEx } from '../data/exercises.js';
 import { REGIONS, GROUPS, PRESETS, regionsFor } from '../data/muscles.js';
@@ -134,7 +143,7 @@ function gripLoad(ex) {
 }
 // Two moves share a limiting muscle (triceps, biceps, grip): don't superset them, or the
 // second one is pre-fatigued (e.g. dead hang + curls, close-grip press + dips).
-function sharesLimiter(a, b) {
+export function sharesLimiter(a, b) {
   const la = groupLoad(a), lb = groupLoad(b);
   const isPull = e => e.pattern === 'horizontal_pull' || e.pattern === 'vertical_pull';
   for (const g of ['triceps', 'biceps']) {
@@ -160,7 +169,7 @@ function cosine(a, b) {
 function isAntagonist(a, b) {
   return ANTAGONIST.some(([p, q]) => (a.pattern === p && b.pattern === q) || (a.pattern === q && b.pattern === p));
 }
-function competes(a, b) {
+export function competes(a, b) {
   const ma = new Set(mainRegions(a));
   return mainRegions(b).some(r => ma.has(r)) || primaryGroup(a) === primaryGroup(b) || sharesLimiter(a, b);
 }
@@ -174,13 +183,111 @@ function shortWhy(w) {
 }
 function safe(fn, fallback) { try { const v = fn(); return v == null ? fallback : v; } catch { return fallback; } }
 
+// ---------------------------------------------------------------- style model
+// One place for everything a training style controls: rep scheme (`base`), rests, pairing, sets.
+// pairing: 'none' straight sets | 'accessory' main compounds straight, accessories in supersets |
+//   'antagonist' every move paired with a non-competing partner (push+pull, upper+lower, compound +
+//   unrelated isolation; never two that share a limiting muscle) and, because the partner's set is
+//   part of each muscle's rest, the timer after the pair is the style rest minus the partner's work
+//   (floor 30 s), so each muscle still gets ≈restCompound / restIsolation between its own sets |
+//   'superset' pairs / tri-sets of everything | 'circuit' one or two circuits.
+// restFlex: [lo, hi, hiRelaxed] multipliers the time fitter may apply to rests (custom styles: fixed).
+export const PAIRINGS = ['none', 'accessory', 'antagonist', 'superset', 'circuit'];
+export const PAIRING_NAMES = { none: 'Straight sets', accessory: 'Pair accessories', antagonist: 'Antagonist pairs', superset: 'Supersets', circuit: 'Circuit' };
+export const STYLE_BASES = ['hypertrophy', 'pump', 'strength', 'circuit'];   // rep schemes
+export const STYLE_LIMITS = { rest: [30, 300], reps: [3, 30], sets: [1, 6], name: 30, count: 20 };
+const PAIR_REST_FLOOR = 30;
+export const STYLE_EVIDENCE = [
+  { claim: 'A little more growth with rests longer than 60 s, but no clear extra benefit beyond about 90 s.', source: 'Singer et al. 2024, Front Sports Act Living 6:1429789 (Bayesian meta-analysis), doi:10.3389/fspor.2024.1429789' },
+  { claim: 'In trained men, 3-min rests beat 1-min rests for strength and thigh growth: rests shouldn\'t get very short, so each muscle still gets 60-90 s here.', source: 'Schoenfeld et al. 2016, J Strength Cond Res 30:1805, doi:10.1519/JSC.0000000000001272' },
+  { claim: 'Supersets / paired sets roughly halve session time for the same volume, and look better suited to hypertrophy than to max strength (long-term data still limited).', source: 'Iversen et al. 2021, Sports Med 51:2079 ("No time to lift?", narrative review), doi:10.1007/s40279-021-01490-1' },
+];
+const B_HYP = { base: 'hypertrophy', perSet: 115, maxSets: 5, restFlex: [0.75, 1.3, 1.5], shortPairs: true, builtin: true };
+export const STYLE_DEFS = {
+  hypertrophy: { ...B_HYP, id: 'hypertrophy', name: 'Hypertrophy', short: 'Hypertrophy', restCompound: 90, restHeavy: 120, restIsolation: 60, pairing: 'accessory',
+    round: (anyComp, n, minutes) => (minutes <= 25 ? (anyComp ? 60 : 45) : (anyComp ? 75 : 60)),
+    hint: '8-12 reps, 60-120 s rest', notes: 'Straight sets on the big lifts, accessories in supersets. The default.' },
+  efficient: { ...B_HYP, id: 'efficient', name: 'Hypertrophy · Time-saver', short: 'Time-saver', restCompound: 90, restHeavy: 90, restIsolation: 60, pairing: 'antagonist',
+    perSet: 75, restFlex: [0.9, 1.1, 1.2], exShift: [0, 1],
+    hint: 'Hypertrophy reps, paired sets, ~90/60 s rest per muscle', notes: 'Same reps and sets as Hypertrophy, but every move is paired with one that doesn\'t compete (push + pull, upper + lower) and you rest after the pair. Each muscle still gets ~90 s (compounds) / ~60 s (isolations) between its own sets, so the same workout takes about 30% less time.' },
+  pump: { base: 'pump', builtin: true, id: 'pump', name: 'Pump', short: 'Pump', restCompound: 60, restHeavy: 60, restIsolation: 45, pairing: 'superset', perSet: 80, maxSets: 5, restFlex: [0.75, 1.3, 1.5], shortPairs: true,
+    round: (anyComp, n) => (n > 2 ? 45 : (anyComp ? 45 : 30)), titleSuffix: ' Pump', hint: 'Supersets, short rests', notes: 'Higher reps, supersets and tri-sets, short rests.' },
+  strength: { base: 'strength', builtin: true, id: 'strength', name: 'Strength', short: 'Strength', restCompound: 150, restHeavy: 180, restIsolation: 75, pairing: 'none', perSet: 170, maxSets: 6, restFlex: [0.75, 1.3, 1.5], shortPairs: true,
+    round: anyComp => (anyComp ? 120 : 75), compoundBias: 1.3, exShift: [-1, -2], hint: 'Heavier, 5-8 reps, longer rests', notes: 'Heavier compounds, 3-8 reps, long rests.' },
+  circuit: { base: 'circuit', builtin: true, id: 'circuit', name: 'Circuit', short: 'Circuit', restCompound: 60, restHeavy: 60, restIsolation: 60, pairing: 'circuit', perSet: 65, maxSets: 4, restFlex: [0.75, 1.3, 1.5], shortPairs: true,
+    round: (anyComp, n, minutes) => (minutes <= 20 ? 60 : 75), exShift: [1, 2], titleSuffix: ' Circuit', hint: 'Circuit, minimal rest', notes: 'Stations back to back, rest after each round.' },
+};
+export const BUILTIN_STYLES = ['hypertrophy', 'efficient', 'pump', 'strength', 'circuit'];
+
+const r5 = x => Math.round(x / 5) * 5;
+const numOr = (v, d) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? d : Number(v));
+// Validate / clamp a custom style → { id, name, base, restCompound, restIsolation, pairing, repMin?, repMax?, setsPerExercise? }.
+// Rests 30-300 s (steps of 5), reps 3-30, sets 1-6, name ≤30 chars. Returns null for non-objects.
+export function normalizeCustomStyle(cs, { now = Date.now() } = {}) {
+  if (!cs || typeof cs !== 'object') return null;
+  const L = STYLE_LIMITS;
+  const baseDef = STYLE_DEFS[cs.base] || STYLE_DEFS.hypertrophy;
+  const id = typeof cs.id === 'string' && /^cs_[A-Za-z0-9_]{1,40}$/.test(cs.id) ? cs.id : 'cs_' + now;
+  const name = String(cs.name ?? '').replace(/\s+/g, ' ').trim().slice(0, L.name) || 'My style';
+  const rest = (v, d) => clamp(r5(numOr(v, d)), L.rest[0], L.rest[1]);
+  const out = {
+    id, name, base: STYLE_BASES.includes(cs.base) ? cs.base : baseDef.base,
+    restCompound: rest(cs.restCompound, baseDef.restCompound),
+    restIsolation: rest(cs.restIsolation, baseDef.restIsolation),
+    pairing: PAIRINGS.includes(cs.pairing) ? cs.pairing : baseDef.pairing,
+  };
+  let lo = numOr(cs.repMin, NaN), hi = numOr(cs.repMax, NaN);
+  if (Number.isFinite(lo) || Number.isFinite(hi)) {
+    if (!Number.isFinite(lo)) lo = hi; if (!Number.isFinite(hi)) hi = lo;
+    lo = clamp(Math.round(lo), L.reps[0], L.reps[1]); hi = clamp(Math.round(hi), L.reps[0], L.reps[1]);
+    if (lo > hi) [lo, hi] = [hi, lo];
+    out.repMin = lo; out.repMax = hi;
+  }
+  const sp = numOr(cs.setsPerExercise, NaN);
+  if (Number.isFinite(sp)) out.setsPerExercise = clamp(Math.round(sp), L.sets[0], L.sets[1]);
+  return out;
+}
+function customDef(cs) {
+  const c = normalizeCustomStyle(cs);
+  const base = STYLE_DEFS[c.base];
+  const avgR = (c.restCompound + c.restIsolation) / 2;
+  const perSet = c.pairing === 'none' ? 35 + avgR : c.pairing === 'antagonist' ? (85 + Math.max(PAIR_REST_FLOOR, avgR - 50)) / 2
+    : c.pairing === 'circuit' ? 45 + avgR / 4 : (85 + avgR) / 2;
+  return { ...c, custom: true, builtin: false, short: c.name, restHeavy: c.restCompound, perSet: Math.round(perSet),
+    maxSets: c.setsPerExercise || base.maxSets, restFlex: [1, 1, 1], shortPairs: c.pairing !== 'none',
+    exShift: c.pairing === 'circuit' ? [1, 2] : c.pairing === 'antagonist' ? [0, 1] : base.base === 'strength' ? [-1, -2] : [0, 0],
+    compoundBias: base.base === 'strength' ? 1.3 : 1, cfg: c,
+    hint: `${c.repMin ? `${c.repMin}-${c.repMax}` : { hypertrophy: '8-12', pump: '12-20', strength: '3-8', circuit: '10-15' }[base.base]} reps · ${c.restCompound}/${c.restIsolation} s rest · ${PAIRING_NAMES[c.pairing].toLowerCase()}${c.setsPerExercise ? ` · ${c.setsPerExercise} sets` : ''}`,
+    notes: `Your style, based on ${base.name}.` };
+}
+// Style id | custom-style object | session.styleDef → full definition (unknown → hypertrophy).
+export function resolveStyle(style, profile) {
+  if (style && typeof style === 'object') return style.builtin || style.custom ? style : customDef(style);
+  if (STYLE_DEFS[style]) return STYLE_DEFS[style];
+  if (typeof style === 'string' && style.startsWith('cs_')) {
+    const cs = (Array.isArray(profile?.customStyles) ? profile.customStyles : []).find(x => x && x.id === style);
+    if (cs) return customDef(cs);
+  }
+  return STYLE_DEFS.hypertrophy;
+}
+// Built-ins + the profile's custom styles, for pickers: [{ id, name, short, hint, custom }].
+export function styleOptions(profile) {
+  const cs = (Array.isArray(profile?.customStyles) ? profile.customStyles : []).map(normalizeCustomStyle).filter(Boolean);
+  return [...BUILTIN_STYLES.map(id => STYLE_DEFS[id]), ...cs.map(customDef)].map(d => ({ id: d.id, name: d.name, short: d.short, hint: d.hint, custom: !!d.custom, pairing: d.pairing }));
+}
+export function isStyleId(id, profile) {
+  return !!STYLE_DEFS[id] || (typeof id === 'string' && (Array.isArray(profile?.customStyles) ? profile.customStyles : []).some(x => x && x.id === id));
+}
+
 // ---------------------------------------------------------------- style: reps & rest
-function repRangeFor(ex, style) {
+function repRangeFor(ex, def) {
   const [lo0, hi0] = ex.repRange || [8, 12];
+  const style = def.base;
   if (ex.unit === 'seconds') {
     if (style === 'pump' || style === 'circuit') return [Math.max(lo0, 30), Math.max(hi0, 45)];
     return [lo0, hi0];
   }
+  if (def.repMin && def.repMax) return [def.repMin, def.repMax];
   const comp = ex.category === 'compound';
   switch (style) {
     case 'strength':
@@ -195,27 +302,34 @@ function repRangeFor(ex, style) {
     }
   }
 }
-function soloRest(ex, style) {
+function soloRest(ex, def) {
   const comp = ex.category === 'compound', heavy = (ex.fatigue || 1) >= 3;
-  switch (style) {
-    case 'strength': return comp ? (heavy ? 180 : 150) : 75;
-    case 'pump': return comp ? 60 : 45;
-    case 'circuit': return 60;
-    default: return comp ? (heavy ? 120 : 90) : 60;
-  }
+  return comp ? (heavy ? def.restHeavy ?? def.restCompound : def.restCompound) : def.restIsolation;
 }
-function roundRest(members, style, minutes) {
+// Rest after a superset / pair / circuit round (before restScale).
+function roundRest(members, def, minutes) {
   const anyComp = members.some(e => e.category === 'compound');
-  switch (style) {
-    case 'strength': return anyComp ? 120 : 75;
-    case 'pump': return members.length > 2 ? 45 : (anyComp ? 45 : 30);
-    case 'circuit': return minutes <= 20 ? 60 : 75;
-    default: return minutes <= 25 ? (anyComp ? 60 : 45) : (anyComp ? 75 : 60);
-  }
+  if (def.round) return def.round(anyComp, members.length, minutes);
+  return anyComp ? def.restCompound : def.restIsolation;
 }
-const defaultSets = (ex, style, minutes) => {
-  if (style === 'strength') return ex.category === 'compound' ? 4 : 3;
-  if (style === 'circuit') return 3;
+// Work seconds of one set at mid-range reps (for the antagonist pair-rest netting).
+function workSec(ex, def) {
+  const [lo, hi] = repRangeFor(ex, def);
+  return Math.round((lo + hi) / 2) * (ex.secPerRep ?? TIME.defaultSecPerRep) * (ex.unilateral ? 2 : 1);
+}
+// Antagonist pairs: each muscle should get ≈R between its own sets, and the partner's set + the
+// transition already count, so the timer after the pair is R minus those (≥ PAIR_REST_FLOOR).
+function pairRest(members, def, minutes, scale) {
+  const R = roundRest(members, def, minutes) * scale;
+  if (def.pairing !== 'antagonist' || members.length < 2) return Math.max(20, r5(R));
+  const w = members.map(e => workSec(e, def));
+  const others = w.reduce((a, b) => a + b, 0) - Math.max(...w);
+  return Math.max(PAIR_REST_FLOOR, r5(R - (members.length - 1) * TIME.transitionSec - others));
+}
+const defaultSets = (ex, def, minutes) => {
+  if (def.setsPerExercise) return def.setsPerExercise;
+  if (def.base === 'strength') return ex.category === 'compound' ? 4 : 3;
+  if (def.base === 'circuit') return 3;
   return ex.category === 'compound' && minutes >= 60 ? 4 : 3;
 };
 
@@ -322,7 +436,7 @@ function groupMeanMin(r) {
 }
 
 function makeCtx(opts) {
-  const { minutes, style, profile, sessions, now, eq, exclude, rw, activeGoals, targetGoals, seed, reqGroups, upcoming } = opts;
+  const { minutes, style, def, profile, sessions, now, eq, exclude, rw, activeGoals, targetGoals, seed, reqGroups, upcoming } = opts;
   const avoid = new Set([...(exclude || []), ...((profile && profile.avoidExercises) || [])]);
   const recent = recentExercises(sessions, now);
   const favs = new Set((profile && profile.favoriteExercises) || []);
@@ -358,7 +472,7 @@ function makeCtx(opts) {
   };
   const pool = EXERCISES.filter(ex =>
     ex && ex.muscles && !avoid.has(ex.id) && !isBackSquat(ex) && (!eq || canDo(ex, eq)) &&
-    (ex.pattern !== 'conditioning' || style === 'circuit') &&
+    (ex.pattern !== 'conditioning' || def.pairing === 'circuit') &&
     onTarget(ex, rw) && crossOk(ex));
   const req = reqSet;
   const reqRegions = new Set(Object.keys(rw).filter(r => req.has(regionGroup(r))));
@@ -372,7 +486,7 @@ function makeCtx(opts) {
     staples[g] = favFirst.length ? favFirst : (STAPLES[g] || []).filter(id => poolIds.has(id));
   }
   const quality = new Map(pool.map(e => [e.id, eqQuality(e, eq)]));
-  return { minutes, style, profile, sessions, now, eq, weights, pool, recent, favs, activeTags, targetTags,
+  return { minutes, style, def, profile, sessions, now, eq, weights, pool, recent, favs, activeTags, targetTags,
     rand: makeRng(seed), cache: new Map(), mstat, req, reqRegions, staples, quality };
 }
 
@@ -395,7 +509,7 @@ function credits(items) {
 }
 
 function desiredSets(ctx, budgetSec) {
-  const perSet = { hypertrophy: 115, pump: 80, strength: 170, circuit: 65 }[ctx.style] || 115;
+  const perSet = ctx.def.perSet || 115;
   const total = Math.max(4, budgetSec / perSet);
   const sumW = Object.values(ctx.weights).reduce((s, x) => s + x, 0) || 1;
   const d = {};
@@ -465,8 +579,8 @@ function scoreEx(ex, items, ctx, desired, { novelty = false, relaxed = false } =
     if (n3 >= 1) m *= ctx.minutes <= 30 ? 0.2 : 0.5;
     if (ctx.minutes <= 20) m *= 0.7;
   }
-  if (ctx.style === 'strength' && ex.category === 'compound') m *= 1.3;
-  if (ctx.style === 'circuit' || ctx.minutes <= 25) m *= 1 - Math.min(0.5, (ex.setupSec ?? 30) / 300);
+  if (ctx.def.compoundBias > 1 && ex.category === 'compound') m *= ctx.def.compoundBias;
+  if (ctx.def.pairing === 'circuit' || ctx.minutes <= 25) m *= 1 - Math.min(0.5, (ex.setupSec ?? 30) / 300);
   if (ctx.minutes <= 25 && ex.unilateral) m *= 0.8;
   // compounds early: modest preference while the plan is still small
   if (ex.category === 'compound' && items.length < 3) m *= 1.15;
@@ -527,13 +641,17 @@ function pairUp(list, allowTri) {
 function arrange(items, ctx) {
   const ordered = orderItems(items, ctx);
   if (ordered.length <= 1) return ordered.map(x => [x]);
-  if (ctx.style === 'circuit') {
+  const pairing = ctx.def.pairing;
+  if (pairing === 'circuit') {
     if (ordered.length <= 6) return [ordered];
     const h = Math.ceil(ordered.length / 2);
     return [ordered.slice(0, h), ordered.slice(h)];
   }
-  if (ctx.minutes <= 25 || ctx.style === 'pump') return pairUp(ordered, true);
-  if (ctx.style === 'strength') return ordered.map(x => [x]);
+  if ((ctx.minutes <= 25 && ctx.def.shortPairs) || pairing === 'superset') return pairUp(ordered, true);
+  if (pairing === 'none') return ordered.map(x => [x]);
+  // Antagonist pairs: every move gets a non-competing partner (compounds first, so push + pull,
+  // upper + lower, then compound + unrelated isolation); a move with no safe partner stays solo.
+  if (pairing === 'antagonist') return pairUp(ordered, false);
   // Straight-set compounds for the requested groups lead; fill-in compounds join the
   // isolation supersets after the requested work (no triceps presses before a biceps day).
   const isReq = x => !ctx.req || ctx.req.has(primaryGroup(x.ex));
@@ -543,35 +661,33 @@ function arrange(items, ctx) {
   return [...comps.map(x => [x]), ...pairUp(isos, false)];
 }
 
-function materialize(plan, ctx) {
+function materialize(plan, ctx, { equalize = true } = {}) {
   const units = arrange(plan.items, ctx);
   const blocks = [];
   let letter = 0;
   for (const u of units) {
     const sets = Math.max(...u.map(x => x.sets));
-    u.forEach(x => { x.sets = sets; });
+    if (equalize) u.forEach(x => { x.sets = sets; });
     const group = u.length > 1 ? String.fromCharCode(65 + letter++) : null;
-    const shared = u.length > 1 ? roundRest(u.map(x => x.ex), ctx.style, ctx.minutes) : soloRest(u[0].ex, ctx.style);
-    const rest = Math.max(20, Math.round(shared * plan.restScale / 5) * 5);
-    const trans = ctx.style === 'circuit' ? TIME.circuitTransitionSec : TIME.transitionSec;
-    u.forEach((x, j) => blocks.push(liftBlock(x.ex, ctx.style, sets, (u.length > 1 && j < u.length - 1) ? trans : rest,
+    const rest = u.length > 1 ? pairRest(u.map(x => x.ex), ctx.def, ctx.minutes, plan.restScale) : Math.max(20, r5(soloRest(u[0].ex, ctx.def) * plan.restScale));
+    const trans = ctx.def.pairing === 'circuit' ? TIME.circuitTransitionSec : TIME.transitionSec;
+    u.forEach((x, j) => blocks.push(liftBlock(x.ex, ctx.def, equalize ? sets : x.sets, (u.length > 1 && j < u.length - 1) ? trans : rest,
       group, ctx.sessions, ctx.now, ctx.cache)));
   }
   return { blocks, units };
 }
 
-function exRange(minutes, style) {
-  let r = minutes <= 25 ? [2, 4] : minutes <= 35 ? [3, 6] : minutes <= 52 ? [4, 7] : minutes <= 67 ? [5, 8] : [7, 10];
-  if (style === 'circuit') r = [r[0] + 1, r[1] + 2];
-  if (style === 'strength') r = [Math.max(2, r[0] - 1), Math.max(3, r[1] - 2)];
-  return r;
+function exRange(minutes, def) {
+  const r = minutes <= 25 ? [2, 4] : minutes <= 35 ? [3, 6] : minutes <= 52 ? [4, 7] : minutes <= 67 ? [5, 8] : [7, 10];
+  const [a, b] = def.exShift || [0, 0];
+  return [Math.max(2, r[0] + a), Math.max(3, r[1] + b)];
 }
 
 function planSession(ctx, budgetMin, otherMin) {
   const budgetSec = Math.max(0, budgetMin - otherMin) * 60;
   const total = budgetMin * 60;
   const desired = desiredSets(ctx, budgetSec);
-  const [lo, hi] = exRange(budgetMin, ctx.style);
+  const [lo, hi] = exRange(budgetMin, ctx.def);
   const plan = { items: [], restScale: 1 };
   const est = () => estimateSeconds(materialize(plan, ctx).blocks) + otherMin * 60;
   const noveltySlot = ctx.recent.size ? 1 + Math.floor(ctx.rand() * Math.max(1, hi - 1)) : -1;
@@ -593,16 +709,18 @@ function planSession(ctx, budgetMin, otherMin) {
   // 1. greedy fill with default sets
   while (plan.items.length < hi) {
     const ex = pickNext(false); if (!ex) break;
-    plan.items.push({ ex, sets: defaultSets(ex, ctx.style, budgetMin) });
+    plan.items.push({ ex, sets: defaultSets(ex, ctx.def, budgetMin) });
     if (plan.items.length >= lo && est() >= total * 0.92) break;
   }
 
   // 2. tune sets / exercises / rest to land on budget
   const tune = (relaxed) => {
-    const maxSets = relaxed ? 6 : (ctx.style === 'strength' ? 6 : ctx.style === 'circuit' ? 4 : 5);
-    const minSets = 2;
+    const fixed = ctx.def.setsPerExercise || 0;   // a custom style's fixed sets per exercise
+    const maxSets = fixed || (relaxed ? 6 : ctx.def.maxSets || 5);
+    const minSets = fixed || 2;
     const hiEx = relaxed ? hi + 4 : hi;
-    const restLo = 0.75, restHi = relaxed ? 1.5 : 1.3;
+    const [restLo, restHi0, restHiR] = ctx.def.restFlex || [0.75, 1.3, 1.5];
+    const restHi = relaxed ? restHiR : restHi0;
     for (let iter = 0; iter < 80; iter++) {
       const cur = est(); const diff = Math.abs(cur - total) / total;
       if (diff <= 0.03) return;
@@ -620,7 +738,7 @@ function planSession(ctx, budgetMin, otherMin) {
         if (plan.items.length < hiEx) {
           const ex = pickNext(relaxed);
           if (ex) {
-            const it = { ex, sets: ctx.style === 'circuit' ? (plan.items[0]?.sets || 3) : Math.max(minSets, defaultSets(ex, ctx.style, budgetMin) - 1) };
+            const it = { ex, sets: ctx.def.pairing === 'circuit' ? (plan.items[0]?.sets || 3) : Math.max(minSets, defaultSets(ex, ctx.def, budgetMin) - (fixed ? 0 : 1)) };
             moves.push({ pen: plan.items.length < lo ? 0 : 0.012, apply: () => plan.items.push(it), undo: () => plan.items.pop() });
           }
         }
@@ -674,7 +792,8 @@ export function buildWorkout({
   profile = profile || {};
   location = location || DEFAULT_LOCATIONS[0];
   minutes = clamp(Math.round(+minutes || 45), 5, 180);
-  if (!['hypertrophy', 'pump', 'strength', 'circuit'].includes(style)) style = 'hypertrophy';
+  const def = resolveStyle(style, profile);
+  style = def.id;
   const eq = expandEquipment(location.equipment || ['bodyweight']);
   const activeGoals = (profile.sculptGoals || DEFAULT_SCULPT_GOALS).filter(g => SCULPT_GOALS[g]);
   const rationale = [];
@@ -712,7 +831,7 @@ export function buildWorkout({
   if (liftRoom >= 8) {
     const targetGoals = res.sculpt;
     const reqGroups = [...res.groups];
-    const mk = (rw) => makeCtx({ minutes, style, profile, sessions, now, eq, exclude, rw, activeGoals: [...new Set([...activeGoals, ...targetGoals])], targetGoals, seed, reqGroups, upcoming });
+    const mk = (rw) => makeCtx({ minutes, style, def, profile, sessions, now, eq, exclude, rw, activeGoals: [...new Set([...activeGoals, ...targetGoals])], targetGoals, seed, reqGroups, upcoming });
     let rw = { ...res.regionW };
     ctx = mk(rw);
     planInfo = planSession(ctx, minutes, otherMin);
@@ -734,7 +853,7 @@ export function buildWorkout({
     // final pass: run progression with the real set counts
     blocks = blocks.map(b => {
       const ex = getEx(b.exId);
-      return { ...b, target: makeTarget(ex, style, b.target.sets, b.target.rest, sessions, now, null) };
+      return { ...b, target: makeTarget(ex, def, b.target.sets, b.target.rest, sessions, now, null) };
     });
   }
   if (cardioBlock) blocks.push(cardioBlock);
@@ -760,8 +879,9 @@ export function buildWorkout({
   if (lifts.length) {
     const nSets = lifts.reduce((s, b) => s + b.target.sets, 0);
     const grouped = new Set(lifts.filter(b => b.group).map(b => b.group)).size;
-    const how = style === 'circuit' ? 'circuit, minimal rest'
-      : grouped ? `${grouped} superset${grouped > 1 ? 's' : ''} to fit more work` : 'straight sets';
+    let how = def.pairing === 'circuit' ? 'circuit, minimal rest'
+      : grouped ? (def.pairing === 'antagonist' ? `${grouped} paired set${grouped > 1 ? 's' : ''} (non-competing moves, rest after the pair)` : `${grouped} superset${grouped > 1 ? 's' : ''} to fit more work`) : 'straight sets';
+    if (!def.round) how += ` · ~${def.restCompound}/${def.restIsolation} s rest per muscle`;
     rationale.push(`${minutes} min: ${exs.length} exercises, ${nSets} working sets, ${how}`);
   }
   // key exercises tied to sculpt goals
@@ -786,7 +906,7 @@ export function buildWorkout({
       ? `Only ${ctx ? ctx.pool.length : exs.length} suitable exercises for this equipment, so this plan runs ~${Math.round(estSec / 60)} of ${minutes} min. Add a muscle group or equipment to fill it.`
       : `Not enough time or equipment for lifting here; ~${Math.round(estSec / 60)} of ${minutes} min planned.`);
   }
-  while (rationale.length < 2) rationale.push(style === 'hypertrophy' ? 'Hypertrophy: 2-3 reps in reserve, add reps before weight' : `Style: ${style}`);
+  while (rationale.length < 2) rationale.push(style === 'hypertrophy' ? 'Hypertrophy: 2-3 reps in reserve, add reps before weight' : def.builtin && def.round ? `Style: ${style}` : `Style: ${def.name}`);
 
   // --- title
   const base = autoLabel || res.labels.slice(0, 3).join(' & ') || 'Workout';
@@ -796,7 +916,7 @@ export function buildWorkout({
     if (g && res.groups.includes(g.group)) suffix = g.name;
   }
   let title = base + (suffix && !base.includes(suffix) ? ' · ' + suffix : '');
-  if (style === 'circuit') title += ' Circuit'; else if (style === 'pump') title += ' Pump';
+  if (def.titleSuffix) title += def.titleSuffix;
   if (!lifts.length && cardioBlock) title = cap1(cardioBlock.modality.replace(/_/g, ' '));
 
   return {
@@ -804,6 +924,7 @@ export function buildWorkout({
     location: location.id || 'home', minutes, title, targets: tgts, source: 'generated',
     blocks, rationale: rationale.slice(0, 6), notes: '',
     estMinutes: Math.round(estSec / 60), style, seed, poolLimited,
+    ...(def.custom ? { styleDef: def.cfg, styleName: def.name } : {}),
   };
 }
 
@@ -828,6 +949,23 @@ export function alternatives(exId, { equipment, exclude = [], limit = 8 } = {}) 
   return scored.slice(0, limit).map(x => x[1]);
 }
 
+// Same exercises and set counts, re-arranged and re-rested for another style (its pairing, rests at
+// nominal length, rep ranges). Used for "≈ N min in this style" previews and the time-saving check.
+export function restyle(session, style, { profile, sessions = [], now = new Date() } = {}) {
+  const s = cloneSession(session || {});
+  const def = resolveStyle(style, profile);
+  const all = s.blocks || [];
+  // (a style with fixed sets per exercise uses those)
+  const items = all.filter(b => b.kind === 'lift' && getEx(b.exId)).map(b => ({ ex: getEx(b.exId), sets: def.setsPerExercise || (b.target?.sets ?? (b.sets || []).length ?? 3) }));
+  const ctx = { def, minutes: s.minutes || 45, req: null, sessions, now, cache: new Map() };
+  const lifts = items.length ? materialize({ items, restScale: 1 }, ctx, { equalize: false }).blocks : [];
+  s.blocks = [...lifts, ...all.filter(b => b.kind !== 'lift')];
+  s.style = def.id;
+  if (def.custom) { s.styleDef = def.cfg; s.styleName = def.name; } else { delete s.styleDef; delete s.styleName; }
+  s.estMinutes = estimateMinutes(s.blocks);
+  return s;
+}
+
 function cloneSession(s) { return typeof structuredClone === 'function' ? structuredClone(s) : JSON.parse(JSON.stringify(s)); }
 
 export function swapBlock(session, blockIndex, newExId, { sessions = [], now = new Date() } = {}) {
@@ -835,7 +973,7 @@ export function swapBlock(session, blockIndex, newExId, { sessions = [], now = n
   const ex = getEx(newExId);
   const old = s.blocks?.[blockIndex];
   if (!ex || !old) return s;
-  const style = s.style || 'hypertrophy';
+  const style = resolveStyle(s.styleDef || s.style || 'hypertrophy');
   const sets = old.kind === 'lift' ? (old.target?.sets ?? old.sets?.length ?? 3) : defaultSets(ex, style, s.minutes || 45);
   let rest;
   if (old.kind === 'lift' && old.target?.rest != null) {
@@ -852,9 +990,10 @@ export function addExercise(session, exId, { sessions = [], now = new Date() } =
   const s = cloneSession(session);
   const ex = getEx(exId);
   if (!ex) return s;
-  const style = s.style || 'hypertrophy';
+  const style = resolveStyle(s.styleDef || s.style || 'hypertrophy');
   s.blocks = s.blocks || [];
-  const b = liftBlock(ex, style, style === 'strength' && ex.category === 'compound' ? 4 : 3, soloRest(ex, style), null, sessions, now, null);
+  const sets = style.setsPerExercise || (style.base === 'strength' && ex.category === 'compound' ? 4 : 3);
+  const b = liftBlock(ex, style, sets, soloRest(ex, style), null, sessions, now, null);
   // insert before any trailing cardio/class finisher
   let at = s.blocks.length;
   while (at > 0 && s.blocks[at - 1].kind !== 'lift') at--;
