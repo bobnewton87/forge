@@ -225,9 +225,9 @@ function impactCard(I, mods, off, activeIds) {
 const PLAN_MAX = 8;
 const planUi = { showZero: false, showCost: false, open: null };
 const bcBadge = r => r.bodyComp === 'measured'
-  ? '<span class="badge good" title="Trials of this item measured body composition.">Measured</span>'
+  ? '<span class="badge good" title="Trials of this item measured body composition in men like you.">Measured</span>'
   : r.bodyComp === 'extrapolated'
-    ? '<span class="badge warn" title="No body-composition data. The lean number is extrapolated through the testosterone→lean curve.">Extrapolated</span>'
+    ? '<span class="badge warn" title="Nobody has measured body composition on this item in a man like you. The lean number is Forge extrapolating through the testosterone→lean curve — and that curve was built by giving men testosterone from OUTSIDE with their own gonadotropins switched off, which is not what this does. Range starts at zero.">Extrapolated</span>'
     : '<span class="badge bad" title="Trials measured body composition on it and found none.">No muscle effect</span>';
 const rng = (lo, hi, dp = 1) => `${sgn(lo, dp)} to ${sgn(hi, dp)}`;
 
@@ -287,9 +287,9 @@ function planCard(I) {
       <ul class="sp-plablist">${act.labs.map(l => `<li><b>${esc(l.label)}</b><span class="tiny muted">${esc(l.why)}</span></li>`).join('')}</ul></div>` : ''}
     ${plan.notes.map(n => `<p class="tiny muted">${esc(n)}</p>`).join('')}
     ${shown.length ? `<div class="sp-sub">Worth considering for you</div><div class="sp-plist">${shown.map(planRow).join('')}</div>`
-      : `<p class="small muted mt">On the values Forge has for you, <b>nothing here is modeled to add lean mass</b>. That is the honest answer, not a gap: almost every therapy in this area was tested in men who were hypogonadal, obese, or both. Open the list below to see each one's number and the reason it is zero.</p>`}
+      : `<p class="small muted mt">On the values Forge has for you, <b>nothing here is modeled to add lean mass on evidence that was actually measured in a man like you</b>. That is the honest answer, not a gap. Several of these do raise your testosterone — clomiphene more than doubled it in healthy men with normal levels — but every trial that weighed anybody was run in men who were hypogonadal, obese, or both. Those rows are in the next group, with their numbers and a range that starts at zero.</p>`}
     ${unmeasured.length ? `<details class="sp-pmore"><summary class="small">Raises testosterone, but nobody has measured what it does to muscle (${unmeasured.length})</summary>
-      <p class="tiny muted">These moved testosterone in a trial, but no trial measured lean or fat mass on them. The lean figure on each row is Forge extrapolating through the testosterone curve, so its range starts at zero and it is ranked at zero.</p>
+      <p class="tiny muted">These moved testosterone in a trial — in some cases, like clomiphene, measured directly in healthy men whose level was already normal (519 → 1,390 ng/dL in Tenover &amp; Bremner 1991). What nobody has measured is what that extra testosterone does to <b>muscle</b> when your own testes make it. The only two body-composition results in this whole class (Soares 2018 on clomiphene, Liu 2002 on hCG — which added 2 kg of lean and <b>no</b> strength, gait or balance) are both in hypogonadal men. The lean figure on each row is Forge extrapolating through the testosterone→lean curve, and that curve came from giving men testosterone from <b>outside</b> with their own gonadotropins switched off. Whether an endogenous rise of the same size builds the same muscle is an open question. That is why each range starts at zero and each row is ranked at zero.</p>
       <div class="sp-plist">${unmeasured.map(planRow).join('')}</div></details>` : ''}
     ${negative.length ? `<details class="sp-pmore"><summary class="small">Changes something, but not in your favour (${negative.length})</summary><div class="sp-plist">${negative.map(planRow).join('')}</div></details>` : ''}
     ${zero.length ? `<details class="sp-pmore" ${planUi.showZero ? 'open' : ''} data-pzero><summary class="small">Modeled at ~0 for you, with the reason (${zero.length})</summary><div class="sp-plist">${zero.map(planRow).join('')}</div></details>` : ''}

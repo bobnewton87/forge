@@ -1011,8 +1011,10 @@ e2Pct                // modeled % change in serum estradiol at full effect
 e2ActionPct          // modeled % change in estrogen ACTION (aromatase inhibitors only)
 shbgDelta            // nmol/L; free T is then computed with Vermeulen
 bodyComp: 'measured'|'extrapolated'|'none'
-bcMaxLevel           // serum T up to which muscle is credited
-bcNote               // where that bound comes from, in words
+bcMaxLevel           // serum T up to which muscle credit is MEASURED
+bcExtrapMaxLevel     // (22.7) how far above that Forge will still run the T->lean curve, flagged extrapolated
+bcMaxBaseline        // (22.7) highest BASELINE the body-composition trial enrolled; above it, extrapolated
+bcNote               // where those bounds come from, in words
 monitor: [labs], fertility, timeCourse, wada, suits, notSuits
 gate: { lowTOnly, noEffectAbove, secondaryOnly, obesityOnly, deficiencyOnly, highProlactin,
         shortSleepOnly, deficitOnly }
@@ -1044,8 +1046,8 @@ is bounded per item by `bodyComp` and `bcMaxLevel`:
   inhibitors only.
 
 The bound is composed the way the level is: a cause-correction item with generous evidence cannot launder a drug's
-rise past that drug's own bound. For a man already mid-normal the HPG-axis items have little or no headroom and
-Forge **shows the number rather than hiding the option**.
+rise past that drug's own bound. **Amended 2026-10-20 — see §22.7:** `measured` is now a per-MAN judgement, not
+just a per-item class, and clomiphene carries a measured bound (500) and a separate extrapolated bound (1,390).
 
 ### 22.3 Interaction engine (`combineEndogenous`, not additive)
 
@@ -1056,19 +1058,35 @@ export function combineEndogenous(parts, ctx) → {
   e2, e2Base, e2Assumed, e2Lo, e2Hi, e2ActionDrop, shbg, freeT, freeTBase,
   creditLevel, creditSource, extrapolated, bcNote, parts:[{ id, role, pct, delta, gateNote }], notes, warnings }
 export function estradiolFatEffect(dropFrac, { weeksOn, bmi, estradiol }) → { fatDirectLbPerWeek, cumLb, loLb, hiLb, reversed, note }
-export const COMBO_BONUS = 0, COMBO_BONUS_HI = 0.25, PITUITARY_CEILING = 800, TESTIS_CEILING = 1100,
+export const COMBO_BONUS = 0, COMBO_BONUS_HI = 0.25, PITUITARY_CEILING = 1390, TESTIS_CEILING = 1390,
+             LH_PRIMARY = 9.4, LH_PRIMARY_HARD = 18.8, LOW_T = 350,
              ASSUMED_E2 = 25, ASSUMED_SHBG = 35, E2_FAT = { … }
 ```
 
-1. **Cause-correction first** (`dopamine`, `nutrient`, `lifestyle`): they raise the set-point, multiplicatively,
-   and therefore **shrink** what a drug can add, because every drug's response falls with baseline.
+1. **Cause-correction first** (`dopamine`, `nutrient`, `lifestyle`): they raise the set-point, multiplicatively.
+   *Amended 2026-10-20:* this used to be described as **shrinking** what a drug can then add. It barely does. The
+   SERM curves are a roughly constant absolute rise (Hohl 2025 pooled a single +274 ng/dL across baselines
+   67–303), and Keihani 2020 (n = 332) and Kim 2026 (n = 292) both found baseline total T did **not** predict the
+   response. Below ~550 ng/dL a cause fix and a SERM are close to additive on the number; the taper above 550
+   restores some shrinkage. The real non-additivity is between the LH-driven **drugs** (rule 2).
 2. **LH-driven items share one final common path**, so the **largest wins** and the rest add `COMBO_BONUS` = 0.
    That is the measured result: Habous 2018 (RCT, 282 men) gave clomiphene +158, hCG +134, both +153 ng/dL, with
    the combination no better than clomiphene alone (p = 0.57). The optimistic bound adds 25 % — an assumption.
-3. **Testicular-capacity ceiling**: 800 ng/dL for pituitary-driven routes (the highest group mean any SERM or AI
-   trial reached is 790), 1,100 for hCG, which replaces LH at the Leydig cell.
-4. **Primary hypogonadism** (LH > 9.4) blocks SERMs, AIs, hCG and cabergoline. An AI still blocks aromatase, so it
-   still costs estrogen and fat.
+3. **Testicular-capacity ceiling**: **1,390 ng/dL**, both globally and for the SERM route. That is the highest
+   group mean any own-axis trial has reported — clomiphene 50 mg twice daily for 8 weeks in five healthy men
+   aged 26–33 (Tenover & Bremner 1991, PMID 1917692), who went from 519 to 1,390 ng/dL. **n = 5 and 100 mg/day is
+   2–4× the clinical dose**, so the per-item ceilings matter more: clomiphene 1,390, enclomiphene **764**
+   (Wiehle 2013 day-42 Cmax; was 800), tamoxifen **790** (Krause 1992), hCG 1,100 (an assumption; the highest
+   level observed is ≈870).
+4. **Primary hypogonadism attenuates, and only clear primary failure blocks.** *Rewritten 2026-10-20.* The old
+   rule zeroed everything the moment LH passed 9.4. Keihani 2020 found baseline LH did not predict the response
+   at all and that "normal or slightly elevated" gonadotropins still respond; Kim 2026 found a gradient
+   (OR 0.82 per mIU/mL), not a cliff. 9.4 IU/L is the **European Male Ageing Study** cut (Tajar 2010,
+   doi:10.1210/jc.2009-1796), which also names **compensated** hypogonadism — raised LH with a *normal* T — as a
+   distinct state. So: LH ≤ 9.4 → full effect, LH is not consulted; LH > 9.4 with T ≥ 350 (compensated) → full
+   effect with a note; LH 9.4→18.8 with T < 350 → linear fade; LH ≥ 18.8 with T < 350 → zero. `LH_PRIMARY_HARD`
+   is an **assumption** (2 × 9.4; Kim's OR has compounded to ≈0.18 there). An AI still blocks aromatase, so it
+   still costs estrogen and fat whatever the gate says.
 5. **Exogenous testosterone** by any route suppresses everything axis-dependent (kept from §17, extended to the
    oral and nasal routes).
 6. **Prolactin, zinc and vitamin D** corrections only help when the deficiency exists.
@@ -1127,6 +1145,65 @@ gating; the aromatase-inhibitor case (T up, lean flat, fat up through the estrad
 hyperestrogenemic reversal; planner ranking by lean/fat rather than T; the labs-first action; female mode hidden;
 garbage-in robustness; and byte-identical outputs for a user with none of these items. e2e `T1`: open the planner,
 add a recommended combination, see Projection change, remove it again, no page errors.
+
+Added 2026-10-20 (§22.7): a eugonadal man gets a non-zero, correctly-sized rise; the percentage still falls with
+baseline while the absolute rise stays flat to 550; the LH fade and its hard zero; the per-item ceilings; the
+free-T-driven credit, validated against Bremner 1987's measured numbers; and the planner surfacing these rows for
+a eugonadal man with an `extrapolated` label, a lean range starting at zero and a score of zero.
+
+### 22.7 The eugonadal correction (2026-10-20, second pass)
+
+Bob: *"The clomiphene thing — I bet that works for anyone, bet there are hypertrophic effects to anyone, and we
+should model that."* **He is right about the hormone. The muscle question is untested, and Forge now says so
+instead of hiding behind a wrong zero.**
+
+The shipped model made clomiphene, enclomiphene, hCG and cabergoline return **exactly zero** for a man with a
+normal testosterone (`gate: { lowTOnly, noEffectAbove: 450 }`). That gate was fitted only to trials in hypogonadal
+men and then extrapolated to zero at a normal baseline. The extrapolation was an inference, never a measurement,
+and it is contradicted by:
+
+| Study | n | Who | Regimen | Total T |
+|---|---|---|---|---|
+| Tenover & Bremner 1991, PMID 1917692 | 5 | **healthy** men 26–33 | clomiphene 100 mg/day, 8 wk | **519 → 1,390 ng/dL** (2.68×) |
+| same | 5 | healthy men 65–85 | same | 499 → 989 (1.98×) |
+| Bremner 1987, doi:10.1210/jcem-65-6-1118 | 14 | **healthy** men 22–35 | clomiphene 100 mg/day, 7 d | **490 → 980** (+100 %); SHBG 24.5 → 31.3; bioavailable fraction 65 % → **66 %** |
+| Krause 1992, doi:10.1111/j.1365-2605.1992.tb01110.x | 39 v 37 | eugonadal infertile men | tamoxifen 30 mg/day, 6 mo | **490 → 790** vs placebo 530 → 560 |
+
+**Curves.** Below 300 ng/dL the shipped curves were already arithmetically "a constant absolute rise" (clomiphene
++274 = Hohl 2025's pooled effect; enclomiphene +216 = Tienforti 2023). That shape is kept and extended, because
+Keihani 2020 and Kim 2026 both found **baseline total T does not predict the response** — a constant absolute
+rise automatically becomes a shrinking percentage, which is the only shrinkage the data support. Above 550 the
+absolute rise tapers mildly (an **assumption**). Tamoxifen's flat `tPct: 60` becomes a constant +300 ng/dL
+anchored on Krause. Forge is deliberately conservative: +275 ng/dL at a 490 baseline against measured eugonadal
+rises of +300, +490 and +871.
+
+**Gate.** `lowTOnly` / `noEffectAbove` are removed from clomiphene, enclomiphene, hCG and cabergoline (for
+cabergoline the *curve* now tapers to zero at 700 instead, which is right: it gives back what prolactin took; its
+`highProlactin` gate stays, because that is what Colao 2004 shows). `secondaryOnly` becomes the graded rule in
+§22.3 rule 4.
+
+**Free testosterone.** The muscle credit is now driven by free T, not total: `freeAdj = (freeT/freeTBase) /
+(totalT/T0)`, capped at 1 so saturable SHBG binding can only take credit away. **The objection was checked and
+does not bite**: Bremner 1987 measured the bioavailable fraction going 65 % → 66 % while total T doubled, and
+feeding his numbers through Forge's own Vermeulen routine reproduces it (free-T ratio 2.01 vs total-T ratio 2.00).
+SHBG did not move at all over 8 weeks (Tenover 1991) and the pooled change is not significant (Hohl 2025). The
+machinery stays because it does bite for a man with a high SHBG or a larger modeled rise.
+
+**Measured vs extrapolated is now per-MAN.** A row is `extrapolated` when the item has no body-composition data,
+**or** the man's baseline is above `bcMaxBaseline` (the highest baseline that trial enrolled — Soares 2018 took
+T ≤ 300, Liu 2002 took ≤ 433), **or** more than half the credited rise sits above `bcMaxLevel`. Clomiphene is
+therefore `measured` for a hypogonadal man and `extrapolated` for a eugonadal one, and `tplan` ranks on the
+per-man flag, not the catalogue class.
+
+**The part that is NOT supported.** No trial has measured body composition on any SERM in a man with a normal
+testosterone — a PubMed title search finds nothing besides Soares 2018 anywhere in men. The Bhasin 2001
+testosterone→lean curve every extrapolation runs through was built on **exogenous** testosterone with the
+gonadotropins **suppressed**, and nobody has tested whether an endogenous rise of the same size builds the same
+muscle. The only two body-composition results in this class are Soares 2018 (bioimpedance, obese hypogonadal men)
+and Liu 2002 (hCG: lean +2 kg and **no** gain in strength, gait or balance). Forge states this in the catalogue
+entry, the per-row note, the planner's group heading and `docs/research/endogenous-testosterone.md` §8b, and
+backs it up by ranking every such row on a lower bound of zero.
+
 ## 23. Weight-loss goal and intentional lean loss (2026-10-20)
 
 Bob: *"the app doesn't really allow someone to lose muscle mass if they want to or if their primary goal is

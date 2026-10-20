@@ -228,12 +228,23 @@ export const VITD_CEIL = [[5, 0.94], [12, 0.95], [20, 1]];
 export const COMBO_BONUS = 0;          // measured (Habous 2018)
 export const COMBO_BONUS_HI = 0.25;    // ASSUMPTION: optimistic bound only
 // Per-route plateaus for total LH-driven output.
-//   Pituitary-driven (SERMs, AIs) need a working pituitary AND testis; the highest group mean any such trial reached
-//   is 790 ng/dL (Krause 1992 tamoxifen). Enclomiphene 604 (Wiehle 2013), letrozole 620 (Loves 2013), anastrozole 572
-//   (Leder 2004), 525 (Burnett-Bowie 2009), AI+weight loss 530 (Colleluori 2020).
-//   hCG replaces LH at the Leydig cell, so it can push harder: Liu 2002's +150% from a ≤433 ng/dL entry implies ≈870.
-export const PITUITARY_CEILING = 800;
-export const TESTIS_CEILING = 1100;    // ASSUMPTION: top of the male reference range; highest observed is ≈870
+//   CORRECTED 2026-10-20. The old 800 ng/dL cap was taken from Krause 1992's 790 and was wrong: it only looked at
+//   trials in HYPOGONADAL men plus one eugonadal tamoxifen trial. The highest group mean any own-axis trial has
+//   actually reported is Tenover & Bremner 1991 (J Androl 12:258-63, PMID 1917692): five HEALTHY men aged 26-33,
+//   baseline 18.0 ± 1.0 nmol/L (519 ng/dL), on clomiphene 50 mg twice daily for 8 weeks, reached a mean maximal
+//   48.2 ± 1.4 nmol/L = 1,390 ng/dL. The same paper's healthy elderly arm (baseline 499) reached 34.3 nmol/L = 989.
+//   Bremner/Tenover 1987 (JCEM 65:1118-26, doi:10.1210/jcem-65-6-1118) reached a 24-h mean of 980 ng/dL in 14
+//   healthy young men after only 7 days of the same dose.
+//   CAVEAT, stated everywhere this number is used: 100 mg/day is 2-4x the usual clinical dose and n = 5. At
+//   conventional doses the highest group means reported are 790 (tamoxifen 30 mg, Krause 1992), 764 (enclomiphene
+//   25 mg day-42 Cmax, Wiehle 2013), 620 (letrozole, Loves 2013), 612 (clomiphene at 1 year, Moskovic 2012),
+//   610 (clomiphene 25 mg, Shabsigh 2005), 604 (enclomiphene 25 mg day-42 C0hr), 572 (anastrozole, Leder 2004).
+export const PITUITARY_CEILING = 1390;
+// The absolute cap across every own-axis route. Also 1,390: that is the highest total testosterone any therapy
+// acting through a man's own Leydig cells has been MEASURED to produce as a group mean, and Forge does not
+// extrapolate past a measurement. (hCG replaces LH at the Leydig cell and could in principle push past a
+// pituitary-mediated route, but nobody has shown that it does: the highest hCG figure is Liu 2002's inferred ≈870.)
+export const TESTIS_CEILING = 1390;
 export const ASSUMED_E2 = 25;          // pg/mL, mid adult male reference (sensitive assay ≈10–40) when no lab
 export const ASSUMED_SHBG = 35;        // nmol/L, mid adult male reference (≈10–57) when no lab
 export const E2_HIGH = 25;             // pg/mL, the hyperestrogenemia threshold used by the obesity gate
@@ -257,7 +268,26 @@ export function stressCeiling(s) { const x = num(s, 1, 5) ?? 3; return x <= 3 ? 
 
 // ======================================================================== hormone panel (optional labs)
 // Gating thresholds for the endogenous-T items (docs/research/endogenous-testosterone.md):
-export const LH_PRIMARY = 9.4;        // IU/L, ~upper adult male reference: high LH with low T = primary (testicular) hypogonadism
+// LH thresholds. 9.4 IU/L is NOT an arbitrary reference top and NOT (as the first pass had it) the Kim 2016
+// enclomiphene enrolment criterion: it is the European Male Ageing Study cut that defines the four gonadal states
+// (Tajar 2010, JCEM 95:1810-18, doi:10.1210/jc.2009-1796) — eugonadal = normal T + LH ≤ 9.4, secondary = low T +
+// LH ≤ 9.4, PRIMARY = low T + LH > 9.4, COMPENSATED = normal T + LH > 9.4.
+export const LH_PRIMARY = 9.4;
+// Above 9.4 the response is ATTENUATED, not abolished. Keihani 2020 (Urology 142:119-24,
+// doi:10.1016/j.urology.2020.04.074; n = 332, mean total-T rise +329 ng/dL, 95% CI 307-351) found that neither
+// baseline LH nor FSH predicted the response at all, and concluded an adequate response "can be expected in most
+// patients with normal or slightly elevated baseline gonadotropin levels". Patel 2015 (n = 47) and Roque 2026
+// (n = 60) likewise found no association. Against that, Mazzola 2014 (n = 76) found LH ≤ 6 predicted response
+// (HR 3.5) and Kim 2026 (n = 292, median age 60, 41% post-prostatectomy) found a GRADIENT, not a cliff:
+// OR 0.82 per mIU/mL of baseline LH (95% CI 0.71-0.95, P = .008).
+// Forge therefore models a linear fade from full response at 9.4 to zero at LH_PRIMARY_HARD, and applies it only
+// when testosterone is also low (EMAS "primary"). LH_PRIMARY_HARD = 2 x 9.4 is an ASSUMPTION: at that point Kim's
+// odds ratio has compounded to 0.82^8.6 ≈ 0.18, i.e. about a fifth of the baseline odds of responding. No trial
+// reports an LH at which the response is measured to be zero.
+export const LH_PRIMARY_HARD = 18.8;
+// Below this total T, a raised LH means primary testicular failure (EMAS). At or above it, a raised LH is EMAS
+// "compensated hypogonadism": the testis is keeping up, and a SERM still has somewhere to push.
+export const LOW_T = 350;
 export const PROLACTIN_HIGH = 20;     // ng/mL, ~upper male reference (assay-dependent)
 export const ZINC_LOW = 70;           // µg/dL, morning fasting serum zinc cutoff for men (IZiNCG)
 export const OBESE_BMI = 30;
@@ -596,6 +626,11 @@ export function tShiftPct(model, ctx = {}) {
   const g = model.gate || {};
   const full = fin(model.tPct) ? model.tPct : interp(model.tPctByBaseline || [[0, 0]], T);
   // Evidence is in men with low testosterone: scale down toward the normal range, zero at/above `g.noEffectAbove`.
+  // AS OF 2026-10-20 NO CATALOGUE ITEM USES THIS. Every item that carried it (clomiphene, enclomiphene, hCG,
+  // cabergoline) had it fitted to hypogonadal trials and then extrapolated to zero at 450–500 ng/dL, which the
+  // eugonadal measurements contradict (Tenover 1991, Bremner 1987, Krause 1992, Cailleux-Bounacer 2008). The
+  // mechanism is kept because a future item might genuinely have a measured zero above some level, but adding
+  // it to an item requires a trial showing the effect stops — not an extrapolation of a fit. See CONTRACT §22.7.
   if (g.lowTOnly) {
     const hi = g.noEffectAbove ?? 450;
     if (T >= hi) return { pct: 0, note: `Studied only in men with low testosterone. Yours is ≈${Math.round(T)} ng/dL${ctx.baselineT == null ? ' (assumed average)' : ''}, so Forge models no rise.`, warn: null };
@@ -605,9 +640,25 @@ export function tShiftPct(model, ctx = {}) {
     if (pr == null) return { pct: 0, note: 'This only treats a high prolactin level, which is one specific cause of low testosterone. Enter your prolactin lab and Forge will apply it.', warn: null };
     if (pr <= PROLACTIN_HIGH) return { pct: 0, note: `Your prolactin (${pr} ng/mL) is normal, so there's nothing here to treat and Forge models no change.`, warn: null };
   }
+  // Primary (testicular) failure. CORRECTED 2026-10-20: this used to zero the whole class the moment LH went
+  // past 9.4. Keihani 2020 (n = 332) found baseline LH did not predict the response at all and that a normal OR
+  // SLIGHTLY ELEVATED gonadotropin still responds; Kim 2026 found a gradient (OR 0.82 per mIU/mL), not a cliff.
+  // So: a raised LH with a NORMAL testosterone (EMAS "compensated") is left alone, and a raised LH with a LOW
+  // testosterone (EMAS "primary") fades linearly to zero between LH_PRIMARY and LH_PRIMARY_HARD.
+  let primaryFade = 1, primaryNote = null;
   if (g.secondaryOnly && fin(ctx.lh) && ctx.lh > LH_PRIMARY) {
-    return { pct: 0, note: `Your LH (${ctx.lh} IU/L) is already high, which points to the testes rather than the pituitary. These therapies work by pushing LH higher, so Forge models no rise.`, warn: null };
+    const lowT = T < LOW_T;
+    if (lowT) {
+      primaryFade = clamp((LH_PRIMARY_HARD - ctx.lh) / (LH_PRIMARY_HARD - LH_PRIMARY), 0, 1);
+      primaryNote = primaryFade <= 0
+        ? `Your LH (${ctx.lh} IU/L) is well above the range with a low testosterone: that is primary (testicular) failure, and the testes are already getting a maximal signal. These therapies work by pushing LH higher, so Forge models no rise.`
+        : `Your LH (${ctx.lh} IU/L) is above the EMAS cut-off (9.4) with a low testosterone, which points partly at the testes. Keihani 2020 found a normal or slightly raised LH still responds, and Kim 2026 found the odds fall gradually rather than stopping, so Forge keeps ${Math.round(primaryFade * 100)}% of the modeled rise instead of zeroing it.`;
+    } else {
+      primaryNote = `Your LH (${ctx.lh} IU/L) is above the EMAS cut-off with a normal testosterone — "compensated", not primary failure. Keihani 2020 (332 men) found baseline LH did not predict the response, so Forge does not zero this out.`;
+    }
+    if (primaryFade <= 0) return { pct: 0, note: primaryNote, warn: null };
   }
+  const withFade = (pct, note) => ({ pct: pct * primaryFade, note: [primaryNote, note].filter(Boolean).join(' ') || null, warn: null });
   if (g.obesityOnly) {
     const bmi = num(ctx.bmi, 10, 90);
     if (bmi == null) return { pct: 0, note: 'The testosterone rise was measured in men with obesity. Add your height and weight so Forge can tell whether it applies to you.', warn: null };
@@ -627,23 +678,28 @@ export function tShiftPct(model, ctx = {}) {
     if (supp <= 0) return { pct: 0, note: `A ${Math.round(dk)} kcal/day deficit is small enough that the controlled studies found no testosterone change (Koehler 2016), so there is nothing to recover.`, warn: null };
     // Recovering a suppression of `supp`% means multiplying the suppressed level back up by 1/(1−supp).
     const pct = (1 / (1 - supp / 100) - 1) * 100;
-    return { pct, note: `A ${Math.round(dk)} kcal/day deficit is modeled as costing about ${Math.round(supp)}% of your testosterone (interpolated between Koehler 2016's null at mild restriction and the Friedl 2000 / Rossow 2013 extremes — an assumption, not a measurement). Eating at maintenance recovers it within days to weeks.`, warn: null };
+    return withFade(pct, `A ${Math.round(dk)} kcal/day deficit is modeled as costing about ${Math.round(supp)}% of your testosterone (interpolated between Koehler 2016's null at mild restriction and the Friedl 2000 / Rossow 2013 extremes — an assumption, not a measurement). Eating at maintenance recovers it within days to weeks.`);
   }
   if (g.shortSleepOnly) {
     const sl = num(ctx.sleepHours, 0, 16) ?? AVERAGE_SLEEP;
     const target = g.sleepTarget ?? 8;
     if (sl >= (g.sleepBelow ?? 7)) return { pct: 0, note: `You already sleep ≈${r1(sl)} h, so there's no restriction to undo (the effect comes from going from short sleep back to a full night).`, warn: null };
     const frac = clamp((target - sl) / (target - (g.sleepFloor ?? 5)), 0, 1);
-    return { pct: full * frac, note: `Going from ≈${r1(sl)} h back to ${target} h recovers about ${Math.round(frac * 100)}% of the testosterone lost to short sleep (Leproult 2011: one week of 5 h cut daytime T ~10–15%).`, warn: null };
+    return withFade(full * frac, `Going from ≈${r1(sl)} h back to ${target} h recovers about ${Math.round(frac * 100)}% of the testosterone lost to short sleep (Leproult 2011: one week of 5 h cut daytime T ~10–15%).`);
   }
-  return { pct: full, note: null, warn: null };
+  return withFade(full, null);
 }
 // ======================================================================== §22 combination engine (pure)
 // `parts` = [{ id, name, item, model, dose, resp (0..1), ramp (0..1), weeksOn }]. See CONTRACT §22.
 // Three mechanisms, applied in order:
 //   1. CAUSE-CORRECTION (axis 'dopamine' | 'nutrient' | 'lifestyle'): these remove the thing suppressing the axis, so
-//      they raise the set-point. Applied first, multiplicatively (independent causes — an ASSUMPTION), and they
-//      therefore SHRINK what a drug can still add, because every drug's response falls with baseline.
+//      they raise the set-point. Applied first, multiplicatively (independent causes — an ASSUMPTION).
+//      CORRECTED 2026-10-20: this used to be described as SHRINKING what a drug can then add. It barely does.
+//      The SERM curves are a roughly constant absolute rise (Hohl 2025 pooled a single +274 ng/dL across
+//      baselines 67-303), and the two largest predictor studies — Keihani 2020 (n = 332) and Kim 2026 (n = 292) —
+//      both found baseline total testosterone did NOT predict the size of the response. So below ~550 ng/dL a
+//      cause fix and a SERM are close to additive on the number. The taper above 550 restores some shrinkage, and
+//      the real non-additivity is between the LH-driven DRUGS (step 3), which is where Habous 2018 measured it.
 //   2. NEGATIVE items (endurance load, alcohol, 6 g D-aspartic acid): multiplicative, same chain.
 //   3. LH-DRIVEN positives (SERM, AI, hCG, herbal): one final common path, so the LARGEST wins and the rest add
 //      COMBO_BONUS (= 0, the measured value from Habous 2018). Capped by the route's testicular/pituitary ceiling.
@@ -722,32 +778,71 @@ export function combineEndogenous(parts, ctx = {}) {
   // drug's rise past that drug's own evidence bound: the cause chain is bounded by the cause items, and the extra
   // the drug adds on top is bounded by the DRIVER's bound.
   const creditable = e => !(e.model.bodyComp === 'none' || e.model.tLeanShare === 0);
+  // Two bounds per item, because for clomiphene the evidence changes character part-way up the range:
+  //   bcMaxLevel        — the level up to which body composition was actually MEASURED (Soares 2018: ≈500).
+  //   bcExtrapMaxLevel  — how far Forge will run the T→lean curve above that, bounded by the highest level the
+  //                       item's own HORMONE trials reached (clomiphene: 1,390, Tenover 1991). Any credit above
+  //                       bcMaxLevel is flagged `extrapolated`, so the planner ranks the row on a floor of zero.
   const bcOf = e => num(e.model.bcMaxLevel, 0, 1e5) ?? num(e.model.ceilingNg, 0, 1e5) ?? num(e.model.maxLevel, 0, 1e5) ?? Infinity;
+  const bcBoundOf = e => Math.max(bcOf(e), num(e.model.bcExtrapMaxLevel, 0, 1e5) ?? 0);
   const CAUSE = new Set(['dopamine', 'nutrient', 'lifestyle']);
   const causeActive = ev.filter(e => e.pct0 !== 0 && (e.pct0 < 0 || CAUSE.has(e.axis)));
   const causeCred = causeActive.filter(creditable);
   let credit = mid.base >= T0
-    ? (causeCred.length ? Math.min(mid.base, Math.max(T0, Math.max(...causeCred.map(bcOf)))) : T0)
+    ? (causeCred.length ? Math.min(mid.base, Math.max(T0, Math.max(...causeCred.map(bcBoundOf)))) : T0)
     : mid.base;                                        // a loss is always real
-  let bcSource = causeCred.length ? causeCred.reduce((a, b) => (bcOf(b) > bcOf(a) ? b : a)) : null;
+  let bcSource = causeCred.length ? causeCred.reduce((a, b) => (bcBoundOf(b) > bcBoundOf(a) ? b : a)) : null;
   const lhCred = mid.lh.filter(x => x.delta > 0 && creditable(x.e));
   if (lhCred.length) {
     const d = lhCred[0];                               // mid.lh is sorted by delta, so this is the strongest creditable one
-    const bound = Math.max(credit, bcOf(d.e));
+    const bound = Math.max(credit, bcBoundOf(d.e));
     if (Math.min(mid.level, bound) > credit) { credit = Math.min(mid.level, bound); bcSource = d.e; }
   }
   const anyCreditable = bcSource != null;
-  const creditLevel = mid.level >= T0 ? clamp(credit, Math.min(T0, mid.level), mid.level) : mid.level;
+  let creditLevel = mid.level >= T0 ? clamp(credit, Math.min(T0, mid.level), mid.level) : mid.level;
+  // ---- drive the muscle credit off FREE testosterone, not total.
+  // The objection this answers: a SERM raises total T, estradiol AND SHBG together, so free T might move much
+  // less than total — and the Bhasin dose-response the credit runs through was built on exogenous testosterone
+  // (which LOWERS SHBG) with the gonadotropins switched off.
+  // What the data say: the bioavailable FRACTION does not fall. Bremner/Tenover 1987 (JCEM 65:1118-26) measured
+  // it directly in 14 healthy eugonadal men on clomiphene 100 mg/day for 7 days — total T 490 → 980 ng/dL, SHBG
+  // 24.5 → 31.3 nmol/L (+28%), and non-SHBG-bound T by the Södergard formula 3.2 → 6.5 ng/mL, i.e. 65% → 66% of
+  // total. Feeding that measured SHBG rise through Forge's own Vermeulen routine reproduces it: free T 120.4 →
+  // 242.5 pg/mL, a ratio of 2.01 against a total-T ratio of 2.00. Tenover & Bremner 1991 found SHBG did not move
+  // at all over 8 weeks. Hohl 2025's pooled SHBG change was not significant (+3.63 nmol/L, p = 0.09), and
+  // Soares 2018 measured free T rising (p < 0.001) even though SHBG rose with it.
+  // So the correction below is small by construction — which is the finding, not a fudge. `freeAdj` is the
+  // fraction of the total-T rise that survives into free T; it is capped at 1 so saturable SHBG binding can
+  // never earn EXTRA credit, only take it away (e.g. a man with a high SHBG, or a bigger modeled SHBG rise).
+  let freeAdj = 1;
+  if (creditLevel > T0 && freeT != null && freeTBase != null && freeTBase > 0 && mid.level > T0) {
+    freeAdj = clamp((freeT / freeTBase) / (mid.level / T0), 0, 1);
+    creditLevel = T0 + (creditLevel - T0) * freeAdj;
+  }
   const bcMax = bcSource ? bcOf(bcSource) : Infinity;
-  const extrapolated = !!(bcSource && bcSource.model.bodyComp === 'extrapolated');
+  // Is this man inside the evidence, or past it? Three ways to be past it:
+  //   1. the item has no body-composition data at all (`bodyComp: 'extrapolated'`);
+  //   2. his own BASELINE is already above the highest baseline the body-composition trial enrolled
+  //      (`bcMaxBaseline` — Soares 2018 took men with T ≤ 300; Liu 2002 took men with T ≤ 433). A eugonadal man
+  //      is simply not the population anybody weighed, however good the drug's hormone data are;
+  //   3. more than half the credited rise sits above the level that trial reached (`bcMaxLevel`). A small
+  //      overshoot of a bound that is itself inferred is noise; a large one is not.
+  const bcBase = bcSource ? num(bcSource.model.bcMaxBaseline, 0, 1e5) : null;
+  const rise = creditLevel - T0;
+  const aboveFrac = rise > 1 ? clamp((creditLevel - Math.max(T0, bcMax)) / rise, 0, 1) : 0;
+  const extrapolated = !!(bcSource && (bcSource.model.bodyComp === 'extrapolated'
+    || (bcBase != null && T0 > bcBase) || aboveFrac > 0.5));
 
   if (mid.lh.length > 1) {
     const names = mid.lh.map(x => x.e.name.split(' (')[0]);
     notes.push(`${names.join(' + ')}: these work through the same final step — your Leydig cells making testosterone — so Forge does not add them up. In the only randomized test of this (Habous 2018, 282 men) clomiphene gave +158 ng/dL, hCG +134, and both together +153: the combination was no better than clomiphene alone (p=0.57). The modeled level is driven by ${mid.driver.e.name.split(' (')[0]}; the optimistic end of the range adds a quarter of the others, which is an assumption.`);
   }
-  if (mid.capped) notes.push(`Modeled level capped at ${Math.round(mid.cap)} ng/dL: that is the plateau for this route. The highest group mean any SERM or aromatase-inhibitor trial reached is 790 ng/dL (Krause 1992); hCG, which replaces LH at the testis directly, reached about 870 (Liu 2002).`);
+  if (mid.capped) notes.push(`Modeled level capped at ${Math.round(mid.cap)} ng/dL: that is the plateau for this route. The highest group mean any own-axis trial has reported is 1,390 ng/dL — clomiphene 50 mg twice daily for 8 weeks in five HEALTHY young men (Tenover & Bremner 1991). At conventional doses the maxima are lower: 790 on tamoxifen (Krause 1992), 764 on enclomiphene (Wiehle 2013), about 870 on hCG (Liu 2002, inferred).`);
   if (anyCreditable && mid.level > creditLevel + 1) {
-    notes.push(`Forge credits muscle only up to ≈${Math.round(creditLevel)} ng/dL — the level ${bcSource.name.split(' (')[0]}'s own trials reached. ${bcSource.model.bcNote || ''}`.trim());
+    notes.push(`Forge credits muscle only up to ≈${Math.round(creditLevel)} ng/dL — bounded by what ${bcSource.name.split(' (')[0]}'s own trials reached${freeAdj < 0.995 ? `, and shrunk by ${Math.round((1 - freeAdj) * 100)}% because SHBG rises with it, so free testosterone moves less than total` : ''}. ${bcSource.model.bcNote || ''}`.trim());
+  }
+  if (extrapolated && creditLevel > T0 + 1) {
+    notes.push('Any muscle shown here is an EXTRAPOLATION in a second, deeper sense as well: the testosterone→lean curve Forge runs it through (Bhasin 2001) was built by giving men testosterone from OUTSIDE while switching their own gonadotropins off. Nobody has tested whether the same rise produced by your own testes builds the same muscle. The only two body-composition results in this whole class — Soares 2018 (clomiphene, bioimpedance) and Liu 2002 (hCG, +2 kg lean and NO gain in strength, gait or balance) — are both in hypogonadal men, and neither measured a eugonadal one. That question is open, and the range starting at zero is how Forge says so.');
   }
   if (!anyCreditable && mid.level > T0 + 1) {
     const culprit = ev.find(e => e.pct0 > 0 && (e.model.bodyComp === 'none' || e.model.tLeanShare === 0));
@@ -758,7 +853,7 @@ export function combineEndogenous(parts, ctx = {}) {
     baselineT: T0, causeBase: mid.base, level: mid.level, levelLo: Math.min(lo.level, mid.level), levelHi: Math.max(hi.level, mid.level),
     cap: mid.cap, capped: mid.capped, driverId: mid.driver?.e.id || null,
     e2, e2Base, e2Assumed, e2Lo: clamp(e2Base * (1 + (e2Mult - 1) * 0.5), 0.5, 500), e2Hi: clamp(e2Base * (1 + (e2Mult - 1) * 1.5), 0.5, 500),
-    e2ActionDrop, shbg: Math.round(shbg * 10) / 10, shbgAssumed, freeT, freeTBase,
+    e2ActionDrop, shbg: Math.round(shbg * 10) / 10, shbgAssumed, freeT, freeTBase, freeAdj,
     creditLevel, creditSource: bcSource?.id || null, extrapolated, bcNote: bcSource?.model.bcNote || null,
     parts: ev.map(e => {
       const inLh = mid.lh.find(x => x.e === e);
@@ -820,6 +915,7 @@ export function modifiersAt(profile, date, opts = {}) {
           shbg: tInfo.shbg != null ? r1(tInfo.shbg) : null, freeT: tInfo.freeT != null ? r1(tInfo.freeT) : null,
           freeTBase: tInfo.freeTBase != null ? r1(tInfo.freeTBase) : null,
           extrapolated: !!tInfo.extrapolated, creditSource: C ? C.creditSource : null, exogenous: !!tInfo.exogenous,
+          freeAdj: C && C.freeAdj != null ? r2(C.freeAdj) : 1,
           leanCeilingMult: r2(applied.leanCeilingMult), leanDirectLbPerWeek: r2(applied.leanDirectLbPerWeek), beyondStudied: tInfo.effect.beyondStudied,
           note: capped ? `Serum total T ≈${Math.round(tInfo.level)} vs your natural ${Math.round(tInfo.natural)} ng/dL. Forge credits muscle only up to ≈${Math.round(tInfo.leanLevel)} ng/dL: ${fmtSign(applied.leanDirectLbPerWeek)} lb/week lean without training, training ceiling ×${r2(applied.leanCeilingMult)}.` : tInfo.effect.note };
       })(),
@@ -935,7 +1031,7 @@ export function modifiersAt(profile, date, opts = {}) {
       const level = measuredUsable ? measured : comb.level;
       if (measuredUsable) notes.push(`Your measured total T on therapy (${Math.round(measured)} ng/dL) is used as-is; Forge doesn't add a modeled rise on top of a real lab.`);
       const creditLevel = measuredUsable
-        ? (comb.creditSource ? clamp(Math.min(level, Math.max(T0, num(SUPPLEMENTS[comb.creditSource]?.model?.bcMaxLevel, 0, 1e5) ?? level)), Math.min(T0, level), Math.max(T0, level)) : (level >= T0 ? T0 : level))
+        ? (comb.creditSource ? clamp(Math.min(level, Math.max(T0, num(SUPPLEMENTS[comb.creditSource]?.model?.bcExtrapMaxLevel, 0, 1e5) ?? num(SUPPLEMENTS[comb.creditSource]?.model?.bcMaxLevel, 0, 1e5) ?? level)), Math.min(T0, level), Math.max(T0, level)) : (level >= T0 ? T0 : level))
         : comb.creditLevel;
       // Estradiol → fat (aromatase inhibitors only; Finkelstein 2013, scaled, ASSUMPTION — see E2_FAT).
       const e2Fat = estradiolFatEffect(comb.e2ActionDrop, { weeksOn: weeks, bmi: ctx.bmi, estradiol: comb.e2Base });
@@ -959,11 +1055,18 @@ export function modifiersAt(profile, date, opts = {}) {
         const src = cParts.find(c => c.id === p.id);
         const roleText = p.role === 'subsumed'
           ? `Adds no extra testosterone on top of ${SUPPLEMENTS[comb.driverId]?.name.split(' (')[0] || 'the stronger item'}: they share the same final step (Habous 2018). `
-          : p.role === 'cause' ? 'Treats a cause, so it raises the level the drugs then work from (and shrinks what they can add). ' : '';
+          : p.role === 'cause' ? 'Treats a cause, so it raises the level the drugs then work from. Below about 550 ng/dL that barely shrinks what a SERM adds, because the measured SERM effect is a roughly constant number of ng/dL and neither Keihani 2020 nor Kim 2026 found baseline testosterone to predict it; above 550 the modeled rise does start to taper. ' : '';
         const none = src?.model.bodyComp === 'none' || src?.model.tLeanShare === 0;
+        // Extrapolated is a per-MAN judgement, not just a per-item class: clomiphene's body composition was
+        // measured in obese men with T ≤300, so a eugonadal man is outside it even though the item says
+        // 'measured'. comb.extrapolated already applies that rule (bcMaxBaseline / bcMaxLevel).
+        const itemExtrap = src?.model.bodyComp === 'extrapolated'
+          || (comb.extrapolated && (comb.creditSource === p.id || p.role === 'driver'));
         const extraText = none
           ? ` Forge raises your testosterone number and credits NO muscle — ${src.model.leanNullNote || 'the trials that measured body composition on it found none'}.`
-          : src?.model.bodyComp === 'extrapolated' && p.pct !== 0 ? ' Any lean mass shown is an EXTRAPOLATION: no trial of this item measured body composition.' : '';
+          : itemExtrap && p.pct !== 0
+            ? ` Any lean mass shown is an EXTRAPOLATION: no trial of this item has measured body composition in a man like you. On top of that, the testosterone→lean curve it runs through was built by giving men testosterone from OUTSIDE with their own gonadotropins switched off, and nobody has tested whether the same rise made by your own testes builds the same muscle. That is why the range starts at zero.`
+            : '';
         contributions.push({ id: p.id, name: p.name, evidence: src?.evidence, kind: 'stack', dose: p.dose, rampPct: Math.round(p.ramp * 100),
           assumedAverage: base.levels.totalTSource === 'assumed', assumedDose: !!p.dose?.assumed, role: p.role, extrapolated: src?.model.bodyComp === 'extrapolated',
           text: p.pct === 0

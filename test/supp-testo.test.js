@@ -3,8 +3,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  modifiersAt, combineEndogenous, estradiolFatEffect, tShiftPct, testosteroneEffect,
+  modifiersAt, combineEndogenous, estradiolFatEffect, tShiftPct, testosteroneEffect, vermeulenFreeT,
   PITUITARY_CEILING, TESTIS_CEILING, COMBO_BONUS, E2_FAT, ASSUMED_E2, ASSUMED_SHBG,
+  LH_PRIMARY, LH_PRIMARY_HARD,
 } from '../js/engine/metabolic.js';
 import { SUPPLEMENTS, isRx, RX_IDS, T_LAB_PANEL, isExogenousT } from '../js/data/supplements.js';
 import { tPlan, SINGLE_IDS, COMBOS } from '../js/engine/tplan.js';
@@ -19,7 +20,12 @@ const P = (supplements = [], metabolic = {}, extra = {}) => ({
 const e = (id, start = START, dose = null) => ({ id, start, end: null, dose, active: true });
 const mods = (p, opts = {}) => modifiersAt(p, DATE, { age: 39, ...opts });
 const LOW = { totalT: 300, labDate: '2026-07-01', lh: 3.2 };            // secondary hypogonadism
-const PRIMARY = { totalT: 300, labDate: '2026-07-01', lh: 14 };         // testicular failure
+// CHANGED 2026-10-20: used to be lh 14. 14 is only "slightly elevated" and Keihani 2020 (n=332) found such men
+// still respond, so Forge now attenuates there instead of zeroing. A hard zero needs a clearly raised LH.
+const PRIMARY = { totalT: 300, labDate: '2026-07-01', lh: 20 };         // unambiguous testicular failure
+const PRIMARY_MILD = { totalT: 300, labDate: '2026-07-01', lh: 14 };    // EMAS "primary" but only mildly raised
+const COMPENSATED = { totalT: 520, labDate: '2026-07-01', lh: 12 };     // EMAS "compensated": normal T, raised LH
+const EUGONADAL = { totalT: 519, labDate: '2026-07-01', lh: 4 };        // Tenover & Bremner 1991's young men
 
 // ====================================================================== 1. single items vs trial means
 test('single-item testosterone responses reproduce the trial means', () => {
@@ -45,6 +51,83 @@ test('single-item testosterone responses reproduce the trial means', () => {
   const ash = mods(P([e('ashwagandha')])).testosterone;
   assert.ok(ash.level > ash.natural * 1.08 && ash.level < ash.natural * 1.16);
   assert.equal(mods(P([e('tongkat_ali')])).testosterone.level, mods(P()).testosterone.natural);
+});
+
+// ====================================================================== 1b. the EUGONADAL correction (2026-10-20)
+// Bob: "the clomiphene thing — I bet that works for anyone". On the hormone, he is right.
+test('clomiphene raises testosterone in a man whose level is already normal', () => {
+  // Tenover & Bremner 1991 (PMID 1917692): five HEALTHY men aged 26–33, baseline 18.0 nmol/L = 519 ng/dL, on
+  // 50 mg twice daily for 8 weeks, reached 48.2 nmol/L = 1,390 ng/dL. Bremner 1987 (doi:10.1210/jcem-65-6-1118):
+  // 14 healthy men 22–35, 490 → 980 ng/dL in 7 days. Krause 1992 is the placebo-controlled anchor at 490 → 790.
+  // Forge is deliberately conservative against all three: a constant ≈+274 ng/dL (Hohl 2025's pooled effect).
+  const clo = mods(P([e('clomiphene')], EUGONADAL)).testosterone;
+  assert.ok(clo.level > clo.natural + 200, `a eugonadal man must get a real rise, got ${clo.natural} → ${clo.level}`);
+  assert.ok(clo.level - clo.natural < 320, `...but not more than the measured hypogonadal effect: +${clo.level - clo.natural}`);
+  // and it must be well under what was actually observed at that baseline, i.e. conservative, not invented
+  assert.ok(clo.level < 1390, 'below the highest group mean ever reported (Tenover 1991)');
+  // The old model returned EXACTLY zero here. That expectation is gone for good.
+  assert.notEqual(clo.level, clo.natural);
+  for (const id of ['enclomiphene', 'tamoxifen', 'hcg']) {
+    const t = mods(P([e(id)], EUGONADAL)).testosterone;
+    assert.ok(t.level > t.natural + 100, `${id} must also move at a normal baseline, got ${t.natural} → ${t.level}`);
+  }
+  // Mid-normal with no labs at all (Bob): the planner's default man still gets a modeled rise.
+  const bob = mods(P([e('clomiphene')])).testosterone;
+  assert.ok(bob.level > bob.natural + 200 && bob.level < 900, `${bob.natural} → ${bob.level}`);
+});
+
+test('the percentage rise still shrinks as the baseline rises — because the absolute rise is flat', () => {
+  // Hohl 2025 pooled ONE absolute effect (+273.8 ng/dL) across baselines 67–303; Keihani 2020 (n=332) and
+  // Kim 2026 (n=292) both found baseline total T did not predict the response. A constant absolute rise is a
+  // falling percentage. Above 550 Forge tapers the absolute rise too (an assumption — nothing was studied there).
+  const pct = [], delta = [];
+  for (const T of [200, 300, 400, 500, 600, 800]) {
+    const g = tShiftPct(SUPPLEMENTS.clomiphene.model, { baselineT: T, lh: 3 });
+    pct.push(g.pct); delta.push(T * g.pct / 100);
+  }
+  for (let i = 1; i < pct.length; i++) assert.ok(pct[i] < pct[i - 1], `percentage must fall: ${pct}`);
+  for (const d of delta.slice(0, 4)) assert.ok(Math.abs(d - 274) < 10, `absolute rise flat at ≈+274 up to 500: ${delta}`);
+  assert.ok(delta[5] < delta[0], 'and tapers above 550');
+  assert.ok(pct[5] > 15, 'but never collapses to zero inside the human range');
+});
+
+test('a clearly raised LH with a low testosterone still zeroes it — a slightly raised one does not', () => {
+  // EMAS (Tajar 2010, doi:10.1210/jc.2009-1796) sets 9.4 IU/L: low T + LH > 9.4 = primary, normal T + LH > 9.4 =
+  // compensated. Keihani 2020: baseline LH did NOT predict response, and "most patients with normal or slightly
+  // elevated baseline gonadotropin levels" respond. Kim 2026: a gradient (OR 0.82 per mIU/mL), not a cliff.
+  assert.equal(LH_PRIMARY, 9.4);
+  assert.equal(LH_PRIMARY_HARD, 18.8);
+  const at = lh => mods(P([e('clomiphene')], { totalT: 300, labDate: '2026-07-01', lh })).testosterone;
+  const full = at(3).level - 300;
+  assert.ok(full > 200);
+  assert.equal(at(9).level - 300, full, 'inside the EMAS range, LH does not matter at all (Keihani 2020)');
+  const mild = at(14).level - 300;
+  assert.ok(mild > 0 && mild < full, `LH 14 attenuates rather than zeroing: +${mild} vs +${full}`);
+  assert.ok(Math.abs(mild / full - (LH_PRIMARY_HARD - 14) / (LH_PRIMARY_HARD - LH_PRIMARY)) < 0.02, 'linear fade');
+  assert.equal(at(20).level, 300, 'a clearly raised LH with a low T is primary failure: zero');
+  // Compensated hypogonadism — raised LH but a NORMAL testosterone — is not blocked at all.
+  const comp = mods(P([e('clomiphene')], COMPENSATED)).testosterone;
+  assert.ok(comp.level > comp.natural + 200, `compensated must still respond, got ${comp.natural} → ${comp.level}`);
+  assert.ok(mods(P([e('clomiphene')], COMPENSATED)).contributions.some(c => c.id === 'clomiphene' && /compensated/i.test(c.text)));
+});
+
+test('muscle credit is driven by FREE testosterone, and the SHBG rise is what makes it smaller', () => {
+  // The objection: a SERM raises total T, estradiol AND SHBG together, so free T might move much less.
+  // The measurement: Bremner 1987 — total T 490 → 980 and SHBG 24.5 → 31.3 nmol/L left the bioavailable fraction
+  // at 65% → 66%. Forge's own Vermeulen routine reproduces that, which is the validation below.
+  const f0 = vermeulenFreeT(490, 24.5), f1 = vermeulenFreeT(980, 31.3);
+  assert.ok(Math.abs((f1 / f0) / (980 / 490) - 1) < 0.03, `free T tracks total T on a SERM: ratio ${(f1 / f0).toFixed(2)} vs 2.00`);
+  // So in practice the correction is ~1.0 and it does NOT silently inflate anything...
+  const clo = mods(P([e('clomiphene')], EUGONADAL)).testosterone;
+  assert.ok(clo.freeT > clo.freeTBase, 'free T goes up');
+  assert.ok(clo.freeAdj <= 1, 'and the adjustment can only ever take credit away, never add it');
+  assert.ok(clo.freeAdj > 0.9, 'with the measured +4 nmol/L SHBG rise it barely bites');
+  // ...but it does bite when SHBG actually moves a long way, which is the whole point of computing it.
+  const parts = [{ id: 'clomiphene', name: 'x', item: SUPPLEMENTS.clomiphene, dose: null, resp: 1, ramp: 1, weeksOn: 12,
+    model: { ...SUPPLEMENTS.clomiphene.model, shbgDelta: 15 } }];
+  const big = combineEndogenous(parts, { baselineT: 543, lh: 3, shbg: 35 });
+  assert.ok(big.freeAdj < 0.92, `a +15 nmol/L SHBG rise must cost credit, got ${big.freeAdj}`);
+  assert.ok(big.creditLevel < big.level, 'so the credited level falls below the serum level');
 });
 
 test('every modeled own-axis item declares where its body-composition credit comes from', () => {
@@ -89,15 +172,27 @@ test('combinations are not additive: the largest LH-driven item wins (Habous 201
   const cloAsh = mods(P([e('clomiphene'), e('ashwagandha')], LOW)).testosterone;
   assert.ok(Math.abs(cloAsh.level - clo.level) < 1, 'ashwagandha adds nothing on top of clomiphene');
 
-  // Cause-correction is different: it raises the set-point FIRST, which shrinks what the drug can add.
+  // Cause-correction is different: it raises the set-point FIRST, and the drug then works from there.
+  // CHANGED 2026-10-20. The old assertion was that this must land WELL BELOW the naive sum, i.e. that raising a
+  // man's baseline shrinks what clomiphene can add. That is not what the evidence says. Hohl 2025 pooled a single
+  // absolute effect (+273.8 ng/dL) across baselines 67–303, and the two largest predictor cohorts — Keihani 2020
+  // (n=332) and Kim 2026 (n=292) — both found baseline total testosterone did NOT predict the response. Below
+  // ~550 ng/dL the two are therefore close to additive on the number. The shrink only appears once the taper
+  // above 550 starts, so that is where it is now asserted.
   const short = { ...LOW, sleepHours: 5.5 };
   const cloShort = mods(P([e('clomiphene')], short)).testosterone;
   const sleepOnly = mods(P([e('sleep_hygiene')], short)).testosterone;
   const sleepClo = mods(P([e('sleep_hygiene'), e('clomiphene')], short)).testosterone;
   assert.ok(sleepOnly.level > sleepOnly.natural, 'fixing sleep raises the set-point');
-  assert.ok(sleepClo.level < (cloShort.level - cloShort.natural) + sleepOnly.level - 20,
-    `sleep + clomiphene (${sleepClo.level}) must be below the naive sum`);
-  assert.ok(sleepClo.level > cloShort.natural, 'but still above baseline');
+  assert.ok(sleepClo.level > cloShort.level, 'and the drug then works from the higher baseline');
+  assert.ok(sleepClo.level <= (cloShort.level - cloShort.natural) + sleepOnly.level + 2,
+    `sleep + clomiphene (${sleepClo.level}) is never MORE than the naive sum`);
+  // Up at the top of the curve the absolute rise does taper, so the shrink reappears.
+  const hiBase = { totalT: 700, labDate: '2026-07-01', lh: 3 };
+  const d700 = tShiftPct(SUPPLEMENTS.clomiphene.model, { baselineT: 700, lh: 3 }).pct * 700 / 100;
+  const d300 = tShiftPct(SUPPLEMENTS.clomiphene.model, { baselineT: 300, lh: 3 }).pct * 300 / 100;
+  assert.ok(d700 < d300 - 5, `the absolute rise tapers at a high baseline: ${d700} vs ${d300}`);
+  assert.ok(mods(P([e('clomiphene')], hiBase)).testosterone.level > 700, 'but is still positive');
 });
 
 test('combineEndogenous is directly testable and saturating', () => {
@@ -112,30 +207,51 @@ test('combineEndogenous is directly testable and saturating', () => {
 
 // ====================================================================== 3. ceilings
 test('the testicular / pituitary capacity ceiling bounds total LH-driven output', () => {
+  // CHANGED 2026-10-20. The ceilings were 800 / 1,100, justified as "the highest group mean any SERM or AI trial
+  // reached is 790 (Krause 1992)". That survey missed the eugonadal trials. The highest group mean ANY own-axis
+  // trial has reported is 48.2 nmol/L = 1,390 ng/dL — clomiphene 50 mg twice daily for 8 weeks in five healthy
+  // men aged 26–33 (Tenover & Bremner 1991). So both ceilings are now 1,390 and they are equal: nobody has shown
+  // hCG pushing past a SERM (its highest figure is Liu 2002's inferred ≈870).
+  assert.equal(PITUITARY_CEILING, 1390);
+  assert.equal(TESTIS_CEILING, 1390);
+  assert.ok(PITUITARY_CEILING <= TESTIS_CEILING);
   // A man with a healthy baseline who stacks everything cannot be pushed past the route plateau.
   const all = mods(P([e('clomiphene'), e('enclomiphene'), e('hcg'), e('aromatase_inhibitor'), e('tamoxifen'), e('ashwagandha')],
     { totalT: 450, labDate: '2026-07-01', lh: 3 })).testosterone;
   assert.ok(all.level <= TESTIS_CEILING, `${all.level} must not exceed the testicular ceiling ${TESTIS_CEILING}`);
-  // SERM/AI only: bounded by the pituitary-driven plateau (790 ng/dL is the highest group mean ever reported).
-  const serm = mods(P([e('clomiphene'), e('tamoxifen'), e('aromatase_inhibitor')], { totalT: 480, labDate: '2026-07-01', lh: 3 })).testosterone;
-  assert.ok(serm.level <= PITUITARY_CEILING, `SERM/AI stack reached ${serm.level}, ceiling ${PITUITARY_CEILING}`);
-  assert.ok(PITUITARY_CEILING < TESTIS_CEILING, 'hCG, which replaces LH at the testis, can push harder');
-  // Muscle credit never exceeds the level the evidence reached.
+  // Per-item ceilings are what actually bind, and each is the highest group mean that item reported.
+  assert.equal(SUPPLEMENTS.clomiphene.model.ceilingNg, 1390);   // Tenover 1991
+  assert.equal(SUPPLEMENTS.enclomiphene.model.ceilingNg, 764);  // Wiehle 2013, 25 mg day-42 Cmax
+  assert.equal(SUPPLEMENTS.tamoxifen.model.ceilingNg, 790);     // Krause 1992
+  const tam = mods(P([e('tamoxifen')], { totalT: 700, labDate: '2026-07-01', lh: 3 })).testosterone;
+  assert.ok(tam.level <= 790 + 0.5, `tamoxifen capped at its own 790, got ${tam.level}`);
+  const enc = mods(P([e('enclomiphene')], { totalT: 650, labDate: '2026-07-01', lh: 3 })).testosterone;
+  assert.ok(enc.level <= 764 + 0.5, `enclomiphene capped at its own 764, got ${enc.level}`);
+  // Muscle credit never exceeds the level the evidence reached. For a man INSIDE Soares 2018's population
+  // (T ≤300) the credit is MEASURED and stays near that trial's landing zone.
   const clo = mods(P([e('clomiphene')], LOW)).testosterone;
-  assert.ok(clo.leanLevel <= SUPPLEMENTS.clomiphene.model.bcMaxLevel + 1);
-  assert.ok(clo.leanLevel < clo.level, 'and is below the modeled level here');
+  assert.equal(clo.extrapolated, false, 'a hypogonadal man is inside Soares 2018');
+  assert.ok(clo.leanLevel <= clo.level + 1 && clo.leanLevel > clo.natural);
+  // A eugonadal man is OUTSIDE it (baseline above Soares' T ≤300 entry), so the credit is flagged extrapolated.
+  const eug = mods(P([e('clomiphene')], EUGONADAL)).testosterone;
+  assert.equal(eug.extrapolated, true, 'a eugonadal man is past the body-composition evidence');
+  assert.ok(eug.leanLevel <= SUPPLEMENTS.clomiphene.model.bcExtrapMaxLevel + 1);
   // A cause item with a generous bound must not launder a drug's rise past the drug's own bound.
   const withSleep = mods(P([e('sleep_hygiene'), e('clomiphene')], { ...LOW, sleepHours: 5.5 })).testosterone;
-  assert.ok(withSleep.leanLevel <= SUPPLEMENTS.clomiphene.model.bcMaxLevel + 1,
+  assert.ok(withSleep.leanLevel <= withSleep.level + 1,
     `credit ${withSleep.leanLevel} must stay inside clomiphene's evidence bound`);
 });
 
 // ====================================================================== 4. gating
 test('primary hypogonadism blocks every axis drug; exogenous testosterone suppresses all of them', () => {
+  // CHANGED 2026-10-20: PRIMARY is now LH 20, not LH 14. At 14 the response is attenuated, not abolished
+  // (Keihani 2020, Kim 2026) — see the dedicated LH test above.
   for (const id of ['clomiphene', 'enclomiphene', 'hcg', 'aromatase_inhibitor', 'tamoxifen']) {
     const m = mods(P([e(id)], PRIMARY));
-    assert.equal(m.testosterone.level, m.testosterone.natural, `${id} must not raise T when LH is already high`);
-    assert.ok(m.contributions.some(c => c.id === id && /points to the testes/i.test(c.text)), `${id} explains why`);
+    assert.equal(m.testosterone.level, m.testosterone.natural, `${id} must not raise T when LH is clearly high`);
+    assert.ok(m.contributions.some(c => c.id === id && /testicular\) failure/i.test(c.text)), `${id} explains why`);
+    const mild = mods(P([e(id)], PRIMARY_MILD)).testosterone;
+    assert.ok(mild.level > mild.natural, `${id} must still do something at a only slightly raised LH`);
   }
   // The AI still blocks aromatase, so it still costs estrogen action and fat even when the T gate says no.
   const ai = mods(P([e('aromatase_inhibitor')], PRIMARY));
@@ -247,14 +363,27 @@ test('the planner is honest about zeros, and puts the labs first when they are m
   assert.ok(labsAction, 'getting labs is the first action');
   assert.ok(labsAction.labs.length >= 8 && labsAction.labs.every(l => l.why));
   assert.deepEqual(labsAction.labs.map(l => l.k).sort(), T_LAB_PANEL.map(l => l.k).sort());
-  // The HPG drugs have no headroom for a mid-normal man, and the row says so rather than disappearing.
+  // CHANGED 2026-10-20, and this is the heart of the correction. These three used to be pinned at "moves
+  // nothing, lean 0, reason: studied only in men with low testosterone". That was wrong: clomiphene's rise in
+  // eugonadal men is measured (Tenover 1991, Bremner 1987) and hCG stimulation is the standard test of Leydig
+  // reserve in normal men. They now move, and the honesty has shifted from the hormone to the MUSCLE.
   for (const id of ['clomiphene', 'enclomiphene', 'hcg']) {
     const r = plan.rows.find(x => x.id === id);
     assert.ok(r, id + ' is still listed');
-    assert.equal(r.t.to, r.t.from, id + ' moves nothing');
-    assert.equal(r.lean.lb, 0);
-    assert.ok(r.why.some(w => /studied only in men with low testosterone/i.test(w)), id + ' gives the reason');
+    assert.ok(r.t.to > r.t.from + 100, `${id} must now move a mid-normal man's testosterone (${r.t.from} → ${r.t.to})`);
+    assert.ok(r.lean.lb > 0, `${id} shows a modeled lean number`);
+    assert.equal(r.lean.lo, 0, `${id} range starts at zero: nothing has been measured here`);
+    assert.equal(r.bodyComp, 'extrapolated', `${id} is labelled extrapolated for a eugonadal man`);
+    assert.equal(r.extrapolated, true);
+    assert.ok(r.score <= 0.05, `${id} is ranked on that zero floor, not on the mid-point (score ${r.score})`);
+    assert.ok(r.why.some(w => /EXTRAPOLATION/.test(w) && /gonadotropins switched off/.test(w)),
+      id + ' says the T→lean curve came from exogenous testosterone');
   }
+  // Clomiphene is the best-evidenced of the three at a normal baseline and must show the biggest modeled rise
+  // of the two SERMs, because it is the one with eugonadal measurements behind it.
+  const cl = plan.rows.find(x => x.id === 'clomiphene'), en = plan.rows.find(x => x.id === 'enclomiphene');
+  assert.ok(cl.t.to > en.t.to, 'clomiphene > enclomiphene at a normal baseline');
+  assert.ok(cl.freeT.to > cl.freeT.from, 'and free testosterone rises with it');
   // Refuted supplements are listed at zero with the reason, not omitted.
   for (const id of ['tribulus', 'maca', 'dhea']) assert.ok(plan.rows.some(r => r.id === id), id);
   assert.ok(plan.assumptions.some(a => /assumed average/i.test(a)));
@@ -310,5 +439,20 @@ test('catalogue bookkeeping: rx flags, exogenous routes and combination definiti
   assert.equal(ASSUMED_E2, 25);
   assert.equal(ASSUMED_SHBG, 35);
   assert.ok(testosteroneEffect(500, { baselineT: 300 }).leanDirectLbPerWeek > 0);
-  assert.equal(tShiftPct(SUPPLEMENTS.hcg.model, { baselineT: 300, lh: 14 }).pct, 0);
+  // CHANGED 2026-10-20: was `lh: 14 → 0`. 14 now attenuates (Keihani 2020); 20 is the clear zero.
+  assert.equal(tShiftPct(SUPPLEMENTS.hcg.model, { baselineT: 300, lh: 20 }).pct, 0);
+  assert.ok(tShiftPct(SUPPLEMENTS.hcg.model, { baselineT: 300, lh: 14 }).pct > 0);
+  // No own-axis item may keep a hard zero-above-a-normal-level gate any more: every one of them was fitted only
+  // to hypogonadal trials, and the eugonadal measurements contradict the extrapolation to zero.
+  for (const id of ['clomiphene', 'enclomiphene', 'hcg', 'tamoxifen', 'cabergoline', 'aromatase_inhibitor']) {
+    const g = SUPPLEMENTS[id].model.gate || {};
+    assert.ok(!g.lowTOnly && g.noEffectAbove == null, `${id} must not carry a hard zero-above gate any more`);
+  }
+  // ...except where the SHAPE itself is the evidence. Cabergoline gives back what prolactin took, so it really
+  // does taper to nothing at a normal testosterone — and it still needs a measured high prolactin.
+  assert.equal(SUPPLEMENTS.cabergoline.model.gate.highProlactin, true);
+  assert.equal(tShiftPct(SUPPLEMENTS.cabergoline.model, { baselineT: 750, lh: 3, prolactin: 60 }).pct, 0);
+  assert.ok(tShiftPct(SUPPLEMENTS.cabergoline.model, { baselineT: 250, lh: 3, prolactin: 60 }).pct > 50);
+  // Tongkat ali's zero in the normal range is also genuine (the meta-analysis subgroup was not significant).
+  assert.equal(SUPPLEMENTS.tongkat_ali.model.tPct, 0);
 });
