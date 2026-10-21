@@ -4,6 +4,13 @@
 Usage:  python3 e2e/run.py            # run everything, write e2e/LAST_RESULTS.md
         python3 e2e/run.py -k C1 -k W  # only tests whose id starts with C1 or W
         python3 e2e/run.py --headed
+        python3 e2e/run.py --today 2026-11-01 -k C1   # pin the date to hunt date-dependent checks
+
+Checks are meant to be date-independent: anything whose expectation depends on the weekday computes
+it from `today()` (e.g. next_full_week()) rather than assuming a roomy rest-of-week. `--today` pins
+the browser clock AND this script's `today()` together so a check can be replayed on every weekday
+(`for d in 2026-10-26 … 2026-11-01; do python3 e2e/run.py --today $d -k C1; done`). It is a debugging
+aid, not the default: a normal run uses the real date, which is what the app's users have.
 
 Starts its own static server on a free port, drives /usr/bin/chromium (390x844, swiftshader
 WebGL) with Python Playwright, and prints a PASS/FAIL table. Screenshots of failures go to
@@ -368,12 +375,22 @@ def run_test(app, tid, name, fn, ctx):
 
 
 # ---------------------------------------------------------------- shared flows
+# One source of "today" for the Python side. --today pins it together with the browser clock, which
+# is how a date-dependence hunt is run (`for d in 2026-10-26 … 2026-11-01; do run.py --today $d -k C1`);
+# unpinned it is the real date, so a normal run is unchanged.
+PINNED_TODAY = None
+
+
+def today():
+    return PINNED_TODAY or dt.date.today()
+
+
 def today_str():
-    return dt.date.today().isoformat()
+    return today().isoformat()
 
 
 def tomorrow_str():
-    return (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    return (today() + dt.timedelta(days=1)).isoformat()
 
 
 def discard_draft(app):
@@ -442,6 +459,63 @@ def plan_cardio(app):
       const m = t.match(/([\\d,]+)\\s*\\/\\s*([\\d,]+)\\s*min/);
       return m ? [parseFloat(m[1].replace(/,/g, '')), parseFloat(m[2].replace(/,/g, '')), warn] : [null, null, warn];
     }""")
+
+
+FITS_RE = re.compile(r'fits ~(\d+) cardio min', re.I)
+
+
+def warned_capacity(warns):
+    """The '~N cardio min' this week's shortfall warning claims the week can hold, or None."""
+    for w in warns or []:
+        m = FITS_RE.search(w)
+        if m: return int(m.group(1))
+    return None
+
+
+def next_full_week():
+    """Mon–Sun of the next calendar week: always wholly inside the 4-week plan, whatever day it is
+    today, so an expectation about a FULL week never depends on how much of this week is left."""
+    mon = today()
+    mon = mon - dt.timedelta(days=mon.weekday()) + dt.timedelta(days=7)
+    return mon.isoformat(), (mon + dt.timedelta(days=6)).isoformat()
+
+
+def week_slots_left(app):
+    """Trainable availability slots from today to the end of this calendar week (0 on a Sunday whose
+    slot is Rest). "Plan my week" has nothing to do when this is 0, so expectations scale with it."""
+    return app.page.evaluate("""async () => {
+      const { store } = await import('/js/store.js');
+      const { ds, addDays, weekStart } = await import('/js/util.js');
+      const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+      const sch = store.getProfile().schedule || {};
+      const now = new Date(), we = ds(addDays(weekStart(now), 6));
+      let n = 0;
+      for (let i = 0; i < 7; i++) {
+        const d = addDays(now, i); if (ds(d) > we) break;
+        const s = sch[DOW[d.getDay()]];
+        if (s && s.kind && s.kind !== 'rest' && (Number(s.minutes) || 0) >= 10) n++;
+      }
+      return n; }""")
+
+
+def cardio_between(app, frm, to):
+    """Cardio minutes the stored plan holds between two dates (cardio blocks + class cardio)."""
+    return app.store(f"""store.getPlanned({{ from: '{frm}', to: '{to}' }}).reduce((n, s) => n + (s.blocks || []).reduce((a, b) => a + (b.kind === 'cardio' ? +b.minutes || 0 : b.kind === 'class' ? +(b.classify && b.classify.cardioMinutes) || 0 : 0), 0), 0)""")
+
+
+def cardio_ok(planned, target, warns, slack=10):
+    """Plan coverage is honest: either it reaches the target, or it is full and says so.
+
+    The default availability template holds far less cardio than 225 min/wk (4 lift days, one 30′
+    cardio day, one flex day), so a shortfall warning is the correct outcome, not a bug — but only
+    if the planner really is at the capacity its own warning quotes. A warning is not a licence to
+    leave usable minutes unplanned."""
+    if planned is None: return False, 'no coverage row'
+    if abs(planned - target) <= 0.15 * target: return True, f'{planned} within ±15% of {target}'
+    fits = warned_capacity(warns)
+    if fits is None: return False, f'{planned}/{target} with no warning explaining the shortfall'
+    if planned < fits - slack: return False, f'{planned}/{target} but the week is said to fit ~{fits}: {fits - planned} usable min left unplanned'
+    return True, f'{planned}/{target}: week is full (fits ~{fits}), shortfall explained'
 
 
 def run_plan(app, which='plan-4'):
@@ -699,15 +773,22 @@ for _i, _loc in enumerate(LOCS, 1):
 def t_plan(t, ctx):
     app = t.app
     app.load(bobir(app), 'plan')
+    # "This week" is only the days that are left of it: run late enough in the week and every
+    # remaining slot can be Rest, when "Nothing new to plan" is the right answer. Scale from today
+    # rather than assuming a roomy week, so the check reads the same on every weekday.
+    left = week_slots_left(app)
     msg = run_plan(app, 'plan-week')
     # lengthened weeks announce the extension instead (targets.extendedToast, since c82697a)
-    t.check(msg and ('Planned' in msg or re.search(r'Extended .* weekly set targets', msg)), 'Plan my week', 'toast "Planned N sessions" or "Extended … weekly set targets"', msg or app.toasts())
+    planned_toast = msg and ('Planned' in msg or re.search(r'Extended .* weekly set targets', msg))
+    t.check(planned_toast or (not left and msg and re.search(r'nothing (new|to plan)', msg, re.I)), 'Plan my week',
+            'toast "Planned N sessions" or "Extended … weekly set targets"' + ('' if left else ' (or "Nothing new": no trainable day left this week)'),
+            msg or app.toasts())
     n = app.count('.pl-line.planned')
-    t.check(n >= 3, 'planned day cards this week', '≥3 planned cards', n)
+    t.check(n >= min(3, left), 'planned day cards this week', f'≥{min(3, left)} planned cards ({left} trainable day(s) left this week)', n)
     t.check(app.has('.pl-sum .pl-bar-row'), 'week coverage card', 'coverage bars', short(app.text('.pl-sum'), 100))
     msg = run_plan(app, 'plan-4')
     t.check(msg and (re.search(r'Planned \d+', msg) or re.search(r'Extended .* weekly set targets', msg)), 'Plan next 4 weeks', 'toast "Planned N sessions" or "Extended …"', msg)
-    end = (dt.date.today() + dt.timedelta(days=21)).isoformat()
+    end = (today() + dt.timedelta(days=21)).isoformat()
     n4 = app.store(f"store.getPlanned({{ from: ds, to: '{end}' }}).length")
     t.check(n4 >= 12, 'sessions planned over 3+ weeks', '≥12 planned', n4)
     app.click('[data-a="next"]'); app.page.wait_for_timeout(150)
@@ -958,20 +1039,19 @@ def t_c1(t, ctx):
     app.tab('plan')
     c1, tg1, warns = plan_cardio(app)
     cw = [w for w in warns if re.search(r'cardio', w, re.I)]
-    within = c1 is not None and abs(c1 - CARDIO_GOAL) <= 0.15 * CARDIO_GOAL
-    replanned = c1 is not None and c0 is not None and c1 > c0
-    okc = tg1 == CARDIO_GOAL and (within or (replanned and cw))
+    okc, why = cardio_ok(c1, CARDIO_GOAL, cw)
+    okc = okc and tg1 == CARDIO_GOAL
     t.sub('C1c', 'Plan coverage: target 225, auto-replanned within ±15% (or shortfall explained)', okc,
-          'Plan week coverage after target change', f'target 225; planned 191–259 or re-planned + cardio warning',
-          f'target {tg1}; cardio {c1} (was {c0}/{tg0} before); warnings: {short("; ".join(cw), 90) or "none"}')
+          'Plan week coverage after target change', 'target 225; planned 191–259, or the week is full and says so',
+          f'target {tg1}; {why} (was {c0}/{tg0} before); warnings: {short("; ".join(cw), 90) or "none"}')
     plan_c, plan_warn = c1, cw
     if not okc:  # diagnostic: does a manual re-plan reach it?
         run_plan(app, 'plan-4')
         c2, tg2, warns2 = plan_cardio(app)
         cw2 = [w for w in warns2 if re.search(r'cardio', w, re.I)]
-        within2 = c2 is not None and abs(c2 - CARDIO_GOAL) <= 0.15 * CARDIO_GOAL
-        t.sub('C1c2', 'Plan: manual "Plan next 4 weeks" reaches 225 or explains shortfall (diagnostic)', within2 or bool(cw2 and c2 and c2 > (c0 or 0)),
-              'manual re-plan', '191–259 min or shortfall warning', f'{c2}/{tg2}; warnings: {short("; ".join(cw2), 90) or "none"}',
+        ok2, why2 = cardio_ok(c2, CARDIO_GOAL, cw2)
+        t.sub('C1c2', 'Plan: manual "Plan next 4 weeks" reaches 225 or explains shortfall (diagnostic)', ok2,
+              'manual re-plan', '191–259 min, or the week is full and says so', f'{why2}; target {tg2}; warnings: {short("; ".join(cw2), 90) or "none"}',
               note=f'manual re-plan → {c2}/{tg2} min; {short("; ".join(cw2), 120)}')
         plan_c, plan_warn = c2, cw2
     # d) Projection
@@ -980,15 +1060,18 @@ def t_c1(t, ctx):
     val = pb if pb is not None else ps
     adh = app.text('#pjAdhV') if app.has('#pjAdhV') else ''
     adh = (int(re.sub(r'[^\d]', '', adh) or 85) / 100) if adh else 0.85
-    end27 = (dt.date.today() + dt.timedelta(days=27)).isoformat()
+    end27 = (today() + dt.timedelta(days=27)).isoformat()
     avg4 = app.store(f"""store.getPlanned({{ from: ds, to: '{end27}' }}).reduce((n, s) => n + (s.blocks || []).reduce((a, b) => a + (b.kind === 'cardio' ? +b.minutes || 0 : b.kind === 'class' ? +(b.classify && b.classify.cardioMinutes) || 0 : 0), 0), 0) / 4""")
     exp_from_plan = (avg4 or 0) * adh
     consistent = val is not None and avg4 and (abs(val - exp_from_plan) <= 0.15 * max(exp_from_plan, 1) or abs(val - avg4) <= 0.15 * avg4)
     okp, desc = proj_ok(app, val)
-    st = True if okp else ('warn' if consistent and plan_warn else False)
-    t.sub('C1d', 'Projection weekly cardio ≈225', st, 'Projection cardio line',
-          '180–270 min/wk raw or ÷ adherence (WARN = matches a plan that explains its shortfall)',
-          f'{desc}; stat {ps}; 4-wk plan avg {avg4:.0f} × {adh:.0%} = {exp_from_plan:.0f}')
+    # §18 cohesion: the projection must use the cardio the PLAN holds. When the plan reaches 225 that
+    # means ≈225; when the plan is capacity-bound and says so (C1c), matching the plan is the correct
+    # answer and demanding 225 here would ask the projection to lie about the week it is projecting.
+    t.sub('C1d', 'Projection weekly cardio matches the plan (≈225 once the plan reaches it)', okp or consistent,
+          'Projection cardio line', '180–270 min/wk raw or ÷ adherence, or equal to the planned 4-week average',
+          f'{desc}; stat {ps}; 4-wk plan avg {avg4:.0f} × {adh:.0%} = {exp_from_plan:.0f}'
+          + ('' if okp else f'; plan is short: {short("; ".join(plan_warn), 70) or "no warning"}'))
     # e) Settings
     app.go('settings', settle=200)
     sv = app.text('[data-cardio-v]') if app.has('[data-cardio-v]') else ''
@@ -1020,11 +1103,19 @@ def t_c1i(t, ctx):
     app.wait_toast(r'plan updated|updated .*plan|re-?plan|planned \\d+', since=m, timeout=8000)
     app.tab('plan')
     c1, tg1, warns = plan_cardio(app)
-    end27 = (dt.date.today() + dt.timedelta(days=27)).isoformat()
+    cw = [w for w in warns if re.search(r'cardio', w, re.I)]
+    end27 = (today() + dt.timedelta(days=27)).isoformat()
     avg4 = app.store(f"""store.getPlanned({{ from: ds, to: '{end27}' }}).reduce((n, s) => n + (s.blocks || []).reduce((a, b) => a + (b.kind === 'cardio' ? +b.minutes || 0 : b.kind === 'class' ? +(b.classify && b.classify.cardioMinutes) || 0 : 0), 0), 0) / 4""")
-    t.sub('C1i', 'Roomy week: auto re-plan puts ≈225 min cardio in the plan (±15%)', c1 is not None and abs(c1 - CARDIO_GOAL) <= 0.15 * CARDIO_GOAL,
-          'Plan coverage after setting 225 on Body', '191–259 min this week',
-          f'this week {c1}/{tg1} (was {c0}/{tg0}); 4-wk avg {avg4:.0f}/wk; warnings: {short("; ".join(w for w in warns if re.search("cardio", w, re.I)), 80) or "none"}')
+    # The target is per WEEK, so "did the re-plan reach 225" is asked of the next full week; the
+    # current week can only hold what is left of it (same reasoning as C1k), and is checked against
+    # the ceiling the Plan screen itself quotes. Keeps the check the same on every weekday.
+    nw0, nw1 = next_full_week()
+    cnext = cardio_between(app, nw0, nw1)
+    here_ok, here_why = cardio_ok(c1, CARDIO_GOAL, cw)
+    t.sub('C1i', 'Roomy week: auto re-plan puts ≈225 min cardio in the plan (±15%)',
+          cnext is not None and abs(cnext - CARDIO_GOAL) <= 0.15 * CARDIO_GOAL and here_ok,
+          'Plan coverage after setting 225 on Body', f'{nw0}–{nw1}: 191–259 min; this week filled to capacity',
+          f'next full week {cnext}; this week {here_why} (was {c0}/{tg0}); 4-wk avg {avg4:.0f}/wk; warnings: {short("; ".join(cw), 80) or "none"}')
     app.go('projection', settle=400)
     pb, ps = projection_cardio(app)
     val = pb if pb is not None else ps
@@ -1059,12 +1150,25 @@ def t_c1k(t, ctx):
     if app.page.evaluate("() => document.querySelector('#content').dataset.route") != 'plan': app.tab('plan')
     else: app.go('plan')
     c1, tg1, warns = plan_cardio(app)
+    cw1 = [w for w in warns if re.search(r'cardio', w, re.I)]
     sched1 = app.profile().get('schedule')
     changed = [k for k in (sched1 or {}) if (sched0 or {}).get(k) != sched1.get(k)]
-    t.sub('C1k', 'Make room → apply: this week ≈225 min cardio (±15%)', c1 is not None and tg1 == CARDIO_GOAL and abs(c1 - CARDIO_GOAL) <= 0.15 * CARDIO_GOAL,
-          'Plan coverage after Make room', '191–259 min, target 225',
-          f'{c0} → {c1}/{tg1}; schedule changed: {changed}; toast: {short(msg, 60)}; warnings: {short("; ".join(w for w in warns if re.search("cardio", w, re.I)), 80) or "none"}',
+    # Make room edits the weekly AVAILABILITY template, so the thing it has to deliver is a full
+    # week. "This week" only holds what is left of it (nothing can be planned into days already
+    # gone), so the ±225 expectation is checked on the next calendar week — wholly inside the
+    # 4-week plan on every weekday, which keeps this check date-independent. This week still has to
+    # be filled to whatever it can hold.
+    nw0, nw1 = next_full_week()
+    cnext = cardio_between(app, nw0, nw1)
+    full_ok = cnext is not None and abs(cnext - CARDIO_GOAL) <= 0.15 * CARDIO_GOAL
+    here_ok, here_why = cardio_ok(c1, CARDIO_GOAL, cw1)
+    t.sub('C1k', 'Make room → apply: a full week holds ≈225 min cardio (±15%)', full_ok and here_ok and tg1 == CARDIO_GOAL,
+          'Plan coverage after Make room', f'{nw0}–{nw1}: 191–259 min, target 225; this week filled to capacity',
+          f'next full week {cnext}/{tg1}; this week {c0} → {here_why}; schedule changed: {changed}; toast: {short(msg, 60)}; warnings: {short("; ".join(cw1), 70) or "none"}',
           note=f'proposal: {proposal}')
+    # A "Make room" button that is still offered after it has been applied would hand the user the
+    # same change twice: the proposal must deliver everything it can in one go (targets.js runs it
+    # to a fixed point) and the prompt must then be advice, not a button.
     t.sub('C1l', 'Make room clears the shortfall prompt', not app.has('[data-tg-room]'), 'Plan after apply', 'no Make room button',
           'still shown: ' + short(app.text('.tg-roomline'), 100))
     app.go('projection', settle=300)
@@ -1088,12 +1192,17 @@ def t_c1g(t, ctx):
     app.page.wait_for_timeout(300)
     if not rt: app.notes.append('no "Plan updated" toast within 10 s')
     c1, tg1, warns = plan_cardio(app)
+    cw = [w for w in warns if re.search(r'cardio', w, re.I)]
     p = app.profile().get('cardioTargetMin')
     toasts = ' | '.join(app.toasts(m))
+    # The default availability already saturates at the 120 default, so "cardio went up" cannot be
+    # required: raising the target can only re-plan the week up to what the week can hold. What has
+    # to hold is that the shared target moved and the auto days were re-planned to that ceiling.
     replanned = c1 is not None and c0 is not None and c1 > c0
-    t.sub('C1g', 'Plan stepper → profile 225 + auto days re-planned', p == 225 and tg1 == 225 and replanned,
-          'click + ×7 on Plan coverage stepper', 'target 225 and planned cardio increases without manual re-plan',
-          f'profile {p}, coverage {c1}/{tg1} (was {c0}/{tg0}); toast: {short(toasts, 80)}')
+    at_cap, why = cardio_ok(c1, 225, cw)
+    t.sub('C1g', 'Plan stepper → profile 225 + auto days re-planned', p == 225 and tg1 == 225 and (replanned or at_cap),
+          'click + ×7 on Plan coverage stepper', 'target 225 and auto days re-planned to 225 or to the week\'s ceiling',
+          f'profile {p}, coverage {why} (was {c0}/{tg0}); toast: {short(toasts, 80)}')
     app.tab('body')
     app.wait_text(T225.pattern, timeout=5000)
     bt = app.text()
@@ -1169,7 +1278,7 @@ def t_c4(t, ctx):
     sch = app.profile().get('schedule', {})
     t.check(sch.get('wed', {}).get('kind') == 'rest' and sch.get('sun', {}).get('location') == 'office', 'availability saved',
             'wed rest, sun lift@office', {k: sch.get(k) for k in ('tue', 'wed', 'sun')})
-    end = (dt.date.today() + dt.timedelta(days=27)).isoformat()
+    end = (today() + dt.timedelta(days=27)).isoformat()
     rows = app.store(f"""store.getPlanned({{ from: ds, to: '{end}' }}).map(s => ({{ d: s.date, dow: new Date(s.date + 'T12:00').getDay(),
         kind: s.plan && s.plan.kind, auto: s.plan && s.plan.auto, loc: s.location, n: (s.blocks || []).length }}))""")
     wed = [r for r in rows if r['dow'] == 3 and r['kind'] != 'rest' and r['auto']]
@@ -1436,14 +1545,19 @@ class FakeSupabase:
     BASE = 'https://fake-forge.supabase.test'
 
     def __init__(self):
-        self.users, self.tokens, self.rows, self.calls, self.n = {}, {}, {}, [], 0
+        self.users, self.tokens, self.refresh, self.rows, self.calls, self.n = {}, {}, {}, {}, [], 0
 
     def _issue(self, email):
         self.n += 1
         at, rt = f'at{self.n}', f'rt{self.n}'
         self.tokens[at] = email
+        self.refresh[rt] = email
+        # The session has to look fresh to the BROWSER's clock, not this process's: under --today
+        # the page is days away from real time and would otherwise see every token as expired and
+        # ask to refresh it on load. (This is why a naive clock pin used to break A3 and E1.)
+        now = int(dt.datetime.combine(today(), dt.time(9, 0)).timestamp()) if PINNED_TODAY else int(time.time())
         return {'access_token': at, 'refresh_token': rt, 'token_type': 'bearer', 'expires_in': 3600,
-                'expires_at': int(time.time()) + 3600, 'user': {'id': 'u-' + email, 'email': email}}
+                'expires_at': now + 3600, 'user': {'id': 'u-' + email, 'email': email}}
 
     def handle(self, route, request):
         u = request.url.replace(self.BASE, '')
@@ -1464,6 +1578,10 @@ class FakeSupabase:
             if self.users.get(body['email']) != body['password']:
                 return ok({'error': 'invalid_grant', 'error_description': 'Invalid login credentials'}, 400)
             return ok(self._issue(body['email']))
+        if path == '/auth/v1/token' and q.get('grant_type') == 'refresh_token':
+            who2 = self.refresh.get((body or {}).get('refresh_token'))
+            if not who2: return ok({'error': 'invalid_grant', 'error_description': 'Invalid Refresh Token'}, 400)
+            return ok(self._issue(who2))
         if path == '/auth/v1/logout':
             return ok(None, 204)
         if path == '/rest/v1/forge_state':
@@ -1993,7 +2111,10 @@ def main():
     ap.add_argument('-k', action='append', default=[], help='run only test ids starting with this (repeatable)')
     ap.add_argument('--headed', action='store_true')
     ap.add_argument('--full3d', action='store_true', help='run every test with WebGL on (slower)')
+    ap.add_argument('--today', help='pin the date (YYYY-MM-DD) for the browser and this script, to hunt date-dependent checks')
     a = ap.parse_args()
+    global PINNED_TODAY
+    if a.today: PINNED_TODAY = dt.date.fromisoformat(a.today)
     SHOTS.mkdir(parents=True, exist_ok=True)
     for f in SHOTS.glob('qa-*.png'):
         try: f.unlink()
@@ -2001,7 +2122,12 @@ def main():
     t0 = time.time()
     with Server() as srv, sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=CHROMIUM, headless=not a.headed, args=LAUNCH_ARGS)
-        mk = lambda: browser.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=1, service_workers='block', locale='en-US')
+        def mk():
+            c = browser.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=1, service_workers='block', locale='en-US')
+            # set_fixed_time (not install()) leaves setTimeout/setInterval running at real speed, so
+            # the app's debounced re-plan and rest timers still fire; only Date/Date.now move.
+            if PINNED_TODAY: c.clock.set_fixed_time(dt.datetime.combine(PINNED_TODAY, dt.time(9, 0)))
+            return c
         c3d, clite = mk(), (mk() if not a.full3d else None)
         app3d = App(c3d.new_page(), srv.base)
         applite = App(clite.new_page(), srv.base, lite=True) if clite else app3d

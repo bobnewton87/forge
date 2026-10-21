@@ -272,7 +272,11 @@ function summaryCard(sessions, profile, ws, roomLine = '') {
   const ring = sc == null ? '' : `<div class="ring pl-ring"><svg viewBox="0 0 56 56" width="56" height="56"><circle cx="28" cy="28" r="24" fill="none" stroke="var(--card2)" stroke-width="6"/>
     <circle cx="28" cy="28" r="24" fill="none" stroke="${scol}" stroke-width="6" stroke-linecap="round" stroke-dasharray="${(C * Math.max(0, Math.min(100, sc)) / 100).toFixed(1)} ${C.toFixed(1)}"/></svg><span class="rv">${sc}</span></div>`;
   const ss = sum.sessions || {};
-  const warnings = (sum.warnings || []).slice(0, 8);
+  // The cardio shortfall line goes first: it is the one note with a fix ("Make room") beside it, and
+  // a week that misses many set minimums would otherwise push it past the 8-note cut-off.
+  const allWarn = sum.warnings || [];
+  const isCardio = w => /^Cardio \d+\/\d+ min planned/.test(w);
+  const warnings = [...allWarn.filter(isCardio), ...allWarn.filter(w => !isCardio(w))].slice(0, 8);
   const ls = sum.liftSets || {}, cap = sum.capacity || {};
   const lsTot = (Number(ls.done) || 0) + (Number(ls.planned) || 0);
   const capLine = cap.setsNeeded ? `${fmtNum(lsTot, 0)} working sets${cap.liftMinutes ? ` in ~${cap.liftMinutes} lift min` : ''} · priority minimums want ~${fmtNum(cap.setsNeeded, 0)}` : '';
