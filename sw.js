@@ -1,7 +1,7 @@
 // Network-first for app code and schedule data (so updates land without cache-busting),
 // falling back to cache when offline.
 const CACHE = 'forge-v15';
-const CORE = ['./', './index.html', './manifest.json', './css/base.css', './css/train.css', './css/plan.css', './css/body2.css', './css/body3d.css', './css/supp.css', './js/main.js', './icons/icon-192.png', './data/crunch-schedule.json', './assets/body/body.json', './assets/body/body.bin'];
+const CORE = ['./', './index.html', './manifest.json', './css/base.css', './css/train.css', './css/plan.css', './css/body2.css', './css/body3d.css', './css/supp.css', './css/accounts.css', './js/main.js', './icons/icon-192.png', './data/crunch-schedule.json', './assets/body/body.json', './assets/body/body.bin'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE)).then(() => self.skipWaiting()));
@@ -18,6 +18,17 @@ self.addEventListener('fetch', e => {
     fetch(e.request).then(res => {
       if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(key, copy)); }
       return res;
-    }).catch(() => caches.match(key))
+    }).catch(async () => {
+      const hit = await caches.match(key);
+      if (hit) return hit;
+      // A navigation to a URL we never cached (e.g. a deep link opened offline) still has to get the
+      // app shell, and anything else must get a real Response: respondWith(undefined) surfaces as a
+      // network error the page can't recover from.
+      if (e.request.mode === 'navigate') {
+        const shell = (await caches.match('./index.html')) || (await caches.match('./'));
+        if (shell) return shell;
+      }
+      return new Response('', { status: 504, statusText: 'Offline' });
+    })
   );
 });

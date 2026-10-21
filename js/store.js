@@ -6,6 +6,7 @@
 //   other accounts  → 'fga_<id>_'  (id is [a-z0-9]+, so no prefix contains another and none starts with 'fg_')
 // The registry, the active pointer and per-account sync bookkeeping live under 'fgx_*', outside every
 // account's namespace, so exportAll / importAll / _reset never see them.
+import { ds } from './util.js';
 import { DEFAULT_LOCATIONS } from './data/equipment.js';
 import { DEFAULT_SCULPT_GOALS, defaultSculptGoals } from './data/sculpt.js';
 
@@ -43,6 +44,27 @@ function get(k, fallback = null) {
   try { const v = LS.getItem(P + k); return v == null ? fallback : JSON.parse(v); } catch (e) { return fallback; }
 }
 function set(k, v) { LS.setItem(P + k, JSON.stringify(v)); touchKey(k); notify(); }
+
+// ---- shape guards -------------------------------------------------------------------------------
+// A stored value can be the wrong SHAPE and still be valid JSON: a hand-edited key, a truncated
+// restore, an old export, or a row pulled from the cloud. Every read below goes through these, so a
+// bad value degrades to "nothing logged" instead of throwing somewhere up in a screen
+// (`sessions: null` used to take down Today, Plan, Body, History, Measure, Projection and more).
+const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+// Rows of the dated logs (body / meas / food) are keyed by a 'YYYY-MM-DD' string.
+const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
+// Arrays: anything that is not an array at all reads as empty; entries that fail `ok` are dropped.
+function getList(k, ok) {
+  const v = get(k, null);
+  if (!Array.isArray(v)) return [];
+  return ok ? v.filter(ok) : v;
+}
+// A session needs a string id and a string date: that is what every reader sorts, compares and
+// groups by. (A hand-typed date that is not ISO sorts oddly but crashes nothing, so it is kept.)
+const okSession = s => isObj(s) && typeof s.id === 'string' && !!s.id && typeof s.date === 'string' && !!s.date;
+const okDated = e => isObj(e) && typeof e.d === 'string' && DATE_KEY.test(e.d);
+const getSessionList = () => getList('sessions', okSession);
+const bySession = (a, b) => a.date.localeCompare(b.date) || String(a.startedAt || '').localeCompare(String(b.startedAt || '')) || a.id.localeCompare(b.id);
 
 // ---- sync bookkeeping (only while the active account is linked to the cloud; see js/cloud/sync.js) ----
 // fgx_sync_<id> = { keys: { key: modifiedMs }, tomb: { sessionId: deletedMs }, pushedAt, cursor, full }
@@ -106,7 +128,7 @@ export function defaultProfile({ sex = 'male' } = {}) {
 }
 
 function migrate(p) {
-  if (!p) return defaultProfile();
+  if (!isObj(p)) return defaultProfile();   // 'null', a string or an array in fg_profile → start from defaults
   // §20: a female profile that has no sculptGoals key yet gets the female starting goals; existing goals are kept.
   const d = defaultProfile({ sex: p.body?.sex === 'female' ? 'female' : 'male' });
   // Shallow-merge so new fields get defaults without clobbering user choices.
@@ -117,8 +139,9 @@ function migrate(p) {
   return out;
 }
 
+// Write path / external data: drops anything unusable, then sorts.
 function sortSessions(arr) {
-  return arr.sort((a, b) => a.date.localeCompare(b.date) || String(a.startedAt || '').localeCompare(String(b.startedAt || '')) || a.id.localeCompare(b.id));
+  return (Array.isArray(arr) ? arr : []).filter(okSession).sort(bySession);
 }
 
 export const store = {
@@ -126,10 +149,10 @@ export const store = {
   saveProfile(p) { set('profile', migrate(p)); },
   updateProfile(patch) { const p = this.getProfile(); this.saveProfile({ ...p, ...patch }); return this.getProfile(); },
 
-  getSessions() { return sortSessions(get('sessions', [])); },
-  getSession(id) { return get('sessions', []).find(s => s.id === id) || null; },
+  getSessions() { return getSessionList().sort(bySession); },   // getSessionList already dropped the unusable ones
+  getSession(id) { return getSessionList().find(s => s.id === id) || null; },
   saveSession(s) {
-    const all = get('sessions', []);
+    const all = getSessionList();
     const i = all.findIndex(x => x.id === s.id);
     s.updatedAt = new Date(after(msOf(s), i >= 0 ? msOf(all[i]) : 0)).toISOString();   // per-session merge clock for cloud sync (CONTRACT §19)
     untomb([s.id]);
@@ -138,30 +161,47 @@ export const store = {
     return s;
   },
   deleteSession(id) {
-    const all = get('sessions', []);
+    const all = getSessionList();
     tombstone(all.filter(s => s.id === id));
     set('sessions', all.filter(s => s.id !== id));
     if (get('active') === id) set('active', null);
   },
   newSessionId() { return 's_' + Date.now() + Math.random().toString(36).slice(2, 5); },
 
-  getActiveSession() { const id = get('active'); return id ? this.getSession(id) : null; },
+  getActiveSession() { const id = get('active'); return typeof id === 'string' && id ? this.getSession(id) : null; },
   setActiveSessionId(id) { set('active', id || null); },
 
-  getBodyLog() { return get('body', []); },
+  getBodyLog() { return getList('body', okDated); },
+  // Refuses a weight that is not a positive finite number (it would be stored as JSON `null` and
+  // leak NaN into every body-comp reader) and falls back to today for a missing date, rather than
+  // throwing inside a tap handler. Returns whether the weigh-in was written.
   logBodyweight(date, lb) {
-    const l = this.getBodyLog().filter(e => e.d !== date);
-    l.push({ d: date, w: Number(lb) });
+    const w = Number(lb);
+    if (!Number.isFinite(w) || w <= 0) return false;
+    const d = DATE_KEY.test(String(date)) ? String(date) : ds();
+    const l = this.getBodyLog().filter(e => e.d !== d);
+    l.push({ d, w });
     l.sort((a, b) => a.d.localeCompare(b.d));
     set('body', l);
-    const p = this.getProfile(); p.bodyweight = l[l.length - 1].w; set('profile', p);
+    this._syncBodyweight(l);
+    return true;
   },
-  deleteBodyweight(date) { set('body', this.getBodyLog().filter(e => e.d !== date)); },
+  deleteBodyweight(date) {
+    const l = this.getBodyLog().filter(e => e.d !== date);
+    set('body', l);
+    this._syncBodyweight(l);   // deleting the newest weigh-in must not leave profile.bodyweight stale
+  },
+  // profile.bodyweight always mirrors the newest weigh-in (null once the log is empty).
+  _syncBodyweight(l = this.getBodyLog()) {
+    const w = l.length ? l[l.length - 1].w : null;
+    const p = this.getProfile();
+    if (p.bodyweight !== w) { p.bodyweight = w; set('profile', p); }
+  },
 
   // Tape measurements (inches) + optional manual body fat. One entry per date; logging merges fields.
   // Entry: { d:'YYYY-MM-DD', neck, shoulders, chest, waist, hips, armL, armR, forearm, thighL, thighR, calfL, calfR, bodyFat }
   // (legacy entries may have single `thigh` / `calf` — treat as both sides)
-  getMeasurements() { return get('meas', []); },
+  getMeasurements() { return getList('meas', okDated); },
   logMeasurement(entry) {
     if (!entry || !entry.d) throw new Error('measurement needs d');
     const l = this.getMeasurements();
@@ -174,7 +214,7 @@ export const store = {
   deleteMeasurement(date) { set('meas', this.getMeasurements().filter(e => e.d !== date)); },
 
   // Optional daily food log for adaptive TDEE. Entry: { d, kcal, protein, carbs, fat } (grams). Merges by date.
-  getFoodLog() { return get('food', []); },
+  getFoodLog() { return getList('food', okDated); },
   logFood(entry) {
     if (!entry || !entry.d) throw new Error('food entry needs d');
     const l = this.getFoodLog().filter(e => e.d !== entry.d);
@@ -189,7 +229,7 @@ export const store = {
   },
   // Replace the planned sessions in [from, to] that match `pred` (default: auto-generated only) with `sessions`.
   replacePlanned(from, to, sessions, pred = s => s.plan && s.plan.auto) {
-    const before = get('sessions', []);
+    const before = getSessionList();
     const all = before.filter(s => !(s.status === 'planned' && s.date >= from && s.date <= to && pred(s)));
     const prev = new Map(before.map(s => [s.id, s]));
     sessions.forEach(s => {
@@ -211,25 +251,46 @@ export const store = {
   },
   // Restores into the ACTIVE account. Accepts 'fg_*' (and 'fga_<id>_*') keys; anything else is ignored,
   // so a backup can never write into another account's namespace.
+  //
+  // A restore is prepared in full BEFORE anything is written, so a backup that is truncated or
+  // hand-edited can't half-apply: it used to wipe the account (merge:false), write the keys it had
+  // got to, then throw on the bad one, losing everything after it. A value that is not valid JSON,
+  // or is the wrong shape for its key, is skipped and named in the result instead of aborting the
+  // whole restore. Returns { keys, skipped } — `skipped` is the keys the backup could not give us.
   importAll(obj, { merge = true } = {}) {
-    if (!obj || obj.app !== 'forge' || !obj.data) throw new Error('Not a Forge backup');
-    const entries = Object.entries(obj.data).map(([k, v]) => [relKey(k), v]).filter(([k, v]) => k && typeof v === 'string');
-    const oldKeys = keysUnder(P).map(k => k.slice(P.length)), oldSessions = TRACK ? get('sessions', []) : [];
-    if (!merge) keysUnder(P).forEach(k => LS.removeItem(k));
-    for (const [k, v] of entries) {
-      if (merge && k === 'sessions') {
-        const incoming = JSON.parse(v); const cur = get('sessions', []);
-        const byId = new Map(cur.map(s => [s.id, s])); incoming.forEach(s => byId.set(s.id, s));
-        LS.setItem(P + k, JSON.stringify(sortSessions([...byId.values()])));
-      } else LS.setItem(P + k, v);
+    if (!obj || obj.app !== 'forge' || !isObj(obj.data)) throw new Error('Not a Forge backup');
+    // Shape a restored value must have for its key (everything else is free-form).
+    const SHAPE = { profile: isObj, sessions: Array.isArray, body: Array.isArray, meas: Array.isArray, food: Array.isArray };
+    const writes = [], skipped = [];
+    for (const [rawKey, v] of Object.entries(obj.data)) {
+      const k = relKey(rawKey);
+      if (!k || typeof v !== 'string') continue;
+      let parsed;
+      try { parsed = JSON.parse(v); } catch (e) { skipped.push(k); continue; }
+      const shape = SHAPE[k];
+      if (shape && !shape(parsed)) { skipped.push(k); continue; }
+      writes.push([k, v, parsed]);
     }
+    const oldKeys = keysUnder(P).map(k => k.slice(P.length)), oldSessions = TRACK ? getSessionList() : [];
+    // Merging sessions reads the current ones, so resolve that before the wipe.
+    const mergedSessions = (() => {
+      if (!merge) return null;
+      const inc = writes.find(([k]) => k === 'sessions');
+      if (!inc) return null;
+      const byId = new Map(getSessionList().map(s => [s.id, s]));
+      inc[2].filter(okSession).forEach(s => byId.set(s.id, s));
+      return JSON.stringify(sortSessions([...byId.values()]));
+    })();
+    if (!merge) keysUnder(P).forEach(k => LS.removeItem(k));
+    for (const [k, v] of writes) LS.setItem(P + k, k === 'sessions' && mergedSessions != null ? mergedSessions : v);
     if (TRACK) {   // a restore is pushed in full; with merge:false, whatever it dropped is deleted in the cloud too
-      const m = meta(), now = new Set(entries.map(([k]) => k));
+      const m = meta(), now = new Set(writes.map(([k]) => k));
       for (const k of merge ? now : new Set([...now, ...oldKeys])) if (k !== 'sessions' && !LOCAL_ONLY(k)) m.keys[k] = after(m.keys[k] || 0);
-      if (!merge) { const ids = new Set(get('sessions', []).map(s => s.id)); oldSessions.filter(s => !ids.has(s.id)).forEach(s => { m.tomb[s.id] = after(msOf(s)); }); }
+      if (!merge) { const ids = new Set(getSessionList().map(s => s.id)); oldSessions.filter(s => !ids.has(s.id)).forEach(s => { m.tomb[s.id] = after(msOf(s)); }); }
       m.full = true; saveMeta();
     }
     notify();
+    return { keys: writes.map(([k]) => k), skipped };
   },
 
   subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },

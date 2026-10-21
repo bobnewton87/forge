@@ -22,6 +22,7 @@ import { targetBar } from './targets.js';
 import {
   esc, fmtNum, exName, unitLabel, safe, debounce, fmtDuration, openSheet, closeSheet, toast, startRest, stopRest,
   muscleBar, addExerciseSheet, swapSheet, cardioFormHtml, bindCardioForm, readCardioForm, cardioName, exerciseInfoHtml,
+  parkActiveSession,
 } from './components.js';
 
 // This screen redraws itself; a store-change re-render would clobber in-progress typing.
@@ -165,14 +166,18 @@ function renderHeader(profile) {
   const loc = sessionLoc(profile, s);
   const p = progress(s);
   const pct = p.total ? Math.round(p.done / p.total * 100) : 0;
+  // startedAt null = not running yet. That is either §24 (writing up a day that has happened) or a
+  // session planned for a later day, which is being done NOW — so the date field offers today rather
+  // than a future date its own max forbids. An older date is kept as-is: it is a real log date.
   const manual = !s.startedAt;
+  const logDate = s.date > ds() ? ds() : s.date;
   const left = minutesLeft(s);
   return `<header class="tr-shead" data-head>
     <div class="tr-shead-row">
       <div class="tr-shead-title"><h1>${esc(s.title || 'Workout')}</h1>
         <div class="muted small">${loc ? esc(`${loc.icon || ''} ${loc.name}`) : ''}${s.status === 'done' ? ' · Completed' : manual && s.date < ds() ? ` · Logging ${esc(fmtDay(s.date))}` : ''}</div></div>
       ${manual
-        ? `<input type="date" class="tr-date-in" value="${esc(s.date)}" min="${retroFloor()}" max="${ds()}" data-f="date" aria-label="Date">`
+        ? `<input type="date" class="tr-date-in" value="${esc(logDate)}" min="${retroFloor()}" max="${ds()}" data-f="date" aria-label="Date">`
         : `<div class="tr-clock"><b data-elapsed>${fmtDuration((s.endedAt ? new Date(s.endedAt) : Date.now()) - new Date(s.startedAt))}</b><span>elapsed</span></div>`}
     </div>
     <div class="tr-sprog"><div style="width:${pct}%"></div></div>
@@ -200,7 +205,8 @@ function renderBlock(i, profile) {
   const pos = b.group ? `${b.group}${i - groupStart(S, i) + 1}` : '';
   const reps = secs ? `${t.repMin || t.reps || '?'}${t.repMax && t.repMax !== t.repMin ? '–' + t.repMax : ''}s`
     : `${t.repMin ?? '?'}${t.repMax && t.repMax !== t.repMin ? '–' + t.repMax : ''}`;
-  const rx = `${t.sets || b.sets.length} × ${reps}${t.weight != null ? ` @ ${fmtNum(t.weight)} ${ul}` : ''}`;
+  // The real number of rows, not target.sets: "+ Set" / "− Set" change the former, never the latter.
+  const rx = `${b.sets.length || t.sets || 0} × ${reps}${t.weight != null ? ` @ ${fmtNum(t.weight)} ${ul}` : ''}`;
   const pf = prefill(b);
   const stepW = ex?.step || 2.5;
   const weighted = !secs && ex?.unit !== 'bodyweight';
@@ -434,6 +440,9 @@ function finish(root) {
   S.status = 'done';
   S.endedAt = now.toISOString();
   if (!S.startedAt) {
+    // A session planned for a later day that is being finished now happened TODAY: leaving it on its
+    // own date would record training that has not happened yet (and plan it away at the same time).
+    if (S.date > ds(now)) S.date = ds(now);
     // Written up after the fact (§24): plausible timestamps on its OWN date, so recovery
     // ("days since"), the weekly volume audit and History put it on that day, not today.
     const mins = Math.max(10, Math.round(Number(S.minutes) || Number(S.estMinutes) || 45));
@@ -518,6 +527,7 @@ export function bind(root, ctx, params = {}) {
     if (a === 'today') return ctx.nav('today');
     if (a === 'p-start') {
       const s = store.getSession(el.dataset.id); if (!s) return;
+      if (!parkActiveSession(store, `"${s.title || 'Workout'}"`)) return;
       const now = new Date();
       Object.assign(s, { status: 'active', startedAt: now.toISOString(), endedAt: null, date: ds(now) });
       store.saveSession(s); store.setActiveSessionId(s.id); return ctx.nav('session', { id: s.id });

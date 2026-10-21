@@ -5,7 +5,7 @@
 import { ds, addDays, fmtDay } from '../util.js';
 import { CARDIO, cardioOptions } from '../data/cardio.js';
 import { expandEquipment } from '../data/equipment.js';
-import { esc, safe, openSheet, closeSheet, toast, cardioFormHtml, bindCardioForm, readCardioForm, intensityName } from './components.js';
+import { esc, safe, openSheet, closeSheet, toast, cardioFormHtml, bindCardioForm, readCardioForm, intensityName, parkActiveSession } from './components.js';
 import { renderClassPicker, bindClassPicker } from './classes.js';
 import { RETRO_DAYS, retroFloor, canLogPast, isPastDate, retroReason, retroTimes, markLogged } from '../engine/retro.js';
 
@@ -16,12 +16,7 @@ export { RETRO_DAYS, retroFloor, canLogPast, isPastDate, retroReason, retroTimes
 // its Finish stamps onto the session's own date.
 export function startRetroLog(ctx, { date, title = 'Logged workout', location = null, blocks = [], targets = [], source = 'manual', minutes = null, rationale = [] }) {
   const store = ctx.store;
-  const active = store.getActiveSession();
-  if (active && active.status === 'active') {
-    if (!confirm(`"${active.title || 'Workout'}" is in progress. Save it for later and log this instead?`)) return null;
-    active.status = 'planned';
-    store.saveSession(active);
-  }
+  if (!parkActiveSession(store, 'this log')) return null;
   const profile = store.getProfile();
   const s = {
     id: store.newSessionId(), date, status: 'active', startedAt: null, endedAt: null,

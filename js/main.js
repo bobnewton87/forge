@@ -122,8 +122,11 @@ function draw({ scroll = false } = {}) {
     const root = shell.content;
     if (!mod || mod.__error) root.innerHTML = errorCard('Could not load ' + route, mod && mod.__error);
     else {
-      try { root.innerHTML = mod.render(ctx, params) || ''; } catch (e) { console.error(e); root.innerHTML = errorCard('Render error', e); }
-      try { mod.bind && mod.bind(root, ctx, params); } catch (e) { console.error(e); }
+      let rendered = true;
+      try { root.innerHTML = mod.render(ctx, params) || ''; } catch (e) { console.error(e); rendered = false; root.innerHTML = errorCard('Render error', e); }
+      // Only bind what rendered: bind() looks up the markup render() produced, so running it over the
+      // error card just throws a second, confusing error on top of the real one.
+      if (rendered) { try { mod.bind && mod.bind(root, ctx, params); } catch (e) { console.error(e); } }
     }
     root.dataset.route = route;
     if (scroll) window.scrollTo(0, 0); else window.scrollTo(0, y);

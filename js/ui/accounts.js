@@ -41,9 +41,10 @@ export function subLine(a) {
   const k = accounts.kind(a), c = a.cloud || {};
   if (k === 'test') return 'Test · never syncs';
   if (k === 'cloud') {
-    if (!c.session) return `Cloud · ${c.email || 'signed out'} · signed out`;
-    if (c.lastError) return `Cloud · ${c.email} · ${c.lastError}`;
-    return `Cloud · ${c.email} · ${c.lastSyncAt ? 'synced ' + ago(c.lastSyncAt) : 'not synced yet'}`;
+    const who = c.email || 'this account';   // an account linked before the email came back would read "undefined"
+    if (!c.session) return `Cloud · ${who} · signed out`;
+    if (c.lastError) return `Cloud · ${who} · ${c.lastError}`;
+    return `Cloud · ${who} · ${c.lastSyncAt ? 'synced ' + ago(c.lastSyncAt) : 'not synced yet'}`;
   }
   if (c.userId) return 'On this device · sync setup not finished';
   return a.recovered ? 'On this device · recovered data' : 'On this device';

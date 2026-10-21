@@ -16,20 +16,27 @@ import { ds, parseDs, addDays, norm } from '../util.js';
 export const RETRO_DAYS = 60;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// A real calendar date. The regex alone lets through '2026-09-31' and '2026-10-00', which parseDs
+// silently rolls over to Oct 1 / Sep 30 — the session would then be dated to a day that no screen
+// has a cell for (History's calendar, the weekly audit), so it would be invisible after logging.
+function realDate(d) {
+  if (typeof d !== 'string' || !DATE_RE.test(d)) return false;
+  return ds(parseDs(d)) === d;
+}
 
 // Oldest date that may still be logged.
 export function retroFloor(now = new Date()) { return ds(addDays(norm(now), -RETRO_DAYS)); }
 
 // Can `date` be logged after the fact? (today counts: "I did it this morning")
 export function canLogPast(date, now = new Date()) {
-  if (typeof date !== 'string' || !DATE_RE.test(date)) return false;
+  if (!realDate(date)) return false;
   return date <= ds(now) && date >= retroFloor(now);
 }
 export const isPastDate = (date, now = new Date()) => DATE_RE.test(String(date || '')) && date < ds(now);
 
 // Why a date was refused — for messages and tests.
 export function retroReason(date, now = new Date()) {
-  if (typeof date !== 'string' || !DATE_RE.test(date)) return 'bad-date';
+  if (!realDate(date)) return 'bad-date';
   if (date > ds(now)) return 'future';
   if (date < retroFloor(now)) return 'too-old';
   return null;
@@ -49,8 +56,12 @@ function hhmm(time) {
 export function retroTimes(date, { time = null, minutes = 45, now = new Date() } = {}) {
   const mins = Math.max(5, Math.min(300, Math.round(Number(minutes) || 45)));
   if (!DATE_RE.test(String(date || '')) || date === ds(now)) {
+    // Ending now — but a long session logged just after midnight would start on yesterday, and
+    // both stamps must land on `date`, so the start is clamped to this day's 00:00 if it would spill.
     const end = new Date(now);
-    return { startedAt: new Date(end.getTime() - mins * 60000).toISOString(), endedAt: end.toISOString() };
+    const start = new Date(end.getTime() - mins * 60000);
+    const floor = norm(end);
+    return { startedAt: (start < floor ? floor : start).toISOString(), endedAt: end.toISOString() };
   }
   const start = parseDs(date);
   const t = hhmm(time);

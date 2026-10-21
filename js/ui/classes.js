@@ -12,7 +12,7 @@
 //   always offers "log a class by name" with the known-class catalogue (so a day we never cached
 //   still works), and a pick becomes a finished session dated to that day (status 'done', blocks
 //   ticked, timestamps from the class time, never the active session).
-import { esc, chip } from './components.js';
+import { esc, chip, parkActiveSession } from './components.js';
 import { loadSchedule } from '../classes/crunch.js';
 import { classify, groupCredits, matchScore, CLASS_CATALOGUE } from '../classes/classify.js';
 import { markLogged } from '../engine/retro.js';
@@ -217,6 +217,9 @@ function createClassSession(ctx, { provider, name, time = null, duration, instru
   // enforced by the entry points and the date inputs, retro.canLogPast.)
   const retro = !!date && date < today;
   const loc = (typeof ctx.location === 'function' && ctx.location()) || null;
+  // Starting a class now takes over the active-session pointer, so a workout already in progress has
+  // to be parked first (otherwise it stays 'active' with nothing pointing at it: §6).
+  if (!future && !retro && !parkActiveSession(ctx.store, `"${name}"`)) return;
   let session = {
     id: ctx.store.newSessionId(),
     date: date || today,
