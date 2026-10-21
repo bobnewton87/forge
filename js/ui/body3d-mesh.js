@@ -766,6 +766,93 @@ function computeCavity(pos, nrm, tris, n) {
   return cav;
 }
 
+// ---------------------------------------------------------------- baked ambient occlusion
+// Hemisphere AO, baked per fit on the fitted body in the fit pose. A per-vertex curvature ("cavity") term is local
+// and noisy — it was what put grey mottling on the chest — and it cannot see that the chin is over the neck or the
+// arm beside the flank. This bakes real occlusion: the surface is rasterized into a coarse solid-voxel occupancy
+// grid, then every vertex shoots a cosine-weighted ray bundle into its hemisphere and marches the grid. That is
+// what darkens the armpits, under the chin and the pecs, the inner thighs, the waistband and every joint.
+const AO_DIRS = (() => {              // 28 cosine-weighted hemisphere directions about +Z (Fibonacci disc → cosine)
+  const K = 24, d = new Float32Array(K * 3);
+  for (let i = 0; i < K; i++) {
+    const r = Math.sqrt((i + 0.5) / K), th = i * 2.399963229728653;
+    const x = r * Math.cos(th), y = r * Math.sin(th);
+    d[i * 3] = x; d[i * 3 + 1] = y; d[i * 3 + 2] = Math.sqrt(Math.max(0, 1 - x * x - y * y));
+  }
+  return d;
+})();
+/** Per-vertex ambient occlusion (1 = open sky, 0 = fully enclosed) for a mesh in inches. Pure; used by fitBody. */
+export function bakeAO(pos, nrm, tris, n, opts = {}) {
+  const cell = opts.cell || 0.72, maxD = opts.maxDist || 7.5, minD = opts.minDist || 0.95, step = cell * 0.85;
+  let x0 = 1e9, y0 = 1e9, z0 = 1e9, x1 = -1e9, y1 = -1e9, z1 = -1e9;
+  for (let i = 0; i < n; i++) {
+    const x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+    if (x < x0) x0 = x; if (y < y0) y0 = y; if (z < z0) z0 = z;
+    if (x > x1) x1 = x; if (y > y1) y1 = y; if (z > z1) z1 = z;
+  }
+  const pad = cell * 2;
+  x0 -= pad; y0 -= pad; z0 -= pad; x1 += pad; y1 += pad; z1 += pad;
+  const inv = 1 / cell;
+  const nx = Math.max(1, Math.ceil((x1 - x0) * inv)), ny = Math.max(1, Math.ceil((y1 - y0) * inv)), nz = Math.max(1, Math.ceil((z1 - z0) * inv));
+  const occ = new Uint8Array(nx * ny * nz);
+  const mark = (x, y, z) => {
+    const ix = (x - x0) * inv | 0, iy = (y - y0) * inv | 0, iz = (z - z0) * inv | 0;
+    if (ix < 0 || iy < 0 || iz < 0 || ix >= nx || iy >= ny || iz >= nz) return;
+    occ[(iz * ny + iy) * nx + ix] = 1;
+  };
+  for (let t = 0; t < tris.length; t += 3) {
+    const a = tris[t] * 3, b = tris[t + 1] * 3, c = tris[t + 2] * 3;
+    const ax = pos[a], ay = pos[a + 1], az = pos[a + 2], bx = pos[b], by = pos[b + 1], bz = pos[b + 2], cx = pos[c], cy = pos[c + 1], cz = pos[c + 2];
+    const e = Math.max(Math.abs(bx - ax) + Math.abs(by - ay) + Math.abs(bz - az),
+                       Math.abs(cx - bx) + Math.abs(cy - by) + Math.abs(cz - bz),
+                       Math.abs(ax - cx) + Math.abs(ay - cy) + Math.abs(az - cz));
+    const m = e < cell ? 1 : Math.min(4, 1 + (e * inv | 0));
+    for (let u = 0; u <= m; u++) for (let v = 0; v + u <= m; v++) {
+      const wb = u / m, wc = v / m, wa = 1 - wb - wc;
+      mark(ax * wa + bx * wb + cx * wc, ay * wa + by * wb + cy * wc, az * wa + bz * wb + cz * wc);
+    }
+  }
+  const steps = Math.max(1, Math.ceil((maxD - minD) / step)), K = AO_DIRS.length / 3, ao = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const vx = nrm[i * 3], vy = nrm[i * 3 + 1], vz = nrm[i * 3 + 2];
+    const sgn = vz >= 0 ? 1 : -1, ia = -1 / (sgn + vz), ib = vx * vy * ia;          // Duff et al. branchless ONB
+    const t0x = 1 + sgn * vx * vx * ia, t0y = sgn * ib, t0z = -sgn * vx;
+    const t1x = ib, t1y = sgn + vy * vy * ia, t1z = -vy;
+    const px = pos[i * 3] + vx * cell * 0.7, py = pos[i * 3 + 1] + vy * cell * 0.7, pz = pos[i * 3 + 2] + vz * cell * 0.7;
+    // rotate the bundle about the normal by a per-vertex angle: a shared direction set resonates with the voxel
+    // grid and prints square patches across flat areas (it did, on the clavicles)
+    const ph = (Math.sin(i * 12.9898 + px * 4.1) * 43758.5453) % 1 * 6.2831853;
+    const cr = Math.cos(ph), sr = Math.sin(ph);
+    let vis = 0;
+    for (let k = 0; k < K; k++) {
+      const d0 = AO_DIRS[k * 3], d1 = AO_DIRS[k * 3 + 1], dz = AO_DIRS[k * 3 + 2];
+      const dx = d0 * cr - d1 * sr, dy = d0 * sr + d1 * cr;
+      const rx = t0x * dx + t1x * dy + vx * dz, ry = t0y * dx + t1y * dy + vy * dz, rz = t0z * dx + t1z * dy + vz * dz;
+      let occl = 0;
+      for (let s = 0; s < steps; s++) {
+        const d = minD + s * step;
+        const ix = (px + rx * d - x0) * inv | 0, iy = (py + ry * d - y0) * inv | 0, iz = (pz + rz * d - z0) * inv | 0;
+        if (ix < 0 || iy < 0 || iz < 0 || ix >= nx || iy >= ny || iz >= nz) break;
+        if (occ[(iz * ny + iy) * nx + ix]) { const f = 1 - d / maxD; occl = f * f; break; }
+      }
+      vis += 1 - occl;
+    }
+    ao[i] = vis / K;
+  }
+  // two Laplacian passes: the ray bundle is small, so the raw field has sampling grain the eye reads as dirt
+  const sm = new Float32Array(n), cnt = new Float32Array(n);
+  for (let pass = 0; pass < 3; pass++) {
+    sm.fill(0); cnt.fill(0);
+    for (let t = 0; t < tris.length; t += 3) {
+      const a = tris[t], b = tris[t + 1], c = tris[t + 2];
+      sm[a] += ao[b] + ao[c]; sm[b] += ao[a] + ao[c]; sm[c] += ao[a] + ao[b];
+      cnt[a] += 2; cnt[b] += 2; cnt[c] += 2;
+    }
+    for (let i = 0; i < n; i++) if (cnt[i]) ao[i] = 0.38 * ao[i] + 0.62 * sm[i] / cnt[i];
+  }
+  return ao;
+}
+
 // ================================================================== morphing (macro muscle × weight grid)
 function muscleParam(score) { return clamp(0.35 + 0.65 * score, 0, 1); }
 // ---------------------------------------------------------------- visual body-fat calibration
@@ -1630,10 +1717,14 @@ export function fitBody(A, opts = {}) {
   const flare = new Float32Array(nMesh * 3), RS = A.sculptRegions.length, li = A.sculptRegions.indexOf('lats');
   for (let i = 0; i < nMesh; i++) { const o = (i * RS + li) * 3; flare[i * 3] = A.sculpt[o] / 0.2; flare[i * 3 + 1] = A.sculpt[o + 1] / 0.2; flare[i * 3 + 2] = A.sculpt[o + 2] / 0.2; }
   const cavity = computeCavity(rest, restNrm, tris, nMesh);
+  // baked AO on the FITTED, POSED body (V3 = the fit pose): contact darkening under the chin, in the armpits,
+  // under the pecs / breasts, at the waistband and between the thighs. Skinned poses reuse it (bind-pose bake).
+  const aoNrm = computeNormals(V3, tris, nMesh, null, A.weld);
+  const ao = bakeAO(V3, aoNrm, tris, nMesh);
 
   // flexed-arm bulge amplitude so the flexed biceps section reaches the flexed tape (anthro flex.arm)
   const fit = {
-    A, sex, cup: P.cup || 0, geom, bf, muscle: opts.muscle, muscleEff: muEff, rest, restNrm, cavity, flare, heads: heads1, frames, relaxed: V3, relax,
+    A, sex, cup: P.cup || 0, geom, bf, muscle: opts.muscle, muscleEff: muEff, rest, restNrm, cavity, ao, flare, heads: heads1, frames, relaxed: V3, relax,
     sections: {}, neckY, src: Q, joints: GJ,
     report: { head, stations: [], shoulders: { girth: hull2(crossPoints(V3, shCross2)).per, target: Gsh, sigma: sigma + sigma2, measured: shMeasured }, iters, worst, hs, anchors: ax.map((m, i) => [m, ay[i]]), smooth: { roughBefore: rough0, roughAfter: rough1 } },
   };
@@ -1710,6 +1801,30 @@ function calibrateFlex(fit) {
 }
 
 // ================================================================== renderer
+// ---------------------------------------------------------------- studio lighting (theme-aware)
+// One three-point rig plus a kicker, in linear radiance. The old rig had a saturated orange back light at 1.2 ×
+// white, which outlined the whole figure in orange; the rim is now cool and quiet and the key carries the image.
+const srgbToLin = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+const vmix = (a, b, t) => a.map((x, i) => x + (b[i] - x) * t);
+/** Studio rig for a backdrop of linear luminance `lum` (0 = near-black, 1 = white). */
+export function studio(lum = 0.013) {
+  const t = clamp(Math.pow(clamp(lum, 0, 1), 1 / 2.2), 0, 1);          // 0 dark theme … 1 light theme
+  const I = [mix(3.15, 2.70, t), mix(0.55, 1.05, t), mix(0.95, 0.38, t), mix(0.42, 0.22, t)];
+  const hue = [[1.0, 0.965, 0.925], [0.56, 0.65, 0.82], [0.78, 0.85, 1.0], [1.0, 0.95, 0.90]];
+  const lights = new Float32Array(12);
+  for (let i = 0; i < 4; i++) for (let k = 0; k < 3; k++) lights[i * 3 + k] = hue[i][k] * I[i];
+  return {
+    lights, t,
+    sky: new Float32Array(vmix([0.062, 0.068, 0.084], [0.40, 0.42, 0.46], t)),
+    gnd: new Float32Array(vmix([0.024, 0.023, 0.026], [0.26, 0.25, 0.235], t)),
+    exposure: mix(1.26, 1.12, t),
+    rim: mix(0.055, 0.012, t),
+    glow: new Float32Array(vmix([0.018, 0.019, 0.025], [0.003, 0.003, 0.004], t)),
+    floorMix: mix(1.05, 0.52, t),
+    // default floor tone (readTheme() re-derives it from the stage's own background once the DOM is measurable)
+    floor: new Float32Array(vmix([0.062, 0.068, 0.084], [0.40, 0.42, 0.46], t)),
+  };
+}
 const VERT = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 aPos;
@@ -1727,16 +1842,18 @@ uniform ivec4 uUA;          // uarm1L, uarm2L, uarm1R, uarm2R
 uniform float uLat;         // lat flare (inches at the armpit)
 layout(location=7) in vec3 aFlare;
 layout(location=8) in float aArmW;   // smooth arm share of the skin weights (§21c fabric edges)
+layout(location=9) in float aAO;     // baked hemisphere AO (bakeAO(), fit pose)
 uniform vec4 uEyeRef;        // eyeY, eyeX, eyeZ, chinY (canonical dm)
+float hairLine(vec3 c, float ey, float ez, float chin){   // male hairline (canonical dm), shared by lift + mask
+  float ax = abs(c.x);
+  // a curved forehead line with a shallow widow's peak and temples that recede, instead of a straight bar
+  float front = ey + 0.60 - 0.055 * exp(-ax * ax / 0.012) - 0.20 * smoothstep(0.16, 0.56, ax);
+  float side = ey + 0.26, backL = chin + 0.46;
+  float line = mix(front, side, smoothstep(0.42, 0.66, ax));
+  return mix(line, backL, smoothstep(ez - 1.2, ez - 1.65, c.z));
+}
 float hairLift(vec3 c){   // hair-cap thickness: same hairline as the fragment mask, ramped over ~1 in (no ledge)
-  float ax = abs(c.x), ey = uEyeRef.x, ez = uEyeRef.z;
-  float front = ey + 0.66 - 0.22 * smoothstep(0.3, 0.62, ax);
-  float side = ey + 0.3;
-  float backL = uEyeRef.w + 0.5;
-  float sideMix = smoothstep(0.45, 0.68, ax);
-  float line = mix(front, side, sideMix);
-  line = mix(line, backL, smoothstep(ez - 1.2, ez - 1.6, c.z));
-  return smoothstep(line - 0.02, line + 0.28, c.y);
+  return smoothstep(hairLine(c, uEyeRef.x, uEyeRef.z, uEyeRef.w) - 0.06, hairLine(c, uEyeRef.x, uEyeRef.z, uEyeRef.w) + 0.28, c.y);
 }
 uniform float uFem;          // 1 = female mesh (CONTRACT §21)
 float hairLineF(vec3 c){     // female hairline: rounded forehead (no temple recession), temples to mid-ear, low nape
@@ -1747,7 +1864,7 @@ float hairLineF(vec3 c){     // female hairline: rounded forehead (no temple rec
   float line = mix(front, side, smoothstep(0.42, 0.66, ax));
   return mix(line, backL, smoothstep(ez - 1.0, ez - 1.5, c.z));
 }
-out vec3 vW; out vec3 vN; out vec3 vC; out float vPart; out float vCav; out float vArm;
+out vec3 vW; out vec3 vN; out vec3 vC; out float vPart; out float vCav; out float vArm; out float vAO;
 float ss(float a, float b, float x){ float t = clamp((x-a)/(b-a), 0., 1.); return t*t*(3.-2.*t); }
 void main(){
   vec3 p = aPos;
@@ -1767,19 +1884,32 @@ void main(){
     p += r * amt * bump * wua * bias;
   }
   p += aFlare * uLat;
+  // hair volume: the cap was a constant offset, which reads as a moulded plastic helmet. The thickness now grows
+  // quadratically away from the hairline and is fuller over the occiput, so the silhouette gets a shaped mass.
+  float occ = ss(uEyeRef.z - 0.25, uEyeRef.z - 1.35, aCanon.z);
   if (uFem > 0.5) {   // female hair cap (the bun is real geometry appended to the mesh, see hairBun())
-    if (aPart > 0.5 && aPart < 1.5 && aCav > -0.5) { float line = hairLineF(aCanon); p += aNrm * smoothstep(line - 0.02, line + 0.28, aCanon.y) * 0.16; }
-  } else if (aPart > 0.5 && aPart < 1.5) p += aNrm * hairLift(aCanon) * 0.12;
+    if (aPart > 0.5 && aPart < 1.5 && aCav > -0.5) {
+      float line = hairLineF(aCanon), t = smoothstep(line - 0.02, line + 0.28, aCanon.y);
+      p += aNrm * t * (0.085 + 0.085 * t) * (1.0 + 0.55 * occ);
+    }
+  } else if (aPart > 0.5 && aPart < 1.5) {
+    float t = hairLift(aCanon);
+    p += aNrm * t * (0.062 + 0.055 * t) * (1.0 + 0.6 * occ);
+  }
   mat4 M = aWeight.x * uBones[j.x] + aWeight.y * uBones[j.y] + aWeight.z * uBones[j.z] + aWeight.w * uBones[j.w];
   vec4 w = M * vec4(p, 1.0);
-  vW = w.xyz; vN = mat3(M) * aNrm; vC = aCanon; vPart = aPart; vCav = max(aCav, 0.0); vArm = aArmW;
+  vW = w.xyz; vN = mat3(M) * aNrm; vC = aCanon; vPart = aPart; vCav = max(aCav, 0.0); vArm = aArmW; vAO = aAO;
   gl_Position = uVP * w;
 }`;
 const FRAG = `#version 300 es
 precision highp float;
-in vec3 vW; in vec3 vN; in vec3 vC; in float vPart; in float vCav; in float vArm;
+in vec3 vW; in vec3 vN; in vec3 vC; in float vPart; in float vCav; in float vArm; in float vAO;
 uniform vec3 uEye;
 uniform vec3 uKey, uFill, uRim, uRim2;
+uniform vec3 uLC[4];         // light radiance: key, fill, rim, kicker (theme-dependent, studio())
+uniform vec3 uSky, uGnd;     // hemisphere irradiance (up / down), linear
+uniform vec3 uTone;          // exposure, rim-fresnel strength, backdrop luminance (0 dark .. 1 light)
+uniform vec2 uShadowPass;    // x: 1 = render the floor height map instead of shading, y: 1 / maxHeight
 uniform float uDef;          // 1 main body, 0 ghost
 uniform vec3 uDefMix;        // definitionLevels(): upper abs, full abs, delt/arm/chest separation (0..≈1.2)
 uniform float uFat;          // 0..1 softness
@@ -1788,15 +1918,16 @@ uniform vec4 uCanon2;        // shoulderY, kneeY, chinY, pubisY
 uniform float uGhost;        // 0 main, 1 ghost
 uniform vec3 uSkin;
 uniform vec4 uEyeRef;        // eyeY, eyeX, eyeZ, chinY (canonical dm)
+float hairLine(vec3 c, float ey, float ez, float chin){   // male hairline (canonical dm) — twin of the vertex one
+  float ax = abs(c.x);
+  float front = ey + 0.60 - 0.055 * exp(-ax * ax / 0.012) - 0.20 * smoothstep(0.16, 0.56, ax);
+  float side = ey + 0.26, backL = chin + 0.46;
+  float line = mix(front, side, smoothstep(0.42, 0.66, ax));
+  return mix(line, backL, smoothstep(ez - 1.2, ez - 1.65, c.z));
+}
 float hairMask(vec3 c){
-  float ax = abs(c.x), ey = uEyeRef.x, ez = uEyeRef.z;
-  float front = ey + 0.66 - 0.22 * smoothstep(0.3, 0.62, ax);          // forehead hairline, receding at the temples
-  float side = ey + 0.3;                                                // above the ears
-  float backL = uEyeRef.w + 0.5;                                        // nape (back of the head only)
-  float sideMix = smoothstep(0.45, 0.68, ax);
-  float line = mix(front, side, sideMix);
-  line = mix(line, backL, smoothstep(ez - 1.2, ez - 1.6, c.z));
-  return smoothstep(line - 0.02, line + 0.05, c.y);
+  float line = hairLine(c, uEyeRef.x, uEyeRef.z, uEyeRef.w);
+  return smoothstep(line - 0.075, line + 0.075, c.y);
 }
 uniform float uFem;          // 1 = female mesh
 uniform vec4 uBra;           // female sports top: inframammary-fold y, bust-point y, bust-point x, suprasternal-notch y (canonical dm)
@@ -1813,7 +1944,7 @@ float hairMaskF(vec3 c){
   // ears stay skin (the hair is swept back behind them)
   float ear = smoothstep(0.66, 0.74, ax) * smoothstep(ez - 1.15, ez - 1.05, c.z) * (1.0 - smoothstep(ez - 0.62, ez - 0.52, c.z))
             * smoothstep(ey - 0.7, ey - 0.6, c.y) * (1.0 - smoothstep(ey + 0.12, ey + 0.2, c.y));
-  return smoothstep(line - 0.02, line + 0.05, c.y) * (1.0 - ear);
+  return smoothstep(line - 0.065, line + 0.065, c.y) * (1.0 - ear);
 }
 // CONTRACT §21c — every fabric edge is a signed field rendered with one pixel of analytic antialiasing: the soft
 // width comes from the field's own screen-space gradient, so a diagonal edge (the armpit, the shorts hem) is as
@@ -1861,18 +1992,22 @@ float defField(vec3 c){
   float nav = uCanon.x, nip = uCanon.y, pub = uCanon2.w;
   float front = ss(0.25, 0.75, c.z);                 // anterior torso only (canonical z, dm)
   // rectus abdominis: blocks between the linea alba, three tendinous intersections and the lateral border
-  float absBand = ss(pub + 0.05, pub + 0.4, y) * (1.0 - ss(nip - 0.8, nip - 0.5, y));
-  float inRect = 1.0 - ss(0.5, 0.68, x);
+  float absBand = ss(pub + 0.02, pub + 0.5, y) * (1.0 - ss(nip - 1.0, nip - 0.42, y));
+  // the rectus fades out laterally instead of being cut off: a hard edge here made the abs read as a panel
+  // glued onto the belly, especially on the narrower female torso
+  float inRect = 1.0 - ss(0.34, 0.74, x);
+  float sideFade = 1.0 - ss(0.52, 1.00, x);
   float i1 = nav + 0.1 + 0.03 * x, i2 = nav + 0.58 + 0.05 * x, i3 = nav + 1.05 + 0.1 * x;
   float ints = groove(y - i1, 0.05) + groove(y - i2, 0.05) + 0.8 * groove(y - i3, 0.055);
   float lin = groove(x, 0.05);
-  float lat = groove(x - (0.63 - 0.05 * (y - nav)), 0.07);
+  float lat = groove(x - (0.63 - 0.05 * (y - nav)), 0.105);
   // block dome: bulge in the middle of each block (cosine across x and between intersections)
   float bx = 0.5 - 0.5 * cos(clamp(x / 0.6, 0.0, 1.0) * 6.2832);
   float by = 0.5 + 0.5 * cos(clamp((y - nav + 0.14) / 0.48, -0.6, 2.4) * 6.2832);
   float up = uDefMix.x, full = uDefMix.y, sep = uDefMix.z;
   ints = groove(y - i1, 0.05) * full + groove(y - i2, 0.05) * mix(up, full, 0.5) + 0.8 * groove(y - i3, 0.055) * up;
-  h += (bx * by * 0.35 * full - lin * 0.9 * up - ints * 0.65 * inRect - lat * 0.8 * up) * absBand * front;
+  // the dome was strong enough that the blocks read as tiles stamped onto the belly; the grooves carry it now
+  h += (bx * by * 0.19 * full * sideFade - lin * 1.08 * up - ints * 0.95 * inRect - lat * 0.42 * up) * absBand * front;
   // inguinal "V" lines
   float vy = mix(pub + 0.05, nav - 0.35, ss(0.25, 1.05, x));
   h -= groove(y - vy, 0.07) * ss(0.2, 0.35, x) * (1.0 - ss(1.0, 1.15, x)) * 0.8 * front * full;
@@ -1890,8 +2025,61 @@ float defField(vec3 c){
   h -= groove(x, 0.07) * ss(pub, nav + 0.3, y) * (1.0 - ss(nip, nip + 0.6, y)) * back * 0.8 * up;
   return h;
 }
+// ---------------------------------------------------------------- BRDF (energy-conserving, Filament conventions)
+const float PI = 3.14159265;
+float D_GGX(float NoH, float a){ float a2 = a*a; float d = (NoH*a2 - NoH)*NoH + 1.0; return a2/(PI*d*d + 1e-7); }
+float V_GGX(float NoV, float NoL, float a){     // height-correlated Smith visibility (includes the 1/(4 NoL NoV))
+  float a2 = a*a;
+  float gv = NoL*sqrt(NoV*NoV*(1.0-a2)+a2), gl = NoV*sqrt(NoL*NoL*(1.0-a2)+a2);
+  return 0.5/max(gv+gl, 1e-5);
+}
+vec3 F_S(vec3 f0, float u){ return f0 + (1.0-f0)*pow(clamp(1.0-u, 0.0, 1.0), 5.0); }
+// Karis' analytic split-sum approximation: enough for a single hemisphere "environment"
+vec2 envBRDF(float r, float NoV){
+  const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022), c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+  vec4 q = r*c0 + c1;
+  float a = min(q.x*q.x, exp2(-9.28*NoV))*q.x + q.y;
+  return vec2(-1.04, 1.04)*a + q.zw;
+}
+// Subsurface approximation: per-channel wrapped diffuse, energy-normalised. Red wraps furthest past the terminator,
+// which is the whole visual signature of skin; a pre-integrated LUT buys very little more on a body this size.
+vec3 wrapDiff(float nl, vec3 w){ return max((vec3(nl) + w)/((1.0+w)*(1.0+w)), vec3(0.0)); }
+// Ashikhmin/Estevez-style cloth sheen: a broad retro-reflective lobe at grazing angles (what says "fabric").
+float sheenD(float NoH, float r){ float a = 1.0/max(r, 0.07); float c = NoH*NoH; return (2.0 + a)*pow(max(1.0-c, 0.0), a*0.5)/(2.0*PI); }
+// Kajiya-Kay anisotropic strand highlight about a shifted tangent
+float strandSpec(vec3 T, vec3 N, vec3 H, float shift, float e){
+  vec3 Ts = normalize(T + N*shift);
+  float d = dot(Ts, H);
+  return pow(sqrt(max(1.0 - d*d, 0.0)), e);
+}
+// Bump mapping on an unparameterised surface (Mikkelsen): the height gradient comes from the fragment's own
+// screen-space derivatives, so no tangent frame or UV set is needed — the base mesh has neither.
+vec3 bumpN(vec3 N, vec3 p, float h){
+  vec3 dpx = dFdx(p), dpy = dFdy(p);
+  vec3 r1 = cross(dpy, N), r2 = cross(N, dpx);
+  float det = dot(dpx, r1);
+  vec3 g = sign(det) * (dFdx(h) * r1 + dFdy(h) * r2);
+  return normalize(abs(det) * N - g);
+}
+float hash31(vec3 p){ p = fract(p*0.3183099 + vec3(0.11, 0.37, 0.71)); p *= 17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
+float vnoise(vec3 x){
+  vec3 i = floor(x), f = fract(x); f = f*f*(3.0-2.0*f);
+  return mix(mix(mix(hash31(i), hash31(i+vec3(1,0,0)), f.x), mix(hash31(i+vec3(0,1,0)), hash31(i+vec3(1,1,0)), f.x), f.y),
+             mix(mix(hash31(i+vec3(0,0,1)), hash31(i+vec3(1,0,1)), f.x), mix(hash31(i+vec3(0,1,1)), hash31(i+vec3(1,1,1)), f.x), f.y), f.z);
+}
 vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), 0., 1.); }
 void main(){
+  // floor height pass: write the surface's height above the floor; the pass MIN-blends, so each texel ends up
+  // holding the LOWEST surface over that column, which is what a contact shadow needs.
+  if (uShadowPass.x > 0.5) {
+    float hh = max(vW.y, 0.0);
+    // .r = height / maxHeight, .g = 1 − occlusion. Both are MIN-blended, so each texel ends up describing the
+    // LOWEST surface over its column. Storing occlusion (not just height) is what makes mip filtering correct:
+    // the penumbra is a mip lookup, and averaging heights through a nonlinear falloff loses most of the shadow.
+    float oc = exp(-hh * 0.95) * 0.86 + exp(-hh * 0.034) * 0.55;
+    frag = vec4(clamp(hh * uShadowPass.y, 0.0, 1.0), 1.0 - oc, 0.0, 1.0);
+    return;
+  }
   vec3 N = normalize(vN);
   vec3 V = normalize(uEye - vW);
   if (uGhost > 0.5) {
@@ -1901,6 +2089,7 @@ void main(){
     return;
   }
   bool torso = vPart < 0.5;
+  bool head = vPart > 0.5 && vPart < 1.5;
   // shorts (canonical space): from just below the navel to mid-thigh. Both edges are diagonal (they follow |x|),
   // so each is antialiased by its own gradient (§21c); the arm edge keeps the hands bare without a jagged seam.
   float waistband = uCanon.x - 0.55 - 0.12 * smoothstep(0.0, 1.2, abs(vC.x));
@@ -1920,75 +2109,221 @@ void main(){
     float e = 0.02;
     float h0 = defField(vC);
     vec3 g = vec3(defField(vC + vec3(e,0,0)) - h0, defField(vC + vec3(0,e,0)) - h0, 0.0) / e;
-    g.x *= sign(vC.x + 1e-5) * sign(vC.x + 1e-5);
-    float k = uDef * 0.042;
+    float k = uDef * 0.050;
     N = normalize(N - k * (g - dot(g, N) * N));
   }
+
+  // ---------------------------------------------------------------- material
   vec3 base = uSkin;
-  float rough = 0.42, specK = 0.32;
-  base = mix(base, mix(vec3(0.028, 0.028, 0.034), vec3(0.95, 0.30, 0.12), band), shorts); rough = mix(rough, 0.85, shorts); specK = mix(specK, 0.06, shorts);
-  if (uFem > 0.5) { base = mix(base, mix(vec3(0.028, 0.028, 0.034), vec3(0.95, 0.30, 0.12), braBand), bra); rough = mix(rough, 0.85, bra); specK = mix(specK, 0.06, bra); }
-  if (vPart > 2.5) { base = uSkin * 0.42; rough = 0.2; specK = 0.8; }
-  if (vPart > 0.5 && vPart < 1.5) {
-    // hair cap + brows on the head (female: hairline per hairMaskF)
-    float hm = uFem > 0.5 ? hairMaskF(vC) : hairMask(vC);
-    float ax = abs(vC.x);
-    float brow = smoothstep(0.1, 0.16, ax) * (1.0 - smoothstep(0.5, 0.6, ax)) * smoothstep(uEyeRef.x + 0.13, uEyeRef.x + 0.17, vC.y + 0.06 * ax)
-               * (1.0 - smoothstep(uEyeRef.x + 0.23, uEyeRef.x + 0.27, vC.y + 0.06 * ax)) * smoothstep(uEyeRef.z - 0.15, uEyeRef.z + 0.05, vC.z);
-    if (uFem > 0.5) {   // thinner, arched brows (peak ≈ 2/3 of the way out), a little softer
-      float u = (ax - 0.36) / 0.26, yb = uEyeRef.x + 0.175 + 0.045 * (1.0 - u * u);
-      brow = smoothstep(0.08, 0.13, ax) * (1.0 - smoothstep(0.54, 0.62, ax)) * smoothstep(yb - 0.035, yb - 0.015, vC.y)
-           * (1.0 - smoothstep(yb + 0.015 - 0.01 * u, yb + 0.035 - 0.01 * u, vC.y)) * smoothstep(uEyeRef.z - 0.15, uEyeRef.z + 0.05, vC.z) * 0.8;
+  float rough = 0.46, f0s = 0.028, sheen = 0.0, aniso = 0.0, occK = 1.0;
+  vec3 T = vec3(0.0, 1.0, 0.0);
+  // skin region variation (CONTRACT: shading only). Face a shade warmer and glossier than the trunk; hands, feet
+  // and knees redder and rougher; the back flatter. Uniform albedo is most of why a body reads as a mannequin.
+  float ax = abs(vC.x);
+  // canonical dm: wrist ≈ 2.5, fingertip ≈ 1.2, ankle ≈ −6.9, sole ≈ −8.2 (the base mesh is fixed, so these are
+  // absolute, exactly like the hairline / waistband constants above)
+  float handFoot = clamp(ss(2.55, 1.55, vC.y) * step(1.5, vPart) * step(vPart, 2.5) + ss(-6.85, -7.8, vC.y), 0.0, 1.0);
+  base *= mix(vec3(1.0), vec3(1.10, 0.925, 0.885), handFoot * 0.8);
+  if (head) base *= vec3(1.045, 0.985, 0.97);
+  rough = mix(rough, 0.41, float(head));
+  rough = mix(rough, 0.63, handFoot);
+  // surface micro-relief. Perfectly smooth skin is the single clearest "mannequin" tell; this is a two-octave
+  // bump at ~0.3 in and ~0.12 in, plus a matching roughness break-up. Luminance-preserving chroma variation
+  // replaces the uniform albedo (luminance noise is exactly what read as dirty smudges before).
+  // each octave fades out once a pixel covers more than about half its feature, otherwise the relief turns to
+  // specular glitter wherever the surface runs away from the camera (the flanks, the outside of a thigh)
+  float fw = max(fwidth(vC.x), max(fwidth(vC.y), fwidth(vC.z)));
+  float o1 = 1.0 - smoothstep(0.018, 0.048, fw), o2 = 1.0 - smoothstep(0.007, 0.019, fw);
+  float grain = 0.5 + (vnoise(vC * 15.0) - 0.5) * 0.58 * o1 + (vnoise(vC * 38.0) - 0.5) * 0.42 * o2;
+  rough += (grain - 0.5) * 0.10;
+  float zone = vnoise(vC * 2.4);
+  base *= mix(vec3(0.978, 1.002, 1.022), vec3(1.028, 0.997, 0.966), zone);
+  float skinBump = 1.0;
+
+  // ---- clothing (CONTRACT §21c). Fabric: much rougher than skin, a sheen lobe, and a fine weave in the roughness.
+  float fab = max(shorts, bra);
+  if (fab > 0.001) {
+    float wf = 1.0 - smoothstep(0.0022, 0.0075, max(fwidth(vC.y), fwidth(vC.x)));   // fade before it aliases
+    float weave = (sin(vC.y * 150.0) * sin((vC.x + vC.z) * 132.0)) * 0.5 + 0.5;
+    vec3 fabC = vec3(0.0265, 0.0275, 0.0335) * (0.88 + 0.24 * weave * wf);
+    vec3 bandC = vec3(0.098, 0.034, 0.017);                        // muted ember elastic (was a saturated flat fill)
+    vec3 cC = mix(fabC, bandC, max(band, braBand));
+    float cR = 0.76 + 0.10 * (1.0 - weave) * wf;
+    base = mix(base, cC, fab); rough = mix(rough, cR, fab);
+    f0s = mix(f0s, 0.042, fab); sheen = fab; occK = mix(occK, 0.75, fab);
+  }
+
+  // ---- eyes: a shaded eyeball (sclera / iris / limbal ring / pupil) with a corneal highlight. They were a flat
+  // dark patch of skin tone, which is why they read as painted-on decals.
+  float eyeM = step(2.5, vPart);
+  if (eyeM > 0.5) {
+    vec3 ec = vec3(sign(vC.x + 1e-6) * uEyeRef.y, uEyeRef.x, uEyeRef.z);
+    vec3 d = normalize(vC - ec);
+    vec3 fwd = normalize(vec3(sign(vC.x + 1e-6) * 0.12, -0.03, 1.0));
+    float ang = acos(clamp(dot(d, fwd), -1.0, 1.0));
+    float iris = 1.0 - smoothstep(0.455, 0.515, ang);
+    float pupil = 1.0 - smoothstep(0.145, 0.185, ang);
+    float limbal = smoothstep(0.33, 0.50, ang) * iris;
+    float fibre = 0.78 + 0.44 * vnoise(d * 34.0);
+    vec3 sclera = vec3(0.50, 0.465, 0.45) * (1.0 - 0.28 * smoothstep(0.55, 1.1, ang));
+    vec3 irisC = vec3(0.085, 0.048, 0.024) * fibre * (0.55 + 0.9 * smoothstep(0.50, 0.17, ang));
+    base = mix(sclera, irisC, iris);
+    base = mix(base, vec3(0.008), pupil);
+    base *= 1.0 - 0.6 * limbal;
+    rough = mix(0.21, 0.055, max(iris, pupil));      // wet sclera, hard cornea
+    f0s = 0.045; sheen = 0.0; occK = 0.55;
+  }
+
+  // ---- hair: a shaped, Kajiya-Kay shaded mass with strand breakup, not a flat dark cap.
+  float hm = 0.0, brow = 0.0;
+  if (head) {   // the appended female bun is part 1 with a canonical coord above the hairline, so it is hair too
+    hm = uFem > 0.5 ? hairMaskF(vC) : hairMask(vC);
+    // brows: a soft arch with a Gaussian cross-section that thins toward the tail. A pair of smoothstep bands
+    // gave a flat rectangle with crisp corners, which was the single most "painted on" thing about the face.
+    float u = clamp((ax - 0.12) / 0.40, 0.0, 1.0);
+    float arch = 1.0 - (2.0 * u - 1.0) * (2.0 * u - 1.0);
+    float yb = uEyeRef.x + (uFem > 0.5 ? 0.185 : 0.165) + (uFem > 0.5 ? 0.055 : 0.038) * arch;
+    float th = (uFem > 0.5 ? 0.036 : 0.050) * (1.0 - 0.5 * u * u);
+    float dy = (vC.y + 0.03 * ax - yb) / th;
+    brow = exp(-dy * dy) * smoothstep(0.10, 0.19, ax) * (1.0 - smoothstep(0.44, 0.60, ax))
+         * smoothstep(uEyeRef.z - 0.22, uEyeRef.z + 0.02, vC.z) * (uFem > 0.5 ? 0.80 : 1.0);
+    // brows are hair, so they get a fine strand break-up and feathered ends, not a solid painted block
+    brow *= 0.68 + 0.50 * vnoise(vec3(vC.x * 170.0, vC.y * 72.0, vC.z * 30.0));
+    brow = clamp(brow, 0.0, 1.0) * 0.92;
+    // a wispy, slightly ragged hairline: a razor-straight contour is most of why the cap read as a swim cap
+    hm = clamp(hm + (vnoise(vec3(vC.x * 72.0, vC.y * 40.0, vC.z * 72.0)) - 0.5) * 2.4 * hm * (1.0 - hm)
+                  + (vnoise(vec3(vC.x * 24.0, vC.y * 15.0, vC.z * 24.0)) - 0.5) * 1.1 * hm * (1.0 - hm), 0.0, 1.0);
+    float h = max(hm, brow);
+    if (h > 0.002) {
+      float strand = vnoise(vec3(vC.x * 105.0, vC.y * 17.0, vC.z * 95.0)) * 0.72 + vnoise(vC * 125.0) * 0.28;
+      vec3 hairC = vec3(0.0315, 0.0196, 0.0124) * (0.72 + 0.56 * strand);
+      base = mix(base, hairC, h);
+      rough = mix(rough, mix(0.46, 0.34, hm), h); f0s = mix(f0s, 0.046, h);
+      aniso = hm * (1.0 - clamp(brow, 0.0, 1.0));   // the strand lobe belongs to the cap; brows stay matte
+      // flow: down and back over the skull; brows run outward along x
+      vec3 flow = mix(normalize(vec3(0.0, -1.0, -0.5)), normalize(vec3(sign(vC.x + 1e-6), 0.12, 0.25)), clamp(brow * (1.0 - hm), 0.0, 1.0));
+      vec3 tb = cross(flow, N);
+      T = normalize(cross(N, tb) + vec3(1e-5));
+      occK = mix(occK, 1.12, h);
     }
-    float n = fract(sin(dot(floor(vC * 140.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
-    vec3 hair = vec3(0.034, 0.025, 0.02) * (0.85 + 0.3 * n);
-    base = mix(base, hair, max(hm, brow * 0.85));
-    rough = mix(rough, 0.7, hm); specK = mix(specK, 0.12, hm);
   }
-  // crease depth (cavity AO) on the trunk and limbs follows muscle separation (BF_CAL), the head keeps the base value
-  float ao = 1.0 - 0.55 * vCav * ((vPart > 0.5 && vPart < 1.5) ? 1.0 : 0.8 + 0.35 * uDefMix.z);
+  rough = clamp(rough, 0.045, 1.0);
+  float skinM0 = (1.0 - fab) * (1.0 - eyeM) * (1.0 - clamp(hm + brow, 0.0, 1.0));
+  if (skinM0 > 0.01) N = normalize(mix(N, bumpN(N, vW, grain * 0.019), skinM0));
+  // specular antialiasing: widen the lobe where the shaded normal varies fast across a pixel
+  rough = clamp(rough + 1.5 * max(length(dFdx(N)), length(dFdy(N))), rough, 1.0);
+  float a = rough * rough;
+  vec3 f0 = vec3(f0s);
+  float skinM = skinM0;
+
+  // ---------------------------------------------------------------- occlusion
+  // baked hemisphere AO carries the contact darkening (chin, armpits, under the pecs, waistband, inner thighs);
+  // the curvature "cavity" term is kept only as a shallow crease modulation — at its old weight its sampling noise
+  // was the grey mottling on the chest.
+  float crease = 1.0 - 0.26 * vCav * (head ? 1.0 : 0.72 + 0.4 * uDefMix.z);
+  float ao = clamp(pow(clamp(vAO, 0.0, 1.0), 1.15) * occK, 0.0, 1.0) * crease;
+  float NoV = clamp(dot(N, V), 1e-4, 1.0);
+  float specOcc = clamp(pow(NoV + ao, exp2(-16.0*rough - 1.0)) - 1.0 + ao, 0.0, 1.0);
+
+  // ---------------------------------------------------------------- direct lighting
+  vec3 Ldir[4]; Ldir[0] = uKey; Ldir[1] = uFill; Ldir[2] = uRim; Ldir[3] = uRim2;
+  vec3 scatter = mix(vec3(0.015), vec3(0.34, 0.165, 0.098), skinM);
+  float fres = pow(1.0 - NoV, 3.0);
   vec3 col = vec3(0.0);
-  vec3 L[4]; L[0] = uKey; L[1] = uFill; L[2] = uRim; L[3] = uRim2;
-  vec3 C[4]; C[0] = vec3(1.0, 0.95, 0.9) * 2.0; C[1] = vec3(0.6, 0.68, 0.85) * 0.5; C[2] = vec3(1.0, 0.86, 0.72) * 1.2; C[3] = vec3(0.6, 0.72, 1.0) * 0.85;
   for (int i = 0; i < 4; i++) {
-    vec3 l = normalize(L[i]);
+    vec3 l = normalize(Ldir[i]);
     float nl = dot(N, l);
-    float wrap = mix(max((nl + 0.35) / 1.35, 0.0), max(nl, 0.0), cloth);
-    vec3 sss = (1.0 - cloth) * vec3(0.3, 0.08, 0.03) * ss(0.3, -0.05, nl) * ss(-0.5, 0.0, nl);
-    vec3 hv = normalize(l + V);
-    float nh = max(dot(N, hv), 0.0);
-    float a2 = rough * rough * rough * rough;
-    float d = a2 / (3.14159 * pow(nh * nh * (a2 - 1.0) + 1.0, 2.0));
-    float fres = 0.04 + 0.96 * pow(1.0 - max(dot(hv, V), 0.0), 5.0);
-    float spec = d * fres * specK * max(nl, 0.0);
-    col += C[i] * (base * wrap + sss * base * 2.0 + spec * (i >= 2 ? 0.5 : 1.0));
+    vec3 H = normalize(l + V);
+    float NoH = clamp(dot(N, H), 0.0, 1.0), LoH = clamp(dot(l, H), 0.0, 1.0);
+    float NoL = max(nl, 0.0);
+    // diffuse: wrapped (subsurface) for the key/fill, hard for the back lights so they stay on the silhouette
+    vec3 diff = i < 2 ? wrapDiff(nl, scatter) : vec3(NoL * (0.2 + 0.8 * fres));
+    vec3 S = F_S(f0, LoH) * (D_GGX(NoH, a) * V_GGX(NoV, NoL, a)) * NoL;
+    if (aniso > 0.002) {   // two shifted strand lobes: a tight white primary and a broad tinted secondary
+      float p1 = strandSpec(T, N, H, 0.09, 120.0), p2 = strandSpec(T, N, H, -0.13, 11.0);
+      vec3 hs = vec3(0.017) * p1 + base * 0.55 * p2 * (0.35 + 0.9 * vnoise(vec3(vC.x*150.0, vC.y*22.0, vC.z*120.0)));
+      S = mix(S, hs * NoL, aniso);
+    }
+    if (sheen > 0.002) S += vec3(sheenD(NoH, 0.42)) * 0.085 * NoL * sheen * (0.35 + 0.65 * fres);
+    col += uLC[i] * (base * diff * (1.0/PI) * mix(1.0, ao, 0.3) + S * mix(1.0, specOcc, 0.5));
   }
-  // hemisphere ambient
-  float up = N.y * 0.5 + 0.5;
-  col += base * mix(vec3(0.05, 0.045, 0.05), vec3(0.16, 0.15, 0.16), up) * ao;
-  col *= mix(1.0, ao, 0.8);
-  // rim fresnel
-  float fr = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-  col += vec3(0.9, 0.7, 0.55) * fr * 0.18 * mix(1.0, 0.3, cloth);
-  col = aces(col * 0.85);
-  frag = vec4(pow(col, vec3(1.0 / 2.2)), 1.0);
+  // ---------------------------------------------------------------- image-based-ish ambient (hemisphere)
+  vec3 amb = mix(uGnd, uSky, N.y * 0.5 + 0.5);
+  col += base * amb * ao;
+  // multiple scattering in creases: occluded skin reddens instead of going grey (chin, armpits, inner thighs)
+  col += base * base * vec3(0.52, 0.12, 0.05) * (1.0 - ao) * skinM;
+  vec3 R = reflect(-V, N);
+  vec2 eb = envBRDF(rough, NoV);
+  col += mix(uGnd, uSky, R.y * 0.5 + 0.5) * (f0 * eb.x + eb.y) * specOcc;
+  // a faint neutral edge light so the silhouette separates from the backdrop; the old one was a saturated orange
+  col += mix(vec3(0.62, 0.68, 0.80), vec3(0.95), uTone.z) * fres * uTone.y * mix(0.45, 1.0, skinM) * ao;
+  // asperity scattering ("peach fuzz"): a warm, very low grazing-angle haze that keeps skin off a clean dielectric edge
+  col += vec3(0.055, 0.040, 0.034) * pow(1.0 - NoV, 4.5) * skinM * ao;
+
+  col = aces(col * uTone.x);
+  col = pow(col, vec3(1.0 / 2.2));
+  // 8-bit dither: a smooth body against a dark backdrop bands badly without it
+  col += (hash31(vec3(gl_FragCoord.xy, 0.5)) - 0.5) / 255.0;
+  frag = vec4(col, 1.0);
 }`;
 const BG_VERT = `#version 300 es
 layout(location=0) in vec2 aXY; out vec2 vUV;
 void main(){ vUV = aXY * 0.5 + 0.5; gl_Position = vec4(aXY, 0.999, 1.0); }`;
+// Backdrop + studio floor. The figure used to hang in a void with a fake elliptical smudge behind it. Now the
+// full-screen pass ray-casts the floor plane (y = 0) and shades it, and the shadow comes from a top-down height
+// map of the body (MIN-blended), so it has the body's real outline, hardens at the feet and softens upward.
 const BG_FRAG = `#version 300 es
 precision highp float;
 in vec2 vUV; out vec4 frag;
-uniform vec2 uRes; uniform vec4 uFeet;   // screen-space foot centre (xy, 0..1), shadow radius x/y
+uniform vec2 uRes;
+uniform vec3 uBg, uGlow, uFloor;
+uniform mat4 uInvVP;
+uniform vec3 uEye;
+uniform vec4 uGround;        // map half-extent (in), maxHeight (in), floor visibility, light-pool radius (× R)
+uniform sampler2D uSh;
+const vec2 DISC[12] = vec2[12](
+  vec2(0.0, 0.0), vec2(0.52, 0.10), vec2(0.18, 0.52), vec2(-0.38, 0.40), vec2(-0.54, -0.12), vec2(-0.20, -0.52),
+  vec2(0.40, -0.40), vec2(0.90, -0.22), vec2(0.30, 0.92), vec2(-0.82, 0.48), vec2(-0.48, -0.86), vec2(0.86, 0.46));
+// Sampling a wide penumbra with 12 taps of the full-res map printed twelve ghost copies of the footprint, so a
+// wide search reads a mip level instead: the mip chain is the blur, and the taps only have to cover its shape.
+const float LOD[3] = float[3](0.0, 1.6, 4.2);
+const float RAD[3] = float[3](0.0040, 0.0140, 0.075);
+const float WT[3] = float[3](1.0, 1.0, 0.92);
+vec2 shAt(vec2 uv, float lod){ vec2 t = textureLod(uSh, clamp(uv, 0.003, 0.997), lod).rg; return vec2(t.x * uGround.y, 1.0 - t.y); }
 void main(){
-  vec2 p = vUV - vec2(0.5, 0.56);
+  vec2 p = vUV - vec2(0.5, 0.46);
   p.x *= uRes.x / uRes.y;
-  float spot = exp(-dot(p, p) * 2.6);
-  vec3 bg = mix(vec3(0.043, 0.043, 0.051), vec3(0.105, 0.098, 0.112), spot);
-  vec2 q = (vUV - uFeet.xy) / uFeet.zw;
-  float sh = exp(-dot(q, q) * 2.2);
-  bg *= 1.0 - 0.55 * sh;
-  frag = vec4(bg, 1.0);
+  vec3 col = uBg + uGlow * exp(-dot(p, p) * 2.6);
+  if (uGround.z > 0.001 && uEye.y > 0.0) {
+    vec4 fw = uInvVP * vec4(vUV * 2.0 - 1.0, 1.0, 1.0);
+    vec3 dir = normalize(fw.xyz / fw.w - uEye);
+    if (dir.y < -1e-4) {
+      vec3 P = uEye + dir * (-uEye.y / dir.y);
+      float R = uGround.x, vis = uGround.z;
+      float r = length(P.xz) / R;
+      if (r < 1.25) {
+        vec2 suv = vec2(0.5 + P.x / (2.0 * R), 0.5 - P.z / (2.0 * R));
+        // Three scales taken straight off the mip chain, combined with max(): a tight dark core where a surface
+        // is right on the floor, a mid penumbra, and a broad ambient shadow under the whole body. A single
+        // variable-radius lookup cannot do this — away from the feet the blocker is far, the search radius goes
+        // wide, and the contact shadow washes out to nothing.
+        float sh = 0.0;
+        for (int k = 0; k < 3; k++) {
+          float lod = LOD[k], rd = RAD[k], a = 0.0;
+          for (int i = 0; i < 4; i++) a += shAt(suv + DISC[i + 1] * rd, lod).y;
+          sh = max(sh, a * 0.25 * WT[k]);
+        }
+        sh = clamp(sh, 0.0, 1.0) * vis;
+        // the floor is BLENDED in, not added: on a light theme the floor tone is darker than the backdrop, and an
+        // additive pool blew straight to white there. A Gaussian pool has no disc edge to catch the eye.
+        float pool = exp(-r * r / (uGround.w * uGround.w)) * vis;
+        col = mix(col, uFloor, pool) * (1.0 - 0.95 * sh);
+      }
+    }
+  }
+  col = pow(clamp(col, 0.0, 1.0), vec3(1.0 / 2.2));
+  col += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
+  frag = vec4(col, 1.0);
 }`;
 
 function compile(gl, type, src) {
@@ -2018,6 +2353,24 @@ function mat4mul(a, b) {
   const o = new Array(16);
   for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; }
   return o;
+}
+function invert4(m) {
+  const a00=m[0],a01=m[1],a02=m[2],a03=m[3],a10=m[4],a11=m[5],a12=m[6],a13=m[7];
+  const a20=m[8],a21=m[9],a22=m[10],a23=m[11],a30=m[12],a31=m[13],a32=m[14],a33=m[15];
+  const b00=a00*a11-a01*a10, b01=a00*a12-a02*a10, b02=a00*a13-a03*a10, b03=a01*a12-a02*a11;
+  const b04=a01*a13-a03*a11, b05=a02*a13-a03*a12, b06=a20*a31-a21*a30, b07=a20*a32-a22*a30;
+  const b08=a20*a33-a23*a30, b09=a21*a32-a22*a31, b10=a21*a33-a23*a31, b11=a22*a33-a23*a32;
+  let det = b00*b11-b01*b10+b02*b09+b03*b08-b04*b07+b05*b06;
+  if (!det) return null; det = 1/det;
+  return [(a11*b11-a12*b10+a13*b09)*det, (a02*b10-a01*b11-a03*b09)*det, (a31*b05-a32*b04+a33*b03)*det, (a22*b04-a21*b05-a23*b03)*det,
+          (a12*b08-a10*b11-a13*b07)*det, (a00*b11-a02*b08+a03*b07)*det, (a32*b02-a30*b05-a33*b01)*det, (a20*b05-a22*b02+a23*b01)*det,
+          (a10*b10-a11*b08+a13*b06)*det, (a01*b08-a00*b10-a03*b06)*det, (a30*b04-a31*b02+a33*b00)*det, (a21*b02-a20*b04-a23*b00)*det,
+          (a11*b07-a10*b09-a12*b06)*det, (a00*b09-a01*b07+a02*b06)*det, (a31*b01-a30*b03-a32*b00)*det, (a20*b03-a21*b01+a22*b00)*det];
+}
+/** Top-down orthographic clip matrix over a 2R × 2R floor patch, y mapped into [-1, 1] over [y0, y1]. */
+function orthoTop(R, y0, y1) {
+  const sy = 2 / (y1 - y0);
+  return [1 / R, 0, 0, 0,  0, 0, sy, 0,  0, -1 / R, 0, 0,  0, 0, -(1 + 2 * y0 * sy / 2), 1];
 }
 function project(m, p) {
   const x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12], y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13];
@@ -2062,11 +2415,27 @@ export function mountBody3D(el, opts = {}) {
 
   let A = null, fit = null, ghostFit = null, gl = null, dead = false, lost = false;
   let progBody = null, progBg = null, vaoMain = null, vaoGhost = null, vaoBg = null, bufs = {}, nIdx = 0;
+  let shTex = null, shFB = null;
+  const SH_RES = 256;
   let poseName = POSES.includes(o.pose) ? o.pose : 'relaxed';
   let poseFrom = null, poseTo = null, poseT0 = 0;
   const cam = { yaw: POSE_SPECS[poseName].view.yaw, pitch: POSE_SPECS[poseName].view.pitch, zoom: 1, vy: 0, vp: 0 };
   let camAnim = null, raf = 0, lastMs = 0, frameMs = 0, userTouched = false;
   let W = 1, Hh = 1, dpr = 1, VP = null, eye = [0, 0, 0];
+  // theme: the rig and the backdrop follow the stage's own background colour, so the viewer sits correctly in a
+  // light theme as well as the dark one (the app is dark today; nothing here assumes it).
+  let ST = studio(0.013), bgLin = [0.043, 0.043, 0.051];
+  function readTheme() {
+    let rgb = null;
+    try {
+      const m = (typeof getComputedStyle === 'function' ? getComputedStyle(stage).backgroundColor : '') || '';
+      const g = m.match(/rgba?\(([^)]+)\)/);
+      if (g) { const q = g[1].split(',').map(parseFloat); if (q.length >= 3 && !(q[3] <= 0.05)) rgb = [srgbToLin(q[0]), srgbToLin(q[1]), srgbToLin(q[2])]; }
+    } catch (e) { /* jsdom / detached node */ }
+    if (rgb) bgLin = rgb;
+    ST = studio(0.2126 * bgLin[0] + 0.7152 * bgLin[1] + 0.0722 * bgLin[2]);
+    ST.floor = new Float32Array([0, 1, 2].map(i => bgLin[i] + (ST.sky[i] - bgLin[i]) * ST.floorMix));
+  }
 
   function setLabel() { labelEl.textContent = o.label || ''; labelEl.style.display = o.label ? '' : 'none'; }
   setLabel();
@@ -2129,6 +2498,15 @@ export function mountBody3D(el, opts = {}) {
     if (!gl) throw new Error('WebGL2 unavailable');
     progBody = program(gl, VERT, FRAG);
     progBg = program(gl, BG_VERT, BG_FRAG);
+    // floor height map (top-down, MIN-blended): RGBA8 is enough — 1/255 of the body height is ≈ 0.27 in, well
+    // under the blur radius — and it needs no float-render extension, so it works everywhere WebGL2 does.
+    shTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, shTex);
+    gl.texStorage2D(gl.TEXTURE_2D, 9, gl.RGBA8, SH_RES, SH_RES);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    shFB = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, shFB);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, shTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     vaoBg = gl.createVertexArray(); gl.bindVertexArray(vaoBg);
     bufs.bg = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufs.bg);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
@@ -2149,7 +2527,11 @@ export function mountBody3D(el, opts = {}) {
     const w8 = new Uint8Array((n + nb) * 4); for (let i = 0; i < n * 4; i++) w8[i] = Math.round(A.skinW[i] * 255);
     for (let k = 0; k < nb; k++) w8[(n + k) * 4] = 255;
     bufs.weight = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufs.weight); gl.bufferData(gl.ARRAY_BUFFER, w8, gl.STATIC_DRAW);
-    const canon = nb ? cat(Float32Array, A.base.subarray(0, n * 3), new Float32Array(nb * 3).map((_, i) => A.bun.canon[i % 3])) : A.base.subarray(0, n * 3);
+    // the bun's canonical coord is its template point nudged by the unit sphere, so the hair strand noise varies
+    // over it (one shared coord made it a flat blob); it stays well above the hairline, so hairMaskF is still 1
+    const bunCanon = new Float32Array(nb * 3);
+    for (let k = 0; k < nb; k++) for (let j = 0; j < 3; j++) bunCanon[k * 3 + j] = A.bun.canon[j] + A.bun.unit[k * 3 + j] * 0.13;
+    const canon = nb ? cat(Float32Array, A.base.subarray(0, n * 3), bunCanon) : A.base.subarray(0, n * 3);
     bufs.canon = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufs.canon); gl.bufferData(gl.ARRAY_BUFFER, canon, gl.STATIC_DRAW);
     // kind: 0 torso/legs (shorts + definition eligible), 1 head/neck, 2 arm, 3 eye — interpolates safely
     const kind = new Uint8Array(n + nb).fill(1); for (let i = 0; i < n; i++) { const pt = A.part[i]; kind[i] = pt === 6 ? 3 : pt === 1 ? 1 : pt === 2 || pt === 3 ? 2 : 0; }
@@ -2160,7 +2542,7 @@ export function mountBody3D(el, opts = {}) {
     const armW = new Uint8Array(n + nb);
     for (let i = 0; i < n; i++) armW[i] = Math.round(255 * clamp(A.grp[i * 6 + 2] + A.grp[i * 6 + 3], 0, 1));
     bufs.armw = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, bufs.armw); gl.bufferData(gl.ARRAY_BUFFER, armW, gl.STATIC_DRAW);
-    for (const k of ['main', 'ghost']) { bufs[k + 'Pos'] = gl.createBuffer(); bufs[k + 'Nrm'] = gl.createBuffer(); bufs[k + 'Cav'] = gl.createBuffer(); bufs[k + 'Flare'] = gl.createBuffer(); }
+    for (const k of ['main', 'ghost']) { bufs[k + 'Pos'] = gl.createBuffer(); bufs[k + 'Nrm'] = gl.createBuffer(); bufs[k + 'Cav'] = gl.createBuffer(); bufs[k + 'Flare'] = gl.createBuffer(); bufs[k + 'Ao'] = gl.createBuffer(); }
     const mk = (k) => {
       const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
       const attr = (loc, buf, size, type, normalized) => { gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, type, normalized, 0, 0); };
@@ -2168,6 +2550,7 @@ export function mountBody3D(el, opts = {}) {
       attr(2, bufs.joint, 4, gl.UNSIGNED_BYTE, false); attr(3, bufs.weight, 4, gl.UNSIGNED_BYTE, true);
       attr(4, bufs.canon, 3, gl.FLOAT, false); attr(5, bufs.part, 1, gl.UNSIGNED_BYTE, false); attr(6, bufs[k + 'Cav'], 1, gl.FLOAT, false);
       attr(7, bufs[k + 'Flare'], 3, gl.FLOAT, false); attr(8, bufs.armw, 1, gl.UNSIGNED_BYTE, true);
+      attr(9, bufs[k + 'Ao'], 1, gl.FLOAT, false);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bufs.idx);
       gl.bindVertexArray(null);
       return vao;
@@ -2182,18 +2565,24 @@ export function mountBody3D(el, opts = {}) {
     gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k + 'Nrm']); gl.bufferData(gl.ARRAY_BUFFER, cat(f.restNrm, b && b.nrm), gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k + 'Cav']); gl.bufferData(gl.ARRAY_BUFFER, cat(f.cavity, new Float32Array(nb).fill(-1)), gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k + 'Flare']); gl.bufferData(gl.ARRAY_BUFFER, cat(f.flare, new Float32Array(nb * 3)), gl.DYNAMIC_DRAW);
+    // the bun sits against the skull, so it is baked at a fixed, fairly occluded value rather than left open
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k + 'Ao']); gl.bufferData(gl.ARRAY_BUFFER, cat(f.ao, new Float32Array(nb).fill(0.72)), gl.DYNAMIC_DRAW);
   }
   function freeGL() {
     if (!gl) return;
     for (const b of Object.values(bufs)) if (b) gl.deleteBuffer(b);
     for (const v of [vaoMain, vaoGhost, vaoBg]) if (v) gl.deleteVertexArray(v);
     for (const p of [progBody, progBg]) if (p) gl.deleteProgram(p);
-    bufs = {}; vaoMain = vaoGhost = vaoBg = progBody = progBg = null;
+    if (shTex) gl.deleteTexture(shTex); if (shFB) gl.deleteFramebuffer(shFB);
+    bufs = {}; vaoMain = vaoGhost = vaoBg = progBody = progBg = shTex = shFB = null;
   }
   function resize() {
     if (!gl || lost) return;
     const r = stage.getBoundingClientRect();
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    readTheme();
+    // 4× MSAA is on (antialias: true), so the silhouette is covered; the floor keeps the cap at 2 on phones and
+    // supersamples a 1× desktop display to 1.5, where the extra pixels are free.
+    dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1.5), 2);
     const w = Math.max(64, Math.round(r.width * dpr)), h = Math.max(64, Math.round(r.height * dpr));
     if (w !== W || h !== Hh) { W = w; Hh = h; canvas.width = w; canvas.height = h; overlay.width = w; overlay.height = h; }
     requestRender();
@@ -2239,26 +2628,17 @@ export function mountBody3D(el, opts = {}) {
     lastMs = ts;
     const pt = poseFrom ? clamp((ts - poseT0) / POSE_MS, 0, 1) : 1;
     if (poseFrom && pt < 1) animating = true; else poseFrom = null;
-    gl.viewport(0, 0, W, Hh);
-    gl.clearColor(0.043, 0.043, 0.051, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     VP = cameraFor(fit);
     const pose = currentPose(fit, pt), off = footOffset(fit, pose);
-    // background + floor shadow
     const H = fit.geom.heightIn;
-    const fL = project(VP, [0, 0, 0]), fR = project(VP, [H * 0.12, 0, 0]), fZ = project(VP, [0, 0, H * 0.1]);
-    gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
-    gl.useProgram(progBg); gl.bindVertexArray(vaoBg);
-    gl.uniform2f(progBg.loc.uRes, W, Hh);
-    gl.uniform4f(progBg.loc.uFeet, fL[0] * 0.5 + 0.5, fL[1] * 0.5 + 0.5, Math.max(0.03, Math.hypot(fR[0] - fL[0], fR[1] - fL[1]) * 0.5 * 1.3), Math.max(0.012, Math.abs(fZ[1] - fL[1]) * 0.5 + 0.012));
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.depthFunc(gl.LEQUAL);
-    gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); gl.frontFace(gl.CCW);
+    // ---- body program: per-frame uniforms, shared by the floor-height pass and the shaded pass
     gl.useProgram(progBody);
     const L = progBody.loc, ld = lightDirs();
-    gl.uniformMatrix4fv(L.uVP, false, VP);
     gl.uniform3fv(L.uEye, eye);
     gl.uniform3fv(L.uKey, ld.key); gl.uniform3fv(L.uFill, ld.fill); gl.uniform3fv(L.uRim, ld.rim); gl.uniform3fv(L.uRim2, ld.rim2);
-    gl.uniform3f(L.uSkin, 0.215, 0.13, 0.088);
+    gl.uniform3fv(L.uLC, ST.lights); gl.uniform3fv(L.uSky, ST.sky); gl.uniform3fv(L.uGnd, ST.gnd);
+    gl.uniform3f(L.uTone, ST.exposure, ST.rim, ST.t);
+    gl.uniform3f(L.uSkin, 0.425, 0.272, 0.206);   // linear diffuse albedo (energy-conserving BRDF: albedo / π)
     const c = A.base, lm = A.lm;
     gl.uniform4f(L.uEyeRef, A.eye[0], A.eye[1], A.eye[2], c[lm.chinV * 3 + 1]);
     gl.uniform4f(L.uCanon, c[lm.navelV * 3 + 1], c[lm.nippleV * 3 + 1], c[lm.crotchV * 3 + 1], Math.abs(c[lm.nippleV * 3]));
@@ -2289,6 +2669,45 @@ export function mountBody3D(el, opts = {}) {
       gl.bindVertexArray(vao);
       gl.drawElements(gl.TRIANGLES, nIdx, gl.UNSIGNED_SHORT, 0);
     };
+
+    // ---- 1. floor height map: the body from straight above, MIN-blended, so each texel holds the height of the
+    //         lowest surface over its column. That is what gives the contact shadow the figure's real outline.
+    const SR = H * 0.46, maxH = H * 1.05;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, shFB);
+    gl.viewport(0, 0, SH_RES, SH_RES);
+    gl.clearColor(1, 1, 1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.disable(gl.DEPTH_TEST); gl.depthMask(false); gl.disable(gl.CULL_FACE);
+    gl.enable(gl.BLEND); gl.blendEquation(gl.MIN); gl.blendFunc(gl.ONE, gl.ONE);
+    gl.uniformMatrix4fv(L.uVP, false, orthoTop(SR, -0.05 * H, 1.25 * H));
+    gl.uniform2f(L.uShadowPass, 1, 1 / maxH);
+    drawBody(fit, vaoMain, false);
+    gl.disable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD);
+    gl.uniform2f(L.uShadowPass, 0, 1 / maxH);
+    gl.uniformMatrix4fv(L.uVP, false, VP);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, shTex); gl.generateMipmap(gl.TEXTURE_2D);   // the mip chain IS the penumbra blur
+
+    gl.viewport(0, 0, W, Hh);
+    gl.clearColor(Math.pow(bgLin[0], 1 / 2.2), Math.pow(bgLin[1], 1 / 2.2), Math.pow(bgLin[2], 1 / 2.2), 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    // ---- 2. backdrop + studio floor (ray-cast against y = 0, shadowed by the height map)
+    gl.useProgram(progBg); gl.bindVertexArray(vaoBg);
+    gl.uniform2f(progBg.loc.uRes, W, Hh);
+    gl.uniform3fv(progBg.loc.uBg, bgLin);
+    gl.uniform3fv(progBg.loc.uGlow, ST.glow);
+    gl.uniform3fv(progBg.loc.uFloor, ST.floor);
+    gl.uniform3fv(progBg.loc.uEye, eye);
+    gl.uniformMatrix4fv(progBg.loc.uInvVP, false, invert4(VP) || VP);
+    gl.uniform4f(progBg.loc.uGround, SR, maxH, clamp(eye[1] / (0.10 * H), 0, 1), 0.85);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, shTex);
+    gl.uniform1i(progBg.loc.uSh, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // ---- 3. the body
+    gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.depthFunc(gl.LEQUAL);
+    gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); gl.frontFace(gl.CCW);
+    gl.useProgram(progBody);
     drawBody(fit, vaoMain, false);
     if (ghostFit) {
       gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
