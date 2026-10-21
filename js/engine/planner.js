@@ -56,7 +56,7 @@ import { classify } from '../classes/classify.js';
 import { GROUPS, GROUP_ORDER, REGIONS, VOLUME_UNITS, UNIT_ORDER, unitWeight, unitCredits } from '../data/muscles.js';
 import { DEFAULT_LOCATIONS, expandEquipment } from '../data/equipment.js';
 import { ds, parseDs, addDays, weekStart as weekStartOf, clamp, rng } from '../util.js';
-import { cardioPrefs, finisherCap, cardioCapacity, weekCardioCapacity, volumePolicyOf, unitTargets } from './targets.js';
+import { cardioPrefs, finisherCap, cardioCapacity, weekCardioCapacity, cardioTolerance, makeRoomProposal, volumePolicyOf, unitTargets } from './targets.js';
 
 const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const PRIORITY_GROUPS = ['triceps', 'shoulders', 'core', 'back', 'chest'];
@@ -642,7 +642,7 @@ function balanceCardio(ctx, out, ws, we, last) {
     if (!ctx.keptDates.has(k) && !ctx.doneDates.has(k)) have += cap[DOW[d.getDay()]] || 0;
   }
   // Within ~10% of the target is close enough (same tolerance as weekPlanSummary's warning).
-  if (target - have < Math.max(10, target * 0.1)) return;
+  if (target - have < cardioTolerance(target)) return;
   let need = round5(target - have);
   const cands = [];
   for (const s of out) {
@@ -660,7 +660,7 @@ function balanceCardio(ctx, out, ws, we, last) {
   // outdoor run/walk; each finisher ends up 10+ min, and we stop once within tolerance.
   const outdoor = c => (/^(run|walk)$/.test(c.mod) ? 1 : 0);
   cands.sort((a, b) => b.s.minutes - a.s.minutes || outdoor(a) - outdoor(b));
-  const tol = Math.max(10, target * 0.1);
+  const tol = cardioTolerance(target);
   const minS = Math.max(10, cardioPrefs(ctx.profile).minSession);   // 'longer': 30 → only 75+ min lift days qualify
   let left = need;
   for (const c of cands) {
@@ -1317,6 +1317,10 @@ export function explainWeek(sessions, { weekStart, profile, now = new Date() } =
 }
 
 // ---------------------------------------------------------------- weekPlanSummary
+// makeRoomProposal is pure and cheap, but never let a bad profile break the whole week summary.
+function safeRoom(profile, target) {
+  try { return makeRoomProposal(profile || {}, target); } catch (e) { return null; }
+}
 export function weekPlanSummary(sessions, { weekStart, profile, now = new Date() } = {}) {
   now = toDate(now);
   const ws = weekStartOf(weekStart ? toDate(weekStart) : now);
@@ -1420,11 +1424,16 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
     }
   }
   const cTot = cDone + cPlan;
-  if (target > 0 && cTot < target - Math.max(10, target * 0.1)) {
+  if (target > 0 && cTot < target - cardioTolerance(target)) {
     const short = Math.round(target - cTot);
-    warnings.push(`Cardio ${Math.round(cTot)}/${target} min planned (${short} short)` + (capacity < target - 5
-      ? `: this week fits ~${capacity} cardio min alongside lifting. Use "Make room" or add a cardio day / more minutes to reach ${target}.`
-      : sPlan ? '. Re-plan the week to rebalance auto days.' : '. Plan the week to fill it.'));
+    // Only point at "Make room" when the availability template really can hold more — once it has
+    // been applied there is nothing left for that button to do, and the honest advice is to add a day.
+    const room = capacity < target - cardioTolerance(target) ? safeRoom(profile, target) : null;
+    warnings.push(`Cardio ${Math.round(cTot)}/${target} min planned (${short} short)` + (!room
+      ? (sPlan ? '. Re-plan the week to rebalance auto days.' : '. Plan the week to fill it.')
+      : `: this week fits ~${capacity} cardio min alongside lifting. ${room.changes.length
+        ? `Use "Make room"${room.enough ? '' : ` (it reaches ~${room.after})`} or add a cardio day / more minutes to reach ${target}.`
+        : `Add a cardio day or more minutes in Availability to reach ${target}.`}`));
   }
 
   // Score: priority-weighted TARGET attainment per unit (80%; a missed minimum or an over-max unit

@@ -391,57 +391,84 @@ export function suggestFinisher(profile, sessions = [], { now = new Date(), minu
 const CHIPS = [15, 20, 30, 45, 60, 75, 90];
 const DAY_NAME = { mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun' };
 const nextChip = m => CHIPS.find(c => c > m) ?? null;
+// "Close enough" for a weekly cardio target, shared by every screen and by the planner so Plan's
+// capacity banner, the Make-room proposal and weekPlanSummary's shortfall warning never disagree
+// about whether the target fits (§18: one source of truth).
+export function cardioTolerance(target) { return Math.max(10, (Number(target) || 0) * 0.1); }
 // Concrete availability changes that let the week hold `target` cardio minutes, least disruptive
-// first: lengthen cardio days (≤60′ weekdays, ≤90′ weekends), flex → cardio, lengthen again, a
-// short easy cardio on a rest day (≤20′ if it's the only rest day, so it stays active recovery),
-// then +1 step on lift days (bigger finishers). → { target, before, after, enough, changes:[{ day,
-// from, to, gain, label }], schedule } (schedule = the full new availability; unchanged days kept).
+// first: lengthen cardio days (≤60′ weekdays, ≤90′ weekends), flex → cardio, easy cardio on a rest
+// day (sized to what is still missing, same day caps), then +1 step on lift days (bigger finishers,
+// 'finishers' style only). After any accepted change it restarts at the gentlest step and it runs
+// to a FIXED POINT: whatever this proposal can ever deliver, one "Apply" delivers, and re-running it
+// on the proposed schedule finds nothing more (so the Plan banner can stop offering the button).
+// → { target, before, after, enough, short, changes:[{ day, from, to, gain, label }], schedule }
+// (schedule = the full new availability; unchanged days kept).
 export function makeRoomProposal(profile, target = cardioPrefs(profile).minPerWeek) {
   const sch = normSchedule(profile?.schedule);
   const capOf = sc => cardioCapacity(profile, sc).cardio;
   const before = capOf(sch);
-  const tol = Math.max(10, target * 0.1);
+  const tol = cardioTolerance(target);
   const changes = [];
   const cur = JSON.parse(JSON.stringify(sch));
   const orig = JSON.parse(JSON.stringify(sch));
   let cap = before;
-  const tryMove = (day, slot, label) => {
+  const done = () => target - cap <= tol;
+  const tryMove = (day, slot) => {
     const next = { ...cur, [day]: slot };
     const c = capOf(next);
     if (c <= cap) return false;
-    changes.push({ day, from: orig[day], to: slot, gain: c - cap, label });
+    changes.push({ day, from: orig[day], to: slot, gain: c - cap, label: '' });
     cur[day] = slot; cap = c; return true;
   };
   const weekend = d => d === 'sat' || d === 'sun';
-  const extendCardio = () => {
-    let moved = true;
-    while (moved && target - cap > tol) {
-      moved = false;
-      for (const d of DAYS) {
-        if (target - cap <= tol) break;
-        const x = cur[d]; if (x.kind !== 'cardio') continue;
-        const n = nextChip(x.minutes); if (!n || n > (weekend(d) ? 90 : 60)) continue;
-        if (tryMove(d, { ...x, minutes: n }, '')) moved = true;
-      }
-    }
-  };
-  extendCardio();
-  for (const d of DAYS) { if (target - cap <= tol) break; const x = cur[d]; if (x.kind === 'flex' && x.minutes >= 20) tryMove(d, { ...x, kind: 'cardio' }, ''); }
-  extendCardio();
+  const dayCap = d => (weekend(d) ? 90 : 60);
   const cp = cardioPrefs(profile);
-  const rests = DAYS.filter(d => cur[d].kind === 'rest');
-  for (const d of [...rests].reverse()) {
-    if (target - cap <= tol) break;
-    const lo = cp.style === 'finishers' ? 20 : Math.max(20, cp.minSession);
-    const m = rests.length <= 1 ? lo : Math.min(60, Math.max(lo, round5(target - cap)));
-    tryMove(d, { kind: 'cardio', minutes: CHIPS.find(c => c >= m) || m, location: cur[d].location || 'home' }, '');
-  }
-  for (const d of DAYS) {
-    if (target - cap <= tol || cp.style !== 'finishers') break;   // 'longer'/'balanced': no finisher-only fixes
-    const x = cur[d]; if (x.kind !== 'lift') continue;
-    const n = nextChip(x.minutes); if (!n || n > 75) continue;
-    tryMove(d, { ...x, minutes: n }, '');
-  }
+  const easyMin = cp.style === 'finishers' ? 20 : Math.max(20, cp.minSession);
+  // 1. lengthen a cardio day by one chip
+  const extendCardio = () => {
+    for (const d of DAYS) {
+      if (done()) return false;
+      const x = cur[d]; if (x.kind !== 'cardio') continue;
+      const n = nextChip(x.minutes); if (!n || n > dayCap(d)) continue;
+      if (tryMove(d, { ...x, minutes: n })) return true;
+    }
+    return false;
+  };
+  // 2. a flex day becomes a cardio day (it gives up a possible lift or class)
+  const flexToCardio = () => {
+    for (const d of DAYS) {
+      if (done()) return false;
+      const x = cur[d]; if (x.kind !== 'flex' || x.minutes < 20) continue;
+      if (tryMove(d, { ...x, kind: 'cardio' })) return true;
+    }
+    return false;
+  };
+  // 3. a rest day becomes easy cardio, sized to what is still missing (never past the day cap, so a
+  //    small gap still gets a short active-recovery session and only a big one gets a long day)
+  const restToCardio = () => {
+    for (const d of [...DAYS].reverse()) {
+      if (done()) return false;
+      if (cur[d].kind !== 'rest') continue;
+      const m = Math.min(dayCap(d), Math.max(easyMin, round5(target - cap)));
+      if (tryMove(d, { kind: 'cardio', minutes: CHIPS.find(c => c >= m) || m, location: cur[d].location || 'home' })) return true;
+    }
+    return false;
+  };
+  // 4. 'longer'/'balanced': no finisher-only fixes. 'finishers': a longer lift day carries a longer one.
+  const liftFinishers = () => {
+    if (cp.style !== 'finishers') return false;
+    for (const d of DAYS) {
+      if (done()) return false;
+      const x = cur[d]; if (x.kind !== 'lift') continue;
+      const n = nextChip(x.minutes); if (!n || n > 75) continue;
+      if (tryMove(d, { ...x, minutes: n })) return true;
+    }
+    return false;
+  };
+  const steps = [extendCardio, flexToCardio, restToCardio, liftFinishers];
+  // Capacity rises strictly on every accepted move and is bounded, so this terminates; the guard is
+  // only belt-and-braces. Restarting at `steps[0]` after each move keeps least-disruptive-first.
+  for (let i = 0; i < 200 && !done(); i++) if (!steps.some(step => step())) break;
   // Merge repeated moves on the same day into one from→to line.
   const merged = [];
   for (const c of changes) {

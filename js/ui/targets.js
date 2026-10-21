@@ -9,7 +9,7 @@
 //   ("Why these numbers?"), openVolumeRoomSheet(ctx, short), openExtendSheet(ctx, { extended, onApply }),
 //   extendedToast(list), REPLAN_DAYS, ensureTargetStyles(). Styles are injected
 //   at runtime (a <style id="tg-css">) because INTEGRATOR owns no CSS file.
-import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, volumeRoomOptions, unitTargets, maxNote, starredUnits, STAR_LEGEND, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY, GOAL_INFO, GOAL_ORDER, LOSS_RATES, LEAN_PROTECTION, LEAN_PROTECTION_INFO, VOLUME_FLOORS, FLOOR_INFO, FLOOR_EVIDENCE } from '../engine/targets.js';
+import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, cardioTolerance, volumeRoomOptions, unitTargets, maxNote, starredUnits, STAR_LEGEND, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY, GOAL_INFO, GOAL_ORDER, LOSS_RATES, LEAN_PROTECTION, LEAN_PROTECTION_INFO, VOLUME_FLOORS, FLOOR_INFO, FLOOR_EVIDENCE } from '../engine/targets.js';
 import { planRange } from '../engine/planner.js';
 import { resolveStyle } from '../engine/generator.js';
 import { explainWeek } from '../engine/planner.js';
@@ -167,15 +167,21 @@ export function setTargets(ctx, patch, { replan = true, reason, quiet = false } 
 }
 
 // ---------------------------------------------------------------- capacity warning + "Make room"
-// Warning line for this week when the cardio target doesn't fit, with a Make room button when
-// the availability template can be changed to hold it. '' when it fits.
+// Warning line for this week when the cardio target doesn't fit, with a Make room button ONLY when
+// changing the availability template would actually add capacity (makeRoomProposal runs to a fixed
+// point, so once it has been applied there is nothing left to offer and the line says what to do by
+// hand instead — a button that re-offers the same already-applied change is a bug). '' when it fits,
+// using the same tolerance as the planner's shortfall warning so the two screens never disagree.
 export function makeRoomHTML(ctx, { cls = 'tg-warnp' } = {}) {
   const p = ctx.store.getProfile();
   const w = cardioWeek(p, safe(() => ctx.store.getSessions(), []), { now: new Date() });
-  if (!w.target || w.capacity >= w.target - 5) return '';
+  if (!w.target || w.capacity >= w.target - cardioTolerance(w.target)) return '';
   const prop = safe(() => makeRoomProposal(p), null);
   const can = prop && prop.changes.length;
-  return `<div class="${cls} tg-roomline"><span>⚠︎ This week fits ~${w.capacity} cardio min alongside lifting, ${w.target - w.capacity} short of ${w.target}.${can ? '' : ' Add a cardio day or more minutes in Availability.'}</span>${can ? '<button type="button" class="btn btn-sm tg-room" data-tg-room>Make room</button>' : ''}</div>`;
+  // Say up front how far "Make room" gets, so nobody applies it expecting the full target.
+  const tail = !can ? ' Add a cardio day or more minutes in Availability.'
+    : prop.enough ? '' : ` The most your availability can hold is ~${prop.after}.`;
+  return `<div class="${cls} tg-roomline"><span>⚠︎ This week fits ~${w.capacity} cardio min alongside lifting, ${w.target - w.capacity} short of ${w.target}.${tail}</span>${can ? `<button type="button" class="btn btn-sm tg-room" data-tg-room>Make room${prop.enough ? '' : ` (+${prop.after - prop.before})`}</button>` : ''}</div>`;
 }
 export function bindMakeRoom(root, ctx) {
   root.querySelectorAll('[data-tg-room]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); openMakeRoomSheet(ctx); }));
@@ -186,12 +192,13 @@ export function openMakeRoomSheet(ctx) {
   const p = ctx.store.getProfile();
   const prop = makeRoomProposal(p);
   if (!prop.changes.length) { toast(ctx, 'No availability change found. Add a cardio day in Availability.'); return; }
-  const html = `<div class="tg-sheet"><h2>Make room for ${prop.target} min of cardio</h2>
-    <p class="muted small">A typical week of your availability holds ~${prop.before} cardio min alongside lifting (this week: ~${safe(() => cardioWeek(p, ctx.store.getSessions(), { now: new Date() }).capacity, prop.before)}). These changes take it to ~${prop.after}${prop.enough ? '' : `, still ${prop.short} short. Add another day for the rest`}.</p>
+  const restGone = !Object.values(prop.schedule).some(d => d.kind === 'rest') && prop.changes.some(c => c.from.kind === 'rest');
+  const html = `<div class="tg-sheet"><h2>${prop.enough ? `Make room for ${prop.target} min of cardio` : `The most room there is: ~${prop.after} of ${prop.target} min`}</h2>
+    <p class="muted small">A typical week of your availability holds ~${prop.before} cardio min alongside lifting (this week: ~${safe(() => cardioWeek(p, ctx.store.getSessions(), { now: new Date() }).capacity, prop.before)}). These changes take it to ~${prop.after}${prop.enough ? '' : `, still ${prop.short} short — nothing else in this week can be moved, so add a day or more minutes in Availability for the rest`}.</p>
     <div class="list mt">${prop.changes.map(c => `<div class="list-item tg-diff"><div class="grow"><div class="t">${esc(c.label)}</div>
       <div class="s"><span class="tg-from">${esc(slotTxt(c.from))}</span> → <b>${esc(slotTxt(c.to))}</b> · +${c.gain} cardio min</div></div></div>`).join('')}</div>
-    <p class="tiny muted mt">Lift days keep their lifting; flex days turned to cardio give up a possible lift or class. Custom planned days stay as they are.</p>
-    <div class="sheet-actions"><button type="button" class="btn btn-primary btn-block" data-room-apply>Apply and re-plan</button>
+    <p class="tiny muted mt">Lift days keep their lifting; flex days turned to cardio give up a possible lift or class. Custom planned days stay as they are.${restGone ? ' This leaves no full rest day — the easy cardio day is the recovery day.' : ''}</p>
+    <div class="sheet-actions"><button type="button" class="btn btn-primary btn-block" data-room-apply>Apply and re-plan${prop.enough ? '' : ` (still ${prop.short} short)`}</button>
     <button type="button" class="btn btn-ghost btn-block" data-room-cancel>Cancel</button></div></div>`;
   ctx.openSheet(html, (el, close) => {
     el.querySelector('[data-room-cancel]').onclick = () => close();

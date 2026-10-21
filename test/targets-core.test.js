@@ -213,9 +213,36 @@ test('makeRoomProposal: concrete availability changes that fit 225 on the defaul
   const out = planRange({ from: MON, days: 7, profile: q, sessions: [], now: NOW, seed: 5 });
   const sum = weekPlanSummary(out, { weekStart: parseDs(MON), profile: q, now: NOW });
   assert.ok(Math.abs(sum.cardioMinutes.planned - 225) <= 225 * 0.15, `planned ${sum.cardioMinutes.planned}`);
-  const hi = makeRoomProposal(prof({ cardioTargetMin: 300 }));
+  // A target the week genuinely cannot hold is reported honestly rather than half-applied.
+  const hi = makeRoomProposal(prof({ cardioTargetMin: 600 }));
   assert.equal(hi.enough, false); assert.ok(hi.short > 0 && hi.changes.length >= 3);
   assert.equal(makeRoomProposal(prof({ cardioTargetMin: 90 })).changes.length, 0);
+});
+
+// One "Apply" must deliver everything the proposal can ever deliver: re-running it on the schedule
+// it just proposed has to find nothing new, otherwise Plan keeps re-offering the same button and a
+// second click silently gives more than the first (the C1k/C1l defect).
+test('makeRoomProposal reaches a fixed point: applying it twice changes nothing', () => {
+  for (const style of ['longer', 'balanced', 'finishers']) {
+    for (const target of [90, 150, 225, 300, 600]) {
+      const p = { ...defaultProfile(), bodyweight: 170, cardio: { style }, cardioTargetMin: target };
+      const r = makeRoomProposal(p);
+      const again = makeRoomProposal({ ...p, schedule: r.schedule });
+      assert.equal(again.changes.length, 0, `${style} @${target}: ${r.after} then +${again.after - r.after} (${again.changes.map(c => c.label).join(', ')})`);
+      assert.equal(again.before, r.after, `${style} @${target}: proposal's "after" must be the new capacity`);
+      assert.equal(r.after, cardioCapacity(p, r.schedule).cardio);
+      assert.ok(r.enough === (r.after >= target - Math.max(10, target * 0.1)), `${style} @${target}: enough must mean "within tolerance"`);
+    }
+  }
+  // The default schedule + the default 'longer' style can hold 225 with the lift days untouched.
+  const p = { ...defaultProfile(), bodyweight: 170, cardioTargetMin: 225 };
+  const r = makeRoomProposal(p);
+  assert.ok(r.enough && r.after >= 225, `${r.after}/${225}`);
+  assert.deepEqual(['mon', 'tue', 'thu', 'fri'].map(d => r.schedule[d]), ['mon', 'tue', 'thu', 'fri'].map(d => p.schedule[d]), 'lift days keep their lifting');
+  const q = { ...p, schedule: r.schedule };
+  const sum = weekPlanSummary(planRange({ from: MON, days: 7, profile: q, sessions: [], now: NOW, seed: 5 }), { weekStart: parseDs(MON), profile: q, now: NOW });
+  assert.ok(Math.abs(sum.cardioMinutes.planned - 225) <= 225 * 0.15, `planned ${sum.cardioMinutes.planned}`);
+  assert.ok(!sum.warnings.some(w => /^Cardio \d+\/225/.test(w)), sum.warnings.join(' | '));
 });
 
 test('weekCardioCapacity counts a planned class day by its class cardio, matching planned minutes', () => {
