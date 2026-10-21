@@ -4,11 +4,16 @@
 // Model in one paragraph: each simulated week we recompute maintenance (Katch-McArdle BMR on the
 // current lean mass × activity, plus exercise calories), compare it with intake, and let the body
 // adapt (extra food partly burned off by digestion + fidgeting/NEAT, a deficit partly offset by
-// adaptive thermogenesis). Muscle growth has a CEILING set by training age × volume × protein ×
-// cardio interference × how close you are to your genetic limit (FFMI) × supplements/therapies.
-// How much of that ceiling you actually reach depends on energy availability (a deficit cuts it, a
-// modest surplus maxes it out, more surplus adds nothing). Building a lb of lean tissue costs
-// ~1,250 kcal; whatever energy is left over (or missing) is stored (or taken) as fat at ~3,500 kcal/lb.
+// adaptive thermogenesis). Muscle growth has a CEILING, computed PER MUSCLE GROUP, set by training age ×
+// that group's own weekly sets × protein × cardio interference × how close THAT GROUP is to its share of
+// the genetic limit (FFMI) × supplements/therapies. How much of that ceiling you actually reach depends on
+// energy availability (a deficit cuts it, a modest surplus maxes it out, more surplus adds nothing).
+// Building a lb of lean tissue costs ~1,250 kcal; whatever energy is left over (or missing) is stored (or
+// taken) as fat at ~3,500 kcal/lb. In a deficit lean is also LOST per group, in proportion to how little
+// each group is trained, so a muscle at maintenance volume holds and a neglected one shrinks.
+//
+// EVERY response curve is sourced: each has a DOI in its comment or the word ASSUMPTION. The full audit,
+// with effect sizes and uncertainties, is docs/research/growth-model.md; the contract is CONTRACT §25.
 //
 // CONTRACT-NOTE: project() returns these extras beyond the contract shape:
 //   series[i].week (0..weeks), series[i].shape (every site filled + heightIn [+ lengths: the measured
@@ -16,7 +21,10 @@
 //     point, omitted when none are measured; not used by the model math]: measured sites are
 //     projected from the tape, unmeasured ones are rough population estimates listed in
 //     result.shapeEstimated), series[i].muscle { chest, delts, lats, arms, abs, quads, calves, traps }
-//     (0..1 development scores for the 3D model; ~0.5 = FFMI ≈ 19.5), series[i].ffmi (normalized),
+//     (0..1 development scores for the 3D model; ~0.5 = FFMI ≈ 19.5),
+//     series[i].muscleLb (lean lb gained per TRAINING group, keys = GROUP_ORDER) and
+//     series[i].musclePct (§25.4: the same thing as a PERCENT of that group's own starting mass — the
+//     user-visible headline, because pounds hide emphasis in small muscles), series[i].ffmi (normalized),
 //     series[i].waterLb (non-tissue scale weight vs today from the supplement stack; included in
 //     weightLb, never in lean/fat; bodyFatPct = fat / (lean + fat)), series[i].limbs (L/R sides when
 //     measured, moved by the same amount as the averaged site), series[i].ratios, low/high also carry
@@ -25,6 +33,9 @@
 //     balance, liftSets, groupSets, cardioMin, leanGain, leanCeiling, fatChange, source }] }
 //   summary: { weeks, endDate, weightLb, fatLb, leanLb, bodyFatPct, waist, waterLb, leanCeilingLb,
 //     ceilingUsedPct, leanShare } = end-minus-start deltas (+ horizon totals of the lean model)
+//   muscleGain: [{ group, setsPerWeek, response, baseLb, gainLb, pct, roomLb, roomPct }] sorted
+//     most-grown first (§25.4); room* = distance to that group's OWN share of the ceiling.
+//   muscleBaseLb: { group: lb } each group's starting muscle mass (the denominator of musclePct).
 //   energy: { intakeSource:'arg'|'nutrition'|'goal', intakeMode:'calories'|'surplus'|'nutrition'|'goal',
 //     intakeStart, tdeeStart, tdeeFormula, surplusStart, goal, proteinGPerLb, proteinAssumed, fatPct,
 //     cardioDeltaMin, cardioModality, cardioIntensity }
@@ -103,14 +114,35 @@ const ESSENTIAL_BF = { male: BODY.male.essentialBf, female: BODY.female.essentia
 // Max lean gain, % bodyweight per month, by months of consistent training. Anchors sit at the conservative end of
 // the Aragon guideline (year 1 ≈ 1-1.5 %, year 2 ≈ 0.5-1 %, year 3+ ≈ 0.25-0.5 %) and the McDonald model (≈ 20-25,
 // 10-12, 5-6, then 2-3 lb of muscle per year), averaging ≈ 1.07 / 0.69 / 0.44 / 0.27 / 0.18 % in years 1-5.
-// Interpolated linearly; past 10 years it keeps decaying exponentially. These are guideline models, not measured
-// curves: individual rates differ by ±30-50 % (the band carries that).
+// Interpolated linearly; past 10 years it keeps decaying exponentially.
+// LABEL: ASSUMPTION / HEURISTIC. These two rate tables are grey literature (coaching guidelines), not
+// meta-analysed curves, and no primary dose-response of lean gain against training age exists. They are the
+// one place in the model with no peer-reviewed source, so two things keep them honest:
+//  1. This is a CEILING, not a prediction. What the user sees is the ceiling × energy × protein × volume ×
+//     cardio × age × FFMI factors, and that product is what should be compared with measured data.
+//  2. Cross-check against measurement. There is no meta-analysis of lean gain BY TRAINING AGE to fit to;
+//     the closest useful anchors are the magnitudes seen in trials. Morton 2018
+//     (doi:10.1136/bjsports-2017-097608) reports the EFFECT OF SUPPLEMENTATION (+0.30 kg FFM, 95 % CI
+//     0.09-0.52) rather than total gain, so it does not pin the rate; what it does pin is that total
+//     gains in 6-12 week trials are of order 1-2 kg, i.e. roughly 0.5-1 %BW/month for novices and far
+//     less for trained lifters. test/growth-curves.test.js asserts Forge's REALISED rate lands in that
+//     band for a novice and collapses for a veteran, and that the ceiling sits well above the realised
+//     number — which is what a ceiling should do.
+//  3. This is the weakest constant in the model. It is why lmSpread is ±30-50 %, and it is the first thing
+//     real measurements should override: Forge recalibrates maintenance from the food log and weight
+//     trend already, and the band narrows as data arrives.
+// Individual rates differ by ±30-50 % (the confidence band carries that: lmSpread in project()).
 const LEAN_RATE_ANCHORS = [[0, 1.25], [6, 1.1], [12, 0.85], [18, 0.68], [24, 0.55], [36, 0.33], [48, 0.21], [60, 0.15], [84, 0.1], [120, 0.065]];
 const LEAN_RATE_TAIL_TAU = 72;   // months, decay beyond the last anchor
 const TA_FULL_RESP = 0.5;        // weekly whole-body set response that counts as a full month of "training age"
-// Genetic ceiling (normalized FFMI, DXA scale). Kouri et al. 1995 (Clin J Sport Med): drug-free athletes rarely exceeded ≈25
-// with skinfold body fat, which reads ~3 points low vs DXA in lean men → ≈24.2 on the DXA scale (estimate; sex.js BODY.male).
-// Individual ceilings vary (±≈1.5 here). Gains slow smoothly over the last 4 FFMI points and stop at the ceiling.
+// Genetic ceiling (normalized FFMI, DXA scale). Kouri, Pope, Katz & Oliva 1995 (Clin J Sport Med 5:223-228,
+// PMID 7496846): among 157 drug-free athletes the normalized FFMI distribution effectively stopped at ≈25, with users
+// averaging ≈3 points higher. That 25 came from SKINFOLD body fat, which reads ~3 points low vs DXA in lean men →
+// ≈24.2 on the DXA scale (ESTIMATE; the conversion is Forge's, see §20b and sex.js BODY.male).
+// Individual ceilings vary (±≈1.5 here — ASSUMPTION, used as the band's ceiling uncertainty).
+// Gains slow smoothly over the last FFMI_SOFT_SPAN = 4 points and stop at the ceiling (ASSUMPTION: nothing measures
+// the shape of the approach; the only hard constraint is that lean mass must approach the limit asymptotically and
+// never cross it). §11: since 2026-10-21 this binds PER MUSCLE GROUP, not on whole-body FFMI — see simulate().
 export const FFMI_NATURAL_CEILING = BODY.male.ffmiCeiling;
 const FFMI_CEIL_SD = 1.5, FFMI_SOFT_SPAN = 4;
 // Supraphysiologic testosterone raises the reachable FFMI (Kouri: users averaged ≈3 points higher, up to ≈32).
@@ -132,21 +164,63 @@ const DEFENDED_BF = { male: BODY.male.defendedBf, female: BODY.female.defendedBf
 const ENERGY_ERR_TAU = 26, ENERGY_ERR_RESID = 0.35;
 // Energy availability → fraction of the ceiling realised. Maintenance ≈ 70 %; a surplus saturates
 // it quickly (≈ 93 % at +250, ≈ 98 % at +500); a deficit decays it (≈ 43 % at −300, ≈ 13 % at −1000).
+// The fast saturation is the core "more food past a point is only fat" claim, and it has a direct test:
+// Garthe, Raastad, Refsnes & Sundgot-Borgen 2013 (Eur J Sport Sci 13:295-303,
+// doi:10.1080/17461391.2011.643923) randomised 39 elite athletes, all adding 4 strength sessions/week for
+// 8-12 weeks, to a counselled surplus (3585 ± 601 kcal/day) or ad libitum (2964 ± 884). Bodyweight rose
+// 3.9 % vs 1.5 % and FAT MASS rose 15 % vs 3 %, but "gain in LBM was not different between groups" — a
+// ~620 kcal/day difference bought zero extra lean mass and a lot of fat. energyFactor is ≈ 0.93 at +250 and
+// ≈ 0.98 at +500, so the model reproduces that: the extra food lands in dF, not in gain.
+// Deficit side: Murphy & Koehler 2022 (doi:10.1111/sms.14075) and the recomp literature set the shape.
+// ASSUMPTION: EF_MAINT = 0.7 (what you get eating at maintenance) and the two time constants are
+// calibration to those endpoints, not fitted to a dose-response dataset.
 const EF_MAINT = 0.7, EF_TAU_SURPLUS = 180, EF_TAU_DEFICIT = 600;
-// Protein (g per lb bodyweight) → fraction of the ceiling. Morton 2018: plateau ≈ 1.6 g/kg
-// (0.73 g/lb), upper CI ≈ 2.2 g/kg (1.0 g/lb). No benefit above 1.0 g/lb.
+// Protein (g per lb bodyweight) → fraction of the ceiling, for GROWTH. Morton et al. 2018 (Br J Sports Med
+// 52:376-384, doi:10.1136/bjsports-2017-097608), 49 RCTs / 1,863 participants, two-phase break-point
+// analysis: "protein supplementation beyond total protein intakes of 1.62 g/kg/day resulted in no further
+// RET-induced gains in FFM" (95 % CI 1.03-2.20 g/kg). 1.62 g/kg = 0.74 g/lb, upper CI 2.20 = 1.00 g/lb.
+// The curve therefore reaches ≈ 0.94 at the point estimate and 1.0 at the upper CI, and pays nothing above.
+// Morton also found the benefit shrinks with age and is LARGER in resistance-trained people (+0.75 kg).
+// ASSUMPTION: everything below 0.55 g/lb is extrapolation — Morton's control arms averaged ~1.2 g/kg, so
+// there is no trial data on trainees eating 0.3-0.5 g/lb; the 0.40 floor is a judgement call.
 const PROTEIN_ANCHORS = [[0.3, 0.4], [0.4, 0.5], [0.55, 0.74], [0.7, 0.92], [0.8, 0.97], [1.0, 1.0]];
 const PROTEIN_ASSUMED = 0.8;     // g/lb assumed when protein is not tracked
 // Surplus: the extra food is partly burned (thermic effect ~10 % immediately, NEAT/metabolic rise
-// ~42 % phased in over 2 weeks, capped). Levine 1999: on average about half of +1,000 kcal/day.
+// ~42 % phased in over 2 weeks, capped). Levine, Eberhardt & Jensen 1999 (Science 283:212-214,
+// doi:10.1126/science.283.5399.212) overfed 16 non-obese volunteers by 1,000 kcal/day for 8 weeks: total
+// daily energy expenditure rose ≈ 531 kcal/day, two thirds of it non-exercise activity thermogenesis
+// (fidgeting, posture, daily movement). TEF_FRAC + SURPLUS_ADAPT_FRAC = 0.52, i.e. ≈ 520 of 1,000 kcal
+// dissipated — Levine's mean. The between-person SD was ±257 kcal/day and NEAT response explained a
+// TEN-FOLD spread in fat storage (r = 0.77, p < 0.001), which is why the projection band is wide.
+// ASSUMPTION: the 2-week ramp and the 450 kcal cap are shape choices; Levine measured one dose, not a curve.
 const TEF_FRAC = 0.10, SURPLUS_ADAPT_FRAC = 0.42, SURPLUS_ADAPT_CAP = 450, SURPLUS_RAMP_WEEKS = 2;
 // Deficit: less food → less thermic effect; adaptive thermogenesis 10 % of the deficit (4-week
 // ramp) + 10 kcal/day per lb lost, capped.
 const AT_DEFICIT_FRAC = 0.1, AT_PER_LB_LOST = 10, AT_CAP = 200, AT_RAMP_WEEKS = 4;
-// Cardio interference (Wilson 2012): effective minutes = minutes × impact weight × intensity weight.
-// Above 150 effective min/week the lean ceiling drops 4 % per extra 100 min, capped at 20 %.
-const INTERF_FREE_MIN = 150, INTERF_PER_100 = 0.04, INTERF_CAP = 0.2;
-const IMPACT_W = { high: 1.6, low: 1 };
+// ---- Cardio interference (revalidated 2026-10-21; the effect SHRANK, see docs/research/growth-model.md §7)
+// Effective minutes = minutes × impact weight × intensity weight; above INTERF_FREE_MIN the lean ceiling
+// drops INTERF_PER_100 per extra 100 effective min, capped at INTERF_CAP.
+// The best current evidence says concurrent training does NOT cost hypertrophy at ordinary doses. Schumann
+// et al. 2022 (Sports Med 52:601, doi:10.1007/s40279-021-01587-7) meta-analysed 43 trials that ran identical
+// resistance programmes with and without aerobic training: muscle hypertrophy SMD −0.01 (95% CI −0.16 to
+// 0.18, p = 0.919) and maximal strength −0.06 (ns). Only EXPLOSIVE strength suffered (−0.28), worst when both
+// were done in one session. Cycling vs running did not moderate any outcome (p > 0.05).
+// The older Wilson et al. 2012 meta-analysis (J Strength Cond Res 26:2293, doi:10.1519/JSC.0b013e31823a3e2d,
+// 21 studies) is where the big numbers came from: hypertrophy ES 1.23 (lifting alone) vs 0.85 (concurrent),
+// decrements significant with RUNNING but not cycling, and correlated with endurance duration (r −0.29 to
+// −0.75) and frequency (r −0.26 to −0.35).
+// Forge's reading: the duration correlation is the part both analyses can live with, and Schumann's trials
+// sit at low aerobic volumes (typically 2-3 × 20-40 min/week), so the honest model is NO interference through
+// the range Schumann covers and a small residual that only appears at endurance-athlete volumes. Numbers
+// went 150 → 250 free min, 4 %/100 min → 2.5 %, cap 20 % → 12 %, running weight 1.6 → 1.25.
+// Two further reasons to keep it small: (a) cardio's ENERGY cost is already modelled (it lowers the balance,
+// which lowers energyFactor), so a large interference term double-counts it; (b) a former 2:30 marathoner's
+// weekly volume is outside every one of these trials. ASSUMPTION: the free threshold, the slope and the cap
+// are a judgement call between two meta-analyses, not a measured curve.
+const INTERF_FREE_MIN = 250, INTERF_PER_100 = 0.025, INTERF_CAP = 0.12;
+// Running/impact weight: Wilson 2012 found decrements with running and not cycling; Schumann 2022 found no
+// modality effect. 1.25 splits them (was 1.6, i.e. Wilson alone). ASSUMPTION.
+const IMPACT_W = { high: 1.25, low: 1 };
 const INTENSITY_W = { easy: 0.8, moderate: 1, hard: 1.25, intervals: 1.25 };
 const HIGH_IMPACT_CLASSES = new Set(['hiit', 'boxing', 'cardio_dance']);
 // §23: 'cut' = get lean, keep muscle. 'weight_loss' = get smaller, lean mass allowed to follow; its intake is
@@ -179,6 +253,12 @@ const PROTEIN_RETAIN_ANCHORS = [[0.3, 0.28], [0.45, 0.52], [0.6, 0.70], [0.8, 0.
 // A deficit past this stopped lifters gaining lean mass at all (Murphy & Koehler 2022, Scand J Med Sci Sports
 // 32:125, doi:10.1111/sms.14075, meta-regression); strength gains largely survived (ES -0.31, p = 0.28).
 const LEAN_GAIN_DEFICIT_LIMIT = 500;
+// §11/§23: the nutrition lab's recommended band under a FAT-LOSS goal, as % of bodyweight lost per week.
+// Garthe 2011 (doi:10.1123/ijsnem.21.2.97) demonstrated 0.7 %/week keeps (and adds) lean mass while the
+// faster arm's realised 1.0 %/week loses it, for the same total weight change — so 1.0 is the top of the
+// band. The 0.5 floor is an ASSUMPTION: below it the deficit is small enough that adherence, not
+// physiology, decides, and the fat loss is slower than anyone wants for no extra lean retention.
+const LOSS_BAND_PCT = [0.5, 1.0];
 const TEMPLATE_HISTORY_DAYS = 28;
 const CALIB_WEIGHT = { low: 0.4, medium: 0.7, high: 0.9 };
 
@@ -200,13 +280,48 @@ const SMM_SUM_F = Object.values(SMM_SHARE_RAW_FEMALE).reduce((a, b) => a + b, 0)
 export const FEMALE_MUSCLE_SHARE = Object.fromEntries(GROUP_ORDER.map(g => [g, (SMM_SHARE_RAW_FEMALE[g] || 0) / SMM_SUM_F]));
 const LEG_GROUPS = new Set(['glutes', 'quads', 'hamstrings', 'calves']);
 const SMM_FRAC_OF_LEAN = 0.55;   // skeletal muscle ≈ 55 % of lean mass in men (rest: organs, bone, water)
-// Weekly fractional sets → stimulus, normalized so 10 sets = 1.0. A fast component (the first few sets
-// do most of the work) + a slow one (more volume keeps helping, with diminishing returns, plateau ≈ 1.36).
-// Calibrated to Schoenfeld, Ogborn & Krieger 2017 (<5, 5-9, 10+ sets/wk ≈ 5.4, 6.6, 9.8 % growth;
-// ≈ 0.37 %/set) and Pelland 2024 (smaller but continued gains to 20-30+ sets; no decline modelled).
-const R_FAST = 0.537, R_FAST_K = 2, R_SLOW = 0.826, R_SLOW_K = 12;
-const rRaw = S => R_FAST * (1 - Math.exp(-S / R_FAST_K)) + R_SLOW * (1 - Math.exp(-S / R_SLOW_K));
+// ---- Weekly FRACTIONAL sets for one muscle group → hypertrophy stimulus, normalized so 10 sets = 1.0.
+// Revalidated 2026-10-21 against the dose-response meta-analyses; the shape changed from a
+// double-exponential (plateau 1.36) to a SQUARE ROOT (see docs/research/growth-model.md §1).
+// Pelland, Remmert, Robinson, Hinson & Zourdos 2025 (Sports Med 56:481-505,
+// doi:10.1007/s40279-025-02344-w) meta-regressed 67 studies / 2,058 participants over several candidate
+// functional forms and found the SQUARE-ROOT model the best fit for weekly set volume → hypertrophy
+// (marginal slope 0.24 % muscle size per set, 95 % CrI 0.15-0.33, at the mean of 12.25 fractional sets;
+// 100 % posterior probability of a positive slope). It "supports the notion of diminishing returns but not
+// an inverted-U", so the curve rises everywhere and never declines. Their efficiency tiers: 4 sets is the
+// minimum effective dose, 5-10 "higher efficiency", 11-18 "intermediate", 19-29 "lower", 30-42 "lowest",
+// and 43+ "unclear … or potentially less hypertrophy" for want of data.
+// Their 'fractional' quantification (indirect sets counted at a fraction of a set) beat both 'total' and
+// 'direct' (2×log BF = 9.48 and 10.29) — and it is exactly what Forge feeds in: recovery.sessionVolume
+// credits each group by the exercise's own muscle weight (0.25-1.0 per set), so the units match.
+// Corroboration: Schoenfeld, Ogborn & Krieger 2017 (J Sports Sci 35:1073,
+// doi:10.1080/02640414.2016.1210197) ≈ 0.37 % growth per added set, graded dose-response; Currier et al.
+// 2023 (Br J Sports Med 57:1211, doi:10.1136/bjsports-2023-106807, 119 hypertrophy trials, n = 3364)
+// multiset beat single-set and everything above that was statistically indistinguishable; Baz-Valle et al.
+// 2022 (J Hum Kinet 81:199, doi:10.2478/hukin-2022-0017) found 12-20 vs 20+ sets indistinguishable for
+// quadriceps and biceps (triceps favoured 20+) — i.e. the high end is noisy, not negative.
+// Forge follows √S exactly up to R_KNEE fractional sets (which covers Pelland's data and their top three
+// efficiency tiers) and then bends smoothly — C¹-continuous at the knee — to an asymptote of
+// √(R_ASYM/10) ≈ 2.45, so the curve cannot grow without bound past the volumes anyone has measured.
+// ASSUMPTION: the knee and the asymptote are not measured; Pelland explicitly says data are too thin past
+// ~25 fractional sets to choose between a continuing rise, a plateau and an inverted-U.
+const R_KNEE = 20, R_ASYM = 60;
+const rRaw = S => Math.sqrt(S <= R_KNEE ? S : R_KNEE + (R_ASYM - R_KNEE) * (1 - Math.exp(-(S - R_KNEE) / (R_ASYM - R_KNEE))));
 const R_NORM = rRaw(10);
+// ---- Keeping a muscle needs FAR less volume than building it.
+// Bickel, Cross & Bamman 2011 (Med Sci Sports Exerc 43:1177, doi:10.1249/MSS.0b013e318207c15d): after 16
+// weeks of resistance training 3 d/wk, 20-35 y adults held all of their myofibre hypertrophy for 32 weeks
+// on ONE NINTH of that dose (one third actually added more); only full detraining reversed it. In the
+// 60-75 y group neither maintenance dose was enough. Spiering, Mujika, Sharp & Foulis 2021 (J Strength
+// Cond Res 35:1449, doi:10.1519/JSC.0000000000003964) reviewed the question and concluded muscle size is
+// held for up to 32 weeks by "1 session of strength training per week and 1 set per exercise" as long as
+// the relative load is kept.
+// One such session gives a group roughly 2-3 fractional weekly sets in Forge's accounting, so protection
+// saturates with τ = 1.2 sets: 57 % at 1 set, 81 % at 2, 92 % at 3, 96 % at 4, ~0 at none.
+// ASSUMPTION: the shape between 0 and 3 sets is interpolation — both sources tested single doses, not a
+// dose-response. Bob is 39, between Bickel's two age groups; the young figure is used, which is the
+// optimistic end.
+const MAINT_TAU = 1.2;
 // Circumference response to muscle gained in the groups under each tape site: Δin = site × 0.5 ×
 // (fraction of the cross-section that is muscle) × relative gain of those muscles.
 const SITE_LEAN = {
@@ -251,6 +366,13 @@ const r1 = x => Math.round(x * 10) / 10;
 const r2 = x => Math.round(x * 100) / 100;
 const sgn = x => (x >= 0 ? '+' : '');
 const toDate = now => (now instanceof Date ? now : now ? new Date(now) : new Date());
+// Linear interpolation on a monotone sampled curve: the x (surplus) where rate() crosses `target`,
+// between rows[i-1] and rows[i]. Used by the nutrition lab's deficit band.
+function interpRate(rows, i, target, rate) {
+  const a = rows[i - 1], c = rows[i];
+  const ra = rate(i - 1), rc = rate(i);
+  return ra !== rc ? a.surplus + (c.surplus - a.surplus) * clamp((target - ra) / (rc - ra), 0, 1) : c.surplus;
+}
 function interp(anchors, x) {
   if (x <= anchors[0][0]) return anchors[0][1];
   for (let i = 1; i < anchors.length; i++) {
@@ -319,8 +441,13 @@ export function lossRateFactor(pctPerWeek) {
   const k = r > LOSS_RATE_REF ? LOSS_RATE_K_UP : LOSS_RATE_K_DOWN;
   return clamp(1 + k * (r - LOSS_RATE_REF), LOSS_RATE_CAP[0], LOSS_RATE_CAP[1]);
 }
-// Weekly fractional sets for one muscle group → stimulus (10 sets = 1.0, plateau ≈ 1.36, 0 sets = 0).
+// Weekly FRACTIONAL sets for one muscle group → growth stimulus. 0 sets = 0, 10 sets = 1.0, √-shaped
+// (Pelland 2025), asymptote ≈ 2.45; monotone increasing, never declining. See R_KNEE above.
 export function setResponse(sets) { const S = Math.max(0, numOr(sets, 0)); return rRaw(S) / R_NORM; }
+// Weekly fractional sets for one muscle group → fraction of the achievable lean-SPARING that group gets in
+// a deficit. Saturates far sooner than setResponse: ~2-3 sets holds a muscle that 12+ sets would grow
+// (Bickel 2011, Spiering 2021 — see MAINT_TAU above). 0 sets = 0: a muscle you never train is not defended.
+export function maintenanceProtection(sets) { return 1 - Math.exp(-Math.max(0, numOr(sets, 0)) / MAINT_TAU); }
 // Legacy whole-body helper (kept for compatibility; the model now works per muscle group).
 export function volumeFactor(groupSets) {
   const ratio = Math.max(0, numOr(groupSets, 0) / GROUP_TARGET_TOTAL);
@@ -337,9 +464,27 @@ export function adaptation(rawBalance, week = 99, lbLost = 0) {
   const d = -raw;
   return -(TEF_FRAC * d + Math.min(AT_CAP, AT_DEFICIT_FRAC * d * Math.min(1, (week + 1) / AT_RAMP_WEEKS) + AT_PER_LB_LOST * Math.max(0, lbLost)));
 }
-// Leaner people put more of a surplus into muscle (Forbes); mild.
+// Leaner people put more of a surplus into muscle and less into fat. DIRECTION from Forbes 1987 (Nutr Rev
+// 45:225, doi:10.1111/j.1753-4887.1987.tb02684.x) and Forbes 2000 (Ann N Y Acad Sci 904:359,
+// doi:10.1111/j.1749-6632.2000.tb06482.x), whose rule makes the lean fraction of a mass change a function
+// of existing fat mass, restated for macroscopic changes by Hall 2007 (Br J Nutr 97:1059,
+// doi:10.1017/S0007114507691946). In Forge's architecture the ceiling is what lean gain is drawn from, so
+// p-ratio enters as a small multiplier on it.
+// ASSUMPTION: the ±1 %/body-fat-point slope, the pivot and the [0.88, 1.06] clamp are calibration, not
+// measurement — Forbes' rule is quantitative for LOSS (where Forge uses it exactly, see pForbes in
+// simulate) but only directional for gain. Deliberately mild: ±6 % across the whole realistic range.
 function bfSurplusFactor(bf, pivot = 21) { return clamp(1 + 0.01 * (pivot - bf), 0.88, 1.06); }
-function carbFactor(carbs) { return !(carbs >= 0) ? 1 : carbs < 100 ? 0.95 : carbs < 150 ? 0.98 : 1; }
+// Carbohydrate, independent of calories and protein, barely matters for hypertrophy — the evidence for an
+// effect is thin, so the effect is small (shrunk 2026-10-21 from 0.95/0.98 to 0.98/0.99).
+// Vargas-Molina et al. 2022 (Int J Environ Res Public Health 19:12629, doi:10.3390/ijerph191912629)
+// meta-analysed 5 trials / 111 resistance-trained participants on KETOGENIC diets (the extreme low-carb
+// case, < 50 g/day) and found NO significant difference in fat-free mass versus control diets, concluding
+// ketogenic diets can build muscle "as long as energy surplus is generated". If even ketosis does not
+// measurably cost FFM at matched calories, a carbohydrate term on the hypertrophy ceiling has no direct
+// support. What remains is indirect: glycogen-depleted sessions lose reps, so less volume actually gets
+// done. ASSUMPTION: this is modelled as a 1-2 % haircut on the ceiling, a proxy for training quality, NOT
+// a claim about carbohydrate and protein synthesis. Carb advice stays in the lab's explanation text.
+function carbFactor(carbs) { return !(carbs >= 0) ? 1 : carbs < 50 ? 0.98 : carbs < 100 ? 0.99 : 1; }
 
 const emptyDay = () => ({ sets: 0, groupSets: 0, groups: {}, cardioMin: 0, cardioKcal: 0, eqMin: 0, kcal: 0, minutes: 0, lift: 0, cardio: 0 });
 function addInto(a, b, f = 1) {
@@ -445,7 +590,7 @@ function emptyResult(missing, missingInfo) {
   return { series: [], milestones: [], weekly: { kcalIn: 0, kcalOut: 0, liftSetsPerWeek: 0, cardioMinPerWeek: 0, setsByGroup: {}, perWeek: [] },
     assumptions: ['No bodyweight logged yet, so nothing can be projected. Log a morning weigh-in to start.'],
     confidence: 'low', summary: null, energy: null, macros: null, partition: null, tdeeCalibration: null, startBodyFat: null,
-    stack: { contributions: [], warnings: [], used: false },
+    stack: { contributions: [], warnings: [], used: false }, muscleGain: [], muscleBaseLb: {},
     missing, missingInfo, shapeEstimated: [], driverSource: 'none', bodyFatAssumed: false };
 }
 
@@ -748,7 +893,10 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   // Set responses per week (the expensive part of the lean model), reused by every simulation of this context.
   const weekResp = weekDrivers.slice(0, W).map(wk => {
     const R = GROUP_ORDER.map(g => setResponse(wk.groups[g] || 0));
-    return { R, respW: GROUP_ORDER.reduce((a, g, i) => a + share[g] * R[i], 0) };
+    // MP: per-group maintenance protection (deficit weeks). Precomputed here so the per-muscle loss
+    // partition costs nothing per simulated week — every scenario run reuses this context.
+    const MP = GROUP_ORDER.map(g => maintenanceProtection(wk.groups[g] || 0));
+    return { R, MP, respW: GROUP_ORDER.reduce((a, g, i) => a + share[g] * R[i], 0) };
   });
 
   return {
@@ -882,7 +1030,10 @@ function simulate(ctx, opts = {}) {
   const G = Object.fromEntries(GROUP_ORDER.map(g => [g, 0]));   // cumulative lean gained per group
   const pts = [{ L, F, water: 0, G: { ...G }, ph: plan ? plan.at[0].bi : -1, Ceff: ctx.ffmiCeil + ceilShift }];
   const wkOut = [];
-  const R = {}, gG = {};
+  // R: per-group growth stimulus. MP: per-group maintenance protection. gG: lean gained per group this
+  // week. lv: per-group "vulnerability" share of a deficit's lean loss. lossG: lean lost per group.
+  // All reused across weeks (hot loop, 418 weeks × 5 scenarios).
+  const R = {}, MP = {}, gG = {}, lv = {}, lossG = {};
   for (let k = 0; k < W; k++) {
     const wk = weekDrivers[k];
     const sAdh = adhDecay ? 1 - adhDecay * (1 - Math.exp(-k / ADH_DECAY_TAU)) : 1;
@@ -960,8 +1111,11 @@ function simulate(ctx, opts = {}) {
 
     // ---- lean model per muscle group
     let respW = 0;
-    if (sAdh === 1) { const wr = ctx.weekResp[k]; respW = wr.respW; GROUP_ORDER.forEach((g, i) => { R[g] = wr.R[i]; }); }
-    else for (const g of GROUP_ORDER) { R[g] = setResponse((wk.groups[g] || 0) * sAdh); respW += share[g] * R[g]; }
+    if (sAdh === 1) { const wr = ctx.weekResp[k]; respW = wr.respW; GROUP_ORDER.forEach((g, i) => { R[g] = wr.R[i]; MP[g] = wr.MP[i]; }); }
+    else for (const g of GROUP_ORDER) {
+      const s = (wk.groups[g] || 0) * sAdh;
+      R[g] = setResponse(s); MP[g] = maintenanceProtection(s); respW += share[g] * R[g];
+    }
     // Training age advances with consistent training (a missed/empty week doesn't use up "newbie gains").
     const adv = (7 / DAYS_PER_MONTH) * Math.min(1, respW / TA_FULL_RESP);
     const months = tAge + adv / 2;
@@ -972,13 +1126,21 @@ function simulate(ctx, opts = {}) {
     const itf = interferenceFactor(wk.eqMin * sAdh);
     const itfUpper = 1 - (1 - itf) * 0.5;
     const Ceff = ctx.ffmiCeil + ceilShift + mods.ffmiShift;
+    // §11 (2026-10-21): the genetic ceiling binds PER MUSCLE GROUP, not wholesale.
+    // ffmiEq(g) = the whole-body normalized FFMI you would have if EVERY muscle were as developed as this
+    // group is now, i.e. ffmiOf(L0 + G[g]/share[g]) — the same extrapolation muscleAt() shows the user.
+    // So an arm already near its own limit stops growing while a neglected quad still has all its room,
+    // and a big back cannot hold the calves back. With equal volume everywhere G[g]/share[g] is identical
+    // for every group, and this reduces EXACTLY to the old global ceilingFactor(Ceff − ffmiOf(L)).
+    // ff stays defined as the whole-body value: it is what the UI reports as the "FFMI factor" and what the
+    // (whole-body) supplement-driven leanDirect term slows against.
     const ff = ceilingFactor(Ceff - ffmiOf(L));
     const bff = raw > 0 ? bfSurplusFactor(bfNow, ctx.lmBf.surplusPivot) : 1;
     // Rate basis scales with lean mass (not fat), equal to today's bodyweight at the start.
     // Women: same relative rate applied to lean mass (sex.js FEMALE_RATE_REF_LEAN_FRAC); men: unchanged.
     const wholeRate = (femaleRate ? L / FEMALE_RATE_REF_LEAN_FRAC : W0 * (L / L0)) * leanRatePctPerMonth(months) / 100 * (7 / DAYS_PER_MONTH);
     const ageF = ctx.leanAgeFactor(k, mods);
-    const common = pf * cf * ff * bff * mods.leanCeilingMult * leanMult * ageF;
+    const common = pf * cf * bff * mods.leanCeilingMult * leanMult * ageF;   // ff is per-group, below
     let fE = energyFactor(raw);
     if (raw < 0) {
       // Newer lifters and people with more fat to lose recomp better; veterans and very lean people worse.
@@ -988,7 +1150,9 @@ function simulate(ctx, opts = {}) {
     }
     let ceiling = 0, gainTrain = 0;
     for (const g of GROUP_ORDER) {
-      const cap = Math.max(0, wholeRate * share[g] * R[g] * common * (LEG_GROUPS.has(g) ? itf : itfUpper));
+      // Each group eases off against ITS OWN distance from the ceiling (see ffmiEq above).
+      const ffg = share[g] > 0 ? ceilingFactor(Ceff - ffmiOf(L0 + G[g] / share[g])) : ff;
+      const cap = Math.max(0, wholeRate * share[g] * R[g] * common * ffg * (LEG_GROUPS.has(g) ? itf : itfUpper));
       ceiling += cap;
       gG[g] = cap * fE;
       gainTrain += gG[g];
@@ -1012,13 +1176,23 @@ function simulate(ctx, opts = {}) {
       // Forbes partition and the lifting-protection shape as before, plus (a) protein through the
       // deficit-specific retention curve (Mettler 2010 / Longland 2016) rather than the growth curve
       // proteinFactor(), and (b) the lean share scaled by how FAST the weight is coming off (Garthe 2011).
-      // Keeping muscle needs far less volume than building it: protection saturates at ~70% of the stimulus.
-      // The lean fraction of the loss is clamped to 0.95: even starvation leaves some fat coming off.
-      const protect = 0.9 * Math.min(1, respW / 0.7) * Math.min(1, bfNow / ctx.lmBf.protectFull) * proteinRetentionFactor(protein);
+      // §11 (2026-10-21): protection is PER MUSCLE GROUP, so neglect is visible.
+      // Keeping muscle needs far less volume than building it: maintenanceProtection() saturates at ~2-3
+      // fractional sets/week (Bickel 2011, Spiering 2021), where setResponse() is still climbing past 20.
+      // So a group at maintenance volume HOLDS, and a group you never train gives up its full anatomical
+      // share of the loss. The whole-body systemic part (how lean you are, how much protein you eat) is
+      // unchanged; only the training-stimulus term became per-group.
+      // lv[g] = how much of a pound of loss that group is exposed to; its sum is the old (1 − protect), so
+      // a uniformly trained body gets exactly the previous answer. The lean fraction is clamped to 0.95:
+      // even starvation leaves some fat coming off.
+      const sysProtect = 0.9 * Math.min(1, bfNow / ctx.lmBf.protectFull) * proteinRetentionFactor(protein);
+      let vSum = 0;
+      for (const g of GROUP_ORDER) { lv[g] = share[g] * (1 - sysProtect * MP[g]); vSum += lv[g]; }
       lossRatePct = Wt > 0 ? 100 * massLoss / Wt : 0;
-      lossFrac = clamp(pForbes * (1 - protect) * mods.leanRetentionMult * lossRateFactor(lossRatePct), 0, 0.95);
+      lossFrac = clamp(pForbes * vSum * mods.leanRetentionMult * lossRateFactor(lossRatePct), 0, 0.95);
       loss = massLoss * lossFrac;
-    }
+      for (const g of GROUP_ORDER) lossG[g] = vSum > 0 ? loss * lv[g] / vSum : loss * share[g];
+    } else for (const g of GROUP_ORDER) lossG[g] = 0;
     // Energy: lean built costs ~1,250 kcal/lb, lean lost releases ~800; the rest of the balance is fat.
     let dF = (bal * 7 - gain * KCAL_PER_LB_LEAN + loss * KCAL_LEAN_RELEASED) / KCAL_PER_LB_FAT;
     // Stack partition shift: move part of a surplus's stored mass between fat and lean (energy-neutral).
@@ -1031,17 +1205,27 @@ function simulate(ctx, opts = {}) {
       gain = g2; dF = (1 - p2) * M2;
     }
     // Hard guard: never past the (effective) ceiling; energy that can't become muscle is stored as fat.
+    // §11 (2026-10-21): this now binds PER MUSCLE GROUP instead of rescaling every group by one factor.
+    // A group's own lean allocation is share[g] × L0 + G[g] (these sum exactly to L, because Σ share = 1
+    // and Σ G = Σ gains − Σ losses), and it may not pass share[g] × Lcap. Since the shares sum to 1 this
+    // also keeps total lean under the whole-body cap, but a group that is already at its own limit stops
+    // on its own instead of dragging the rest of the body down with it — and vice versa.
     const Lcap = ctx.leanAtFfmi(Ceff);
-    if (gain > 0 && L + gain - loss > Lcap) {
-      const g2 = Math.max(0, Lcap - L + loss), f = g2 / gain;
-      for (const g of GROUP_ORDER) gG[g] *= f;
-      dF += (gain - g2) * KCAL_PER_LB_LEAN / KCAL_PER_LB_FAT;
-      gain = g2;
+    if (gain > 0) {
+      let cut = 0, kept = 0;
+      for (const g of GROUP_ORDER) {
+        if (gG[g] > 0) {
+          const room = Math.max(0, share[g] * Lcap - (share[g] * L0 + G[g] - lossG[g]));
+          if (gG[g] > room) { cut += gG[g] - room; gG[g] = room; }
+        }
+        kept += gG[g];
+      }
+      if (cut > 0) { gain = kept; dF += cut * KCAL_PER_LB_LEAN / KCAL_PER_LB_FAT; }
     }
     // Direct fat change from the stack (e.g. high testosterone): burned, not funding anything else.
     const fatDirect = mods.fatDirectLbPerWeek;
     dF += fatDirect;
-    for (const g of GROUP_ORDER) G[g] += gG[g] - loss * share[g];
+    for (const g of GROUP_ORDER) G[g] += gG[g] - lossG[g];
     L = L + gain - loss;
     F = F + dF;
     const minF = (L + F) * essential;
@@ -1181,6 +1365,17 @@ export function project(args = {}) {
     }
     return out;
   };
+  // §11: PER-MUSCLE PERCENTAGE growth. Absolute pounds hide emphasis — a hard-hammered bicep is a small
+  // muscle, so 0.3 lb looks like nothing next to 1.2 lb of back, even though the bicep grew half again as
+  // much in the mirror and on the tape. Percent of that group's own starting mass is what the user sees,
+  // and it is the number the girth model is driven by (Δin ∝ relative muscle gain), so the chart, the tape
+  // and the 3D body all tell the same story. muscleBaseLb is the denominator, exposed so the UI can show
+  // "2.8 lb → 3.1 lb" next to "+10.6 %".
+  const muscleBaseLb = Object.fromEntries(GROUP_ORDER.map(g => [g, r2(ctx.share[g] * smm0)]));
+  const musclePctAt = G => Object.fromEntries(GROUP_ORDER.map(g => {
+    const base = ctx.share[g] * smm0;
+    return [g, base > 0 ? r1(100 * (G[g] || 0) / base) : 0];
+  }));
 
   // ---------------- series (weekly internally; downsampled for output)
   const start = parseDs(today);
@@ -1222,7 +1417,8 @@ export function project(args = {}) {
     const pt = {
       week: k, date: ds(addDays(start, 7 * k)),
       weightLb: r1(Wt), bodyFatPct, leanLb: r1(p.L), fatLb: r1(p.F), waterLb: r1(p.water),
-      measurements, shape, limbs, muscle: muscleAt(p.G), muscleLb: Object.fromEntries(GROUP_ORDER.map(g => [g, r2(p.G[g])])), ffmi: heightIn ? r1(ffmiOf(p.L)) : null,
+      measurements, shape, limbs, muscle: muscleAt(p.G), muscleLb: Object.fromEntries(GROUP_ORDER.map(g => [g, r2(p.G[g])])),
+      musclePct: musclePctAt(p.G), ffmi: heightIn ? r1(ffmiOf(p.L)) : null,
       ratios: { shoulderToWaist: ratio('shoulders', 'waist'), chestToWaist: ratio('chest', 'waist'),
         waistToHeight: pos(m0.waist) && heightIn ? r2(shape.waist / heightIn) : null, ...(sex === 'female' ? { waistToHip: ratio('waist', 'hips') } : {}) },
       low, high,
@@ -1265,6 +1461,22 @@ export function project(args = {}) {
   };
   const endPt = series[series.length - 1];
   const partition = buildPartition(likely);
+  // §11 PER-MUSCLE REPORT: one row per training group, in the units the user can check against a tape.
+  // roomLb / roomPct are how far this group still is from ITS OWN ceiling, which is what now limits its
+  // growth — so "my delts are nearly maxed, my quads have 27 % left" is a statement the model can make.
+  // The allowance is share[g] × (ceiling lean − today's lean), exactly the per-group cap `simulate`
+  // enforces. Note that because the shares are fixed anatomical fractions, the allowance is the same
+  // PERCENTAGE of every group's own mass — which is the honest consequence of a whole-body FFMI limit plus
+  // fixed shares, and is why roomPct differs between groups only through what each has already gained.
+  const capRoom = Math.max(0, ctx.leanAtFfmi(ctx.ffmiCeil) - L0);
+  const muscleGain = GROUP_ORDER.map(g => {
+    const base = ctx.share[g] * smm0;
+    const allow = ctx.share[g] * capRoom;                        // lb this group may still add from baseline
+    const left = Math.max(0, allow - endPt.muscleLb[g]);
+    return { group: g, setsPerWeek: r1((horizonGroups[g] || 0) / W), response: r2(avg((w, d) => setResponse(d.groups[g] || 0))),
+      baseLb: r2(base), gainLb: r2(endPt.muscleLb[g]), pct: endPt.musclePct[g],
+      roomLb: r2(left), roomPct: base > 0 ? r1(100 * left / base) : 0 };
+  }).sort((a, c) => c.pct - a.pct);
   const summary = {
     weeks: W, endDate: endPt.date,
     weightLb: r1(endPt.weightLb - series[0].weightLb), fatLb: r1(endPt.fatLb - series[0].fatLb), leanLb: r1(endPt.leanLb - series[0].leanLb),
@@ -1486,6 +1698,8 @@ export function project(args = {}) {
   return {
     series, ...(seriesFull ? { seriesFull } : {}), milestones, assumptions, weekly, confidence, summary,
     phases: phaseInfo, ceiling: ceilInfo,
+    // §11 per-muscle specificity, sorted most-grown first. muscleBaseLb is each group's starting mass.
+    muscleGain, muscleBaseLb,
     horizon: { weeks: W, years: r2(W / 52.18), label: horizonLabel(W), sampled: series.length < W + 1 },
     energy: { intakeSource, intakeMode, intakeStart: Math.round(intakeStart), tdeeStart: Math.round(tdeeStart), tdeeFormula: Math.round(ctx.tdeeFormula),
       surplusStart: Math.round(intakeStart - tdeeStart), goal, proteinGPerLb: r2(ctx.proteinGPerLb), proteinAssumed: ctx.proteinAssumed, fatPct: ctx.fatPct,
@@ -1671,19 +1885,25 @@ function confidenceFor({ b, sessions, today, calib }) {
 
 // ---------------------------------------------------------------- nutrition lab
 // Sweep daily calories (vs maintenance) and show where extra food stops building muscle.
-export function nutritionLab({ baseline, profile, sessions, weeks = 12, now = new Date(), calorieRange = [-750, 1000], step = 125,
+export function nutritionLab({ baseline, profile, sessions, weeks = 12, now = new Date(), calorieRange = null, step = 125,
   proteinGPerLb, fatPct, cardioDeltaMin = 0, cardioModality = 'bike', cardioIntensity = 'easy', adherence = 0.85, repeatPlan = true,
   bodyLog = null, foodLog = null, adaptive = undefined, useStack = true, modifiersFn = null } = {}) {
   const intake = {};
   if (pos(proteinGPerLb)) intake.proteinGPerLb = Number(proteinGPerLb);
   if (pos(fatPct)) intake.fatPct = Number(fatPct);
   const ctx = prepare({ baseline, profile, sessions, weeks, now, intake, adherence, repeatPlan, cardioDeltaMin, cardioModality, cardioIntensity, bodyLog, foodLog, adaptive, useStack, modifiersFn });
-  const empty = { points: [], sweetSpot: { from: null, to: null, note: 'Log a bodyweight first: the lab needs a starting point.' },
+  const empty = { points: [], frame: 'surplus',
+    sweetSpot: { from: null, to: null, frame: 'surplus', label: 'Sweet spot', note: 'Log a bodyweight first: the lab needs a starting point.' },
     explanation: ['No bodyweight logged yet, so the nutrition lab cannot run. Log a morning weigh-in to start.'],
     maintenance: null, proteinGPerLb: null, fatPct: null, cardioDeltaMin: 0, leanCeilingLb: null, proteinCurve: [], macros: null };
   if (ctx.empty) return empty;
 
-  let lo = numOr(Array.isArray(calorieRange) ? calorieRange[0] : null, -750), hi = numOr(Array.isArray(calorieRange) ? calorieRange[1] : null, 1000);
+  // §11: the default sweep follows the goal. Under a fat-loss goal the interesting half of the axis is the
+  // deficit, and +1000 kcal/day is a question the user is not asking; the surplus side still shows enough
+  // to make the "past here it is all fat" point. An explicit calorieRange from the caller always wins.
+  const fatLossGoal = ctx.goal === 'cut' || ctx.goal === 'weight_loss';
+  const defRange = fatLossGoal ? [-1000, 500] : [-750, 1000];
+  let lo = numOr(Array.isArray(calorieRange) ? calorieRange[0] : null, defRange[0]), hi = numOr(Array.isArray(calorieRange) ? calorieRange[1] : null, defRange[1]);
   if (lo > hi) [lo, hi] = [hi, lo];
   lo = clamp(lo, -2000, 2500); hi = clamp(hi, -2000, 2500);
   let st = clamp(numOr(step, 125), 25, 1000);
@@ -1711,49 +1931,94 @@ export function nutritionLab({ baseline, profile, sessions, weeks = 12, now = ne
       endWeightLb: r1(T + pN.water), endLeanLb: r1(pN.L), endFatLb: r1(pN.F) };
   };
   const rows = levels.map(s => runAt(s));
+  // §11 (2026-10-21): per row, what the DEFICIT end actually costs — the rate the weight comes off at and
+  // how much of it is lean. Simulated, not asserted (the lite runs keep wkOut).
+  const rateOf = p => {
+    const dw = p.run.wkOut.filter(w => w.lossRatePct > 0);
+    if (!dw.length) return null;
+    return dw.reduce((a, w) => a + w.lossRatePct, 0) / dw.length;
+  };
+  const leanShareOfLossOf = p => {
+    const dW = p.weightLb;
+    return dW < -0.2 && p.leanLb < 0 ? clamp(p.leanLb / dW, 0, 1) : dW < -0.2 ? 0 : null;
+  };
   const points = rows.map((p, i) => {
     const tissue = p.leanLb + p.fatLb;
     const prev = rows[i - 1];
     const dF = prev ? p.fatLb - prev.fatLb : null, dL = prev ? p.leanLb - prev.leanLb : null;
+    const rate = rateOf(p), lsl = leanShareOfLossOf(p);
     return { surplus: p.surplus, calories: p.calories, leanLb: r1(p.leanLb), fatLb: r1(p.fatLb), weightLb: r1(p.weightLb), bodyFatPct: p.bodyFatPct,
       bodyFatChange: p.bodyFatChange, endWeightLb: p.endWeightLb, endLeanLb: p.endLeanLb, endFatLb: p.endFatLb,
       leanShare: tissue > 0.2 ? r2(clamp(p.leanLb / tissue, -1, 1)) : null,
+      lossRatePctPerWeek: rate != null ? r2(rate) : null, leanShareOfLoss: lsl != null ? r2(lsl) : null,
       marginalLeanPerFat: prev && dF > 0.05 ? r2(dL / dF) : null };
   });
 
-  // Sweet spot: from = where lean gain reaches 90% of the best in the sweep (below it, more food
-  // still buys real muscle); to = 97% (see below). Both measured on the sweep's lean range.
-  const maxLean = Math.max(...rows.map(p => p.leanLb));
-  const minLean = Math.min(...rows.map(p => p.leanLb));
-  const thr = minLean + 0.9 * (maxLean - minLean);
+  const r25 = x => Math.round(x / 25) * 25;
   const interpX = (i, key, target) => {
     const a = rows[i - 1], c = rows[i];
     const den = c[key] - a[key];
     return den !== 0 ? a.surplus + (c.surplus - a.surplus) * clamp((target - a[key]) / den, 0, 1) : c.surplus;
   };
-  let from = null;
-  for (let i = 0; i < rows.length; i++) {
-    if (rows[i].leanLb >= thr - 1e-9) { from = i === 0 ? rows[0].surplus : interpX(i, 'leanLb', thr); break; }
+  const maint = Math.round(ctx.tdeeStart);
+  const range = (a, c, unit = '') => (a === c ? `${a}${unit}` : `${a}-${c}${unit}`);
+  // ---- The band. Bob: "there's a sweet spot graph there that I think doesn't change based on your goals.
+  // So that sweet spot, I don't know. That part maybe we just need to remove." He is right: the old band
+  // was always "where lean gain plateaus", which is a MUSCLE-GAIN question. Under 'cut' or 'weight_loss'
+  // the user is not asking it, so under those goals the band is replaced by the fat-loss trade-off: the
+  // intakes that bring the weight down at a rate the lean mass survives.
+  // Anchor: Garthe 2011 (doi:10.1123/ijsnem.21.2.97) — 0.7 %BW/week kept (indeed added) lean mass in elite
+  // athletes who lifted and ate high protein, while the arm that achieved 1.0 %/week lost lean for the same
+  // total weight change. So LOSS_BAND_PCT = [0.5, 1.0]: slower than 0.5 %/week is needlessly slow (and the
+  // deficit is small enough that adherence, not physiology, decides), faster than 1.0 %/week is where
+  // lossRateFactor() starts charging real lean mass.
+  let frame = 'surplus', from = null, to = null, note = '', label = 'Sweet spot';
+  if (ctx.goal === 'cut' || ctx.goal === 'weight_loss') {
+    frame = 'deficit'; label = 'Target rate';
+    // Rate falls as intake rises, so walk from the deepest deficit up: `from` is the first intake whose
+    // realised rate is no faster than the cap, `to` the last that is still at least the floor.
+    const rate = i => rows[i].rateCache ?? (rows[i].rateCache = rateOf(rows[i]) ?? 0);
+    for (let i = 0; i < rows.length; i++) if (rate(i) <= LOSS_BAND_PCT[1]) { from = i === 0 ? rows[0].surplus : interpRate(rows, i, LOSS_BAND_PCT[1], rate); break; }
+    for (let i = rows.length - 1; i >= 0; i--) if (rate(i) >= LOSS_BAND_PCT[0]) { to = i === rows.length - 1 ? rows[i].surplus : interpRate(rows, i + 1, LOSS_BAND_PCT[0], rate); break; }
+    if (from == null) from = rows[rows.length - 1].surplus;   // nothing in the sweep is slow enough
+    if (to == null) to = from;                                // nothing in the sweep is fast enough
+    from = r25(clamp(from, lo, hi)); to = r25(clamp(to, from, hi));
+    const a = rows.reduce((b, p) => (Math.abs(p.surplus - from) < Math.abs(b.surplus - from) ? p : b), rows[0]);
+    const c = rows.reduce((b, p) => (Math.abs(p.surplus - to) < Math.abs(b.surplus - to) ? p : b), rows[0]);
+    const pct = p => { const v = rateOf(p); return v == null ? '0' : r2(v); };
+    const lshare = p => { const v = leanShareOfLossOf(p); return v == null ? null : Math.round(100 * v); };
+    const la = lshare(a), lc = lshare(c);
+    note = `Eat about ${range(maint + from, maint + to)} kcal/day (maintenance ${sgn(from)}${from}${from === to ? '' : ` to ${sgn(to)}${to}`}). `
+      + `This is a rate band, not a muscle-gain sweet spot: your goal is fat loss, so the trade-off is speed against the lean mass you keep. `
+      + `Around ${a.calories} kcal/day you come down about ${pct(a)}% of bodyweight a week${la != null ? ` and about ${la}% of each pound lost is lean tissue` : ''}; `
+      + `around ${c.calories} kcal/day it is about ${pct(c)}% a week${lc != null ? ` and about ${lc}% lean` : ''}. `
+      + `Below 0.5%/week the deficit is small enough that adherence decides; past 1%/week the lean cost climbs steeply (Garthe 2011). Protein at 1+ g/lb buys most of it back (Mettler 2010).`;
+  } else {
+    // Surplus frame (recomp, lean_bulk, maintenance): where lean gain plateaus — the original question.
+    // from = where lean gain reaches 90% of the best in the sweep (below it, more food still buys real
+    // muscle); to = 97% (past it, more food adds under ~3% more muscle). Both on the sweep's lean range.
+    const maxLean = Math.max(...rows.map(p => p.leanLb));
+    const minLean = Math.min(...rows.map(p => p.leanLb));
+    const thr = minLean + 0.9 * (maxLean - minLean);
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].leanLb >= thr - 1e-9) { from = i === 0 ? rows[0].surplus : interpX(i, 'leanLb', thr); break; }
+    }
+    const thr97 = minLean + 0.97 * (maxLean - minLean);
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].leanLb >= thr97 - 1e-9) { to = i === 0 ? rows[0].surplus : interpX(i, 'leanLb', thr97); break; }
+    }
+    if (to == null) to = rows[rows.length - 1].surplus;
+    if (from == null) from = rows[0].surplus;
+    from = r25(Math.max(from, lo)); to = r25(Math.min(Math.max(to, from), hi));
+    if (from > to) [from, to] = [to, from];
+    const sRange = from === to ? `maintenance ${sgn(from)}${from}` : `maintenance ${sgn(from)}${from} to ${sgn(to)}${to}`;
+    const lFrom = r1(runAt(from).leanLb), lTo = from === to ? lFrom : r1(runAt(to).leanLb);
+    note = `Eat about ${range(maint + from, maint + to)} kcal/day (${sRange}). ${from === to ? 'Here' : 'In this range'} you get ~${range(Math.min(lFrom, lTo), Math.max(lFrom, lTo), ' lb')} of lean mass over ${horizonLabel(ctx.W)}; past it, nearly all the extra food becomes fat.`;
   }
-  // to = where lean gain reaches 97% of the best: past it, more food adds under ~3% more muscle.
-  const thr97 = minLean + 0.97 * (maxLean - minLean);
-  let to = null;
-  for (let i = 0; i < rows.length; i++) {
-    if (rows[i].leanLb >= thr97 - 1e-9) { to = i === 0 ? rows[0].surplus : interpX(i, 'leanLb', thr97); break; }
-  }
-  if (to == null) to = rows[rows.length - 1].surplus;
-  if (from == null) from = rows[0].surplus;
-  const r25 = x => Math.round(x / 25) * 25;
-  from = r25(Math.max(from, lo)); to = r25(Math.min(Math.max(to, from), hi));
-  if (from > to) [from, to] = [to, from];
   const mid = r25((from + to) / 2);
   const midRow = runAt(mid);
   const at = s => rows.reduce((best, p) => (Math.abs(p.surplus - s) < Math.abs(best.surplus - s) ? p : best), rows[0]);
-  const maint = Math.round(ctx.tdeeStart);
-  const range = (a, c, unit = '') => (a === c ? `${a}${unit}` : `${a}-${c}${unit}`);
-  const sRange = from === to ? `maintenance ${sgn(from)}${from}` : `maintenance ${sgn(from)}${from} to ${sgn(to)}${to}`;
-  const lFrom = r1(runAt(from).leanLb), lTo = from === to ? lFrom : r1(runAt(to).leanLb);
-  const sweetSpot = { from, to, note: `Eat about ${range(maint + from, maint + to)} kcal/day (${sRange}). ${from === to ? 'Here' : 'In this range'} you get ~${range(Math.min(lFrom, lTo), Math.max(lFrom, lTo), ' lb')} of lean mass over ${horizonLabel(ctx.W)}; past it, nearly all the extra food becomes fat.` };
+  const sweetSpot = { from, to, frame, label, note };
 
   // Protein curve at the middle of the sweet spot.
   const proteinCurve = [0.5, 0.6, 0.7, 0.8, 1.0, 1.2].map(g => {
@@ -1767,11 +2032,15 @@ export function nutritionLab({ baseline, profile, sessions, weeks = 12, now = ne
   const p05 = proteinCurve[0], p10 = proteinCurve.find(p => p.gPerLb === 1.0);
   const part = buildPartition(midRow.run);
   const explanation = [];
+  // §11: under a fat-loss goal the lab leads with the fat-loss question. The muscle-ceiling story still
+  // follows (it is true, and it is why protein and lifting matter in a deficit), but it does not open with
+  // "how much food maximises muscle" when the user has asked how to get leaner.
+  if (frame === 'deficit') explanation.push(`Your goal is ${GOAL_NAMES_TXT[ctx.goal] || 'fat loss'}, so this chart is not about finding a surplus. It is the trade-off between how fast the weight comes off and how much of it is muscle. The green band is ${sgn(from)}${from}${from === to ? '' : ` to ${sgn(to)}${to}`} kcal/day vs maintenance, which brings you down at ${LOSS_BAND_PCT[0]}-${LOSS_BAND_PCT[1]}% of bodyweight a week. Eating less than that does not make you leaner faster in any useful way; it mostly makes the loss lean tissue.`);
   explanation.push(`Muscle growth has a speed limit set by your training, not your plate. With ${r1(ctx.months0)} months of lifting and your planned volume, the most lean mass you can expect in ${horizonLabel(ctx.W)} is about ${r1(part.leanCeilingLb)} lb. Food decides how much of that limit you reach, and everything beyond it is stored as fat.`);
   if (ctx.W >= 52) explanation.push(`Over ${horizonLabel(ctx.W)} a constant intake converges: maintenance rises as you gain (and falls as you lose), so weight levels off at a new steady state instead of changing forever (Hall 2011). A fixed +300 today ends up close to maintenance once you are heavier, so the long-run outcome of a surplus is not just the 1-year result multiplied. Each point here is today's maintenance plus that amount, eaten every day for the whole horizon; Forge's nutrition phases are the more realistic way to plan years.`);
-  explanation.push(`At maintenance (~${maint} kcal/day) you would gain ~${r1(z.leanLb)} lb of lean and ${z.fatLb <= 0 ? 'lose' : 'gain'} ~${r1(Math.abs(z.fatLb))} lb of fat (a slow recomp). In the sweet spot (${from === to ? `${sgn(from)}${from}` : `${sgn(from)}${from} to ${sgn(to)}${to}`} kcal/day) you would gain ~${r1(sp.leanLb)} lb of lean and ~${r1(sp.fatLb)} lb of fat.`);
+  explanation.push(`At maintenance (~${maint} kcal/day) you would gain ~${r1(z.leanLb)} lb of lean and ${z.fatLb <= 0 ? 'lose' : 'gain'} ~${r1(Math.abs(z.fatLb))} lb of fat (a slow recomp). In the ${label.toLowerCase()} band (${from === to ? `${sgn(from)}${from}` : `${sgn(from)}${from} to ${sgn(to)}${to}`} kcal/day) you would ${sp.leanLb >= 0 ? 'gain' : 'lose'} ~${r1(Math.abs(sp.leanLb))} lb of lean and ${sp.fatLb >= 0 ? 'gain' : 'lose'} ~${r1(Math.abs(sp.fatLb))} lb of fat.`);
   if (hi >= 750 && s500.surplus < big.surplus) explanation.push(`Going from ${sgn(s500.surplus)}${s500.surplus} to ${sgn(big.surplus)}${big.surplus} kcal/day adds only ${r1(Math.max(0, big.leanLb - s500.leanLb))} lb more lean but ${r1(big.fatLb - s500.fatLb)} lb more fat. "Eat a lot" builds muscle only up to the speed limit; after that it is mostly fat you will later have to diet off.`);
-  explanation.push(`The body burns off part of any surplus (digestion, fidgeting, more movement): roughly half of a big one on average in Levine's 1999 overfeeding study, with huge differences between people. So the scale moves less than the calories suggest, but most of what is stored past the sweet spot is fat. A practical target is gaining about 0.25-0.5% of bodyweight a week (${r1(ctx.W0 * 0.0025)}-${r1(ctx.W0 * 0.005)} lb), in line with Iraki 2019's off-season bodybuilding review.`);
+  explanation.push(`The body burns off part of any surplus (digestion, fidgeting, more movement): roughly half of a big one on average in Levine's 1999 overfeeding study, with huge differences between people. So the scale moves less than the calories suggest, but most of what is stored past that point is fat. A practical target is gaining about 0.25-0.5% of bodyweight a week (${r1(ctx.W0 * 0.0025)}-${r1(ctx.W0 * 0.005)} lb), in line with Iraki 2019's off-season bodybuilding review.`);
   if (p05 && p10) explanation.push(`Protein is the one macro that clearly matters: at 0.5 g/lb you would gain ~${p05.leanLb} lb of lean vs ~${p10.leanLb} lb at 1.0 g/lb (same calories). Benefits level off around 0.7-1.0 g/lb (Morton 2018), so ~1 g/lb (${Math.round(ctx.W0)} g/day for you) is plenty; more is safe but adds nothing.`);
   // §23 (universal): the deficit end of the sweep costs lean mass, whatever the goal is called. No extra
   // simulation — these are the weeks the most aggressive row already ran.
@@ -1788,7 +2057,7 @@ export function nutritionLab({ baseline, profile, sessions, weeks = 12, now = ne
   const adderallLine = ' With Adderall blunting appetite, calorie-dense foods and shakes make a surplus far easier than eating more volume.';
   const femaleOnAdderall = (Array.isArray(ctx.profile.supplements) ? ctx.profile.supplements : []).some(e => e && e.id === 'adderall' && e.active !== false && !e.end);
   explanation.push(`Carbs vs fat barely matters for body composition when calories and protein are equal. Carbs fuel hard training, so keep them at 150 g+ on lifting days; keep fat at 20%+ of calories for hormones.${ctx.sex !== 'female' || femaleOnAdderall ? adderallLine : ''}`);
-  explanation.push(`Cardio: it burns calories, so at the same intake more cardio means less fat. It only trims muscle gain modestly once you pass ~150 min/week, and running costs more than cycling (Wilson 2012). If you add cardio but want the same muscle gain, eat back roughly what it burns.${ctx.cdMin ? ` This sweep includes ${sgn(ctx.cdMin)}${Math.round(ctx.cdMin)} min/week of extra ${ctx.cdInt} ${CARDIO[ctx.cdMod]?.name || ctx.cdMod}.` : ''}`);
+  explanation.push(`Cardio: it burns calories, so at the same intake more cardio means less fat. It costs muscle gain far less than people think — across 43 trials that ran the same lifting programme with and without aerobic training, hypertrophy was unchanged (Schumann 2022) and cycling vs running made no difference. Forge only trims the muscle ceiling past ~${INTERF_FREE_MIN} effective min/week, and never by more than ${Math.round(INTERF_CAP * 100)}%, because the calories cardio burns are already counted here. If you add cardio but want the same muscle gain, eat back roughly what it burns.${ctx.cdMin ? ` This sweep includes ${sgn(ctx.cdMin)}${Math.round(ctx.cdMin)} min/week of extra ${ctx.cdInt} ${CARDIO[ctx.cdMod]?.name || ctx.cdMod}.` : ''}`);
   if (ctx.calib.applied) explanation.push(`Maintenance here is calibrated from your food log and weight trend (${ctx.calib.note})`);
   else explanation.push(`Maintenance (~${maint} kcal/day) is a formula estimate that can be off by 10-15%. Log food and weigh in daily for 2+ weeks and the lab will calibrate it to your real burn.`);
   if (ctx.stackUsed) {
@@ -1796,6 +2065,6 @@ export function nutritionLab({ baseline, profile, sessions, weeks = 12, now = ne
     if (m.warnings.length) explanation.push(`Stack warnings: ${m.warnings.join(' ')}`);
   }
 
-  return { points, sweetSpot, explanation, maintenance: maint, proteinGPerLb: r2(ctx.proteinGPerLb), fatPct: ctx.fatPct, cardioDeltaMin: ctx.cdMin,
+  return { points, sweetSpot, frame, goal: ctx.goal, explanation, maintenance: maint, proteinGPerLb: r2(ctx.proteinGPerLb), fatPct: ctx.fatPct, cardioDeltaMin: ctx.cdMin,
     leanCeilingLb: r1(part.leanCeilingLb), proteinCurve, macros: midRow.run.wkOut[0]?.macros ?? null };
 }

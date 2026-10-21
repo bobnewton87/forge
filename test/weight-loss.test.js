@@ -406,9 +406,14 @@ test('§23 universal: a surplus is untouched and a tiny deficit costs almost not
   assert.equal(bulk.partition.leanLossFrac, null, 'no deficit weeks, so nothing to report');
   assert.equal(bulk.partition.lossRatePctPerWeek, null);
   assert.ok(bulk.summary.leanLb > 0 && bulk.summary.fatLb > 0);
-  // 50 kcal/day: continuous, tiny, and nowhere near a cliff
+  // 50 kcal/day: continuous, tiny, and nowhere near a cliff.
+  // THRESHOLD RAISED 0.15 → 0.25 lb (2026-10-21, §11 per-muscle protection). The old number was tuned when
+  // lean-loss protection was whole-body: bobPlan trains almost no legs and zero calves, yet those groups got
+  // the full benefit of its shoulder volume. They are now exposed in proportion to their OWN sets
+  // (Bickel 2011, Spiering 2021), so a share-weighted body with untrained groups loses slightly more. 0.17 lb
+  // of lean over 26 weeks against +4.6 lb gained is still "almost nothing", which is what this test means.
   const tiny = atGoalLabel('recomp', 50, 0.8), none = atGoalLabel('recomp', 0, 0.8);
-  assert.ok(tiny.partition.leanLossLb >= 0 && tiny.partition.leanLossLb < 0.15,
+  assert.ok(tiny.partition.leanLossLb >= 0 && tiny.partition.leanLossLb < 0.25,
     `a 50 kcal deficit must not suddenly cost lean mass (${tiny.partition.leanLossLb} lb over 26 weeks)`);
   assert.ok(tiny.partition.leanLossLb >= none.partition.leanLossLb - 1e-9);
   assert.ok(tiny.summary.leanLb > 0, 'and it still builds muscle');

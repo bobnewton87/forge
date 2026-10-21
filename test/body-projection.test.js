@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { baseline } from '../js/engine/bodycomp.js';
-import { project, leanRatePctPerMonth, energyFactor, volumeFactor, setResponse, proteinFactor, interferenceFactor, MUSCLE_SHARE } from '../js/engine/projection.js';
+import { project, leanRatePctPerMonth, energyFactor, volumeFactor, setResponse, maintenanceProtection, proteinFactor,
+  interferenceFactor, MUSCLE_SHARE } from '../js/engine/projection.js';
 import { bobProfile, bobBodyLog, bobMeas, bobPlan, NOW, TODAY, findBad } from './body-fixtures.js';
 
 const bobBase = (profile = bobProfile(), meas = bobMeas()) => baseline({ profile, bodyLog: bobBodyLog(), measurements: meas, now: NOW });
@@ -20,19 +21,51 @@ test('model curves are monotone and sensible', () => {
   assert.ok(energyFactor(1000) - energyFactor(500) < 0.05);                   // saturates in a surplus
   assert.equal(volumeFactor(0), 0);
   assert.ok(volumeFactor(50) < volumeFactor(105) && volumeFactor(105) <= 1.0001 && volumeFactor(400) <= 1.1);
-  // per-group set response: 0 → 0, 10 → 1, diminishing, plateau, no decline
+  // per-group set response: 0 → 0, 10 → 1, diminishing, no decline anywhere.
+  // Shape = SQUARE ROOT of fractional weekly sets, the best-fit model in Pelland 2025
+  // (doi:10.1007/s40279-025-02344-w), exact to R_KNEE = 20 sets and bending to a plateau past the volumes
+  // anyone has studied. CHANGED 2026-10-21: the old double-exponential plateaued at 1.36, which understated
+  // 15-30 sets by 10-25 % against the meta-regression and flattened per-muscle emphasis.
   assert.equal(setResponse(0), 0);
   assert.ok(Math.abs(setResponse(10) - 1) < 1e-9);
   assert.ok(setResponse(20) - setResponse(10) < setResponse(10) - setResponse(0));
   assert.ok(setResponse(3) > 0.5 && setResponse(3) < 0.7, String(setResponse(3)));     // first sets do the most (Schoenfeld 2017)
-  assert.ok(setResponse(20) > 1.1 && setResponse(30) > setResponse(20) && setResponse(60) < 1.4);
-  for (let x = 0; x < 80; x += 1) assert.ok(setResponse(x + 1) >= setResponse(x));
+  // exact √ through the data-supported range
+  for (const s of [1, 2, 4, 8, 12, 16, 20]) assert.ok(Math.abs(setResponse(s) - Math.sqrt(s / 10)) < 1e-9, `√ at ${s}`);
+  // past the knee it bends below √ and asymptotes, but keeps rising (Pelland: "diminishing returns but not an inverted-U")
+  assert.ok(setResponse(30) > setResponse(20) && setResponse(30) < Math.sqrt(3));
+  assert.ok(setResponse(60) > 2 && setResponse(1e4) < 2.5, `${setResponse(60)} / ${setResponse(1e4)}`);
+  for (let x = 0; x < 200; x += 1) assert.ok(setResponse(x + 1) >= setResponse(x));
+  // emphasis must be visible: 2x the sets is a materially bigger stimulus everywhere it matters
+  for (const s of [4, 6, 8, 10, 12]) assert.ok(setResponse(2 * s) / setResponse(s) > 1.3, `2x at ${s} sets`);
   assert.ok(Math.abs(Object.values(MUSCLE_SHARE).reduce((a, b) => a + b, 0) - 1) < 1e-9);
   // protein: plateau at 1 g/lb, clearly reduced at 0.5
   assert.equal(proteinFactor(1.0), 1); assert.equal(proteinFactor(1.4), 1);
   assert.ok(proteinFactor(0.5) < 0.75 && proteinFactor(0.4) <= 0.5 + 1e-9 && proteinFactor(0.8) > 0.95);
-  // cardio interference: free up to 150 effective min, capped
-  assert.equal(interferenceFactor(100), 1); assert.ok(interferenceFactor(400) < 0.95 && interferenceFactor(5000) >= 0.8 - 1e-9);
+  // Cardio interference: free up to 250 effective min, then small, capped at 12 %.
+  // CHANGED 2026-10-21: was free to 150 min, 4 %/100 min, cap 20 %. Schumann 2022
+  // (doi:10.1007/s40279-021-01587-7, 43 trials) found hypertrophy SMD −0.01 (95 % CI −0.16 to 0.18) for
+  // concurrent vs resistance-only training and no cycling-vs-running difference, so the old magnitude was
+  // not defensible — and cardio's calorie cost is already modelled separately.
+  assert.equal(interferenceFactor(100), 1);
+  assert.equal(interferenceFactor(250), 1);
+  assert.ok(interferenceFactor(400) > 0.95 && interferenceFactor(400) < 1, String(interferenceFactor(400)));
+  assert.ok(interferenceFactor(5000) >= 0.88 - 1e-9 && interferenceFactor(5000) <= 0.88 + 1e-9);
+  for (let m = 0; m < 1200; m += 25) assert.ok(interferenceFactor(m + 25) <= interferenceFactor(m) + 1e-12);
+});
+
+test('maintenance volume holds a muscle that growth volume would build (Bickel 2011, Spiering 2021)', () => {
+  assert.equal(maintenanceProtection(0), 0);
+  // ~2-3 fractional sets/week is already most of the protection, where setResponse is still climbing to 20+
+  assert.ok(maintenanceProtection(1) > 0.5 && maintenanceProtection(1) < 0.65, String(maintenanceProtection(1)));
+  assert.ok(maintenanceProtection(2) > 0.78, String(maintenanceProtection(2)));
+  assert.ok(maintenanceProtection(3) > 0.9, String(maintenanceProtection(3)));
+  assert.ok(maintenanceProtection(6) > 0.99);
+  assert.ok(maintenanceProtection(1e6) <= 1);
+  for (let s = 0; s < 30; s += 0.5) assert.ok(maintenanceProtection(s + 0.5) >= maintenanceProtection(s));
+  // THE point of the curve: protection saturates far earlier than growth does.
+  assert.ok(maintenanceProtection(3) / maintenanceProtection(12) > 0.9, 'maintenance is nearly maxed at 3 sets');
+  assert.ok(setResponse(3) / setResponse(12) < 0.55, 'growth is nowhere near maxed at 3 sets');
 });
 
 test('Bob recomp (~300 kcal deficit, 4 lift + 120 cardio min) lands in the plausible range', () => {

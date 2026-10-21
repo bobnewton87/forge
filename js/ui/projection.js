@@ -366,12 +366,16 @@ function runProject(I, o, weeks, kcal, pg, fatPct, plan = null) {
 let labCache = { key: null, v: null };
 export function labData(I, o, weeks, maint, pg, fatPct) {
   if (!I.b || !I.b.weightLb) return null;
-  const key = JSON.stringify([weeks, adhOf(I, o), o.repeat, cmodOf(I, o), o.useStack !== false, JSON.stringify(o.stackOff || []), JSON.stringify(I.profile.supplements || []), JSON.stringify(I.profile.metabolic || {}), pg, fatPct, o.cdelta, o.cmod, o.cint, I.b.weightLb, I.b.bodyFatPct, I.sessions.length, Math.round(maint || 0), newEngine()]);
+  // The GOAL is part of the key: since §11 the lab's band, its sweep range and its explanation all depend
+  // on it (a cut gets the rate trade-off, a bulk the surplus sweet spot). Leaving it out made a goal change
+  // serve the previous goal's lab from this cache — caught by e2e M1g.
+  const key = JSON.stringify([weeks, I.profile.goal || '', adhOf(I, o), o.repeat, cmodOf(I, o), o.useStack !== false, JSON.stringify(o.stackOff || []), JSON.stringify(I.profile.supplements || []), JSON.stringify(I.profile.metabolic || {}), pg, fatPct, o.cdelta, o.cmod, o.cint, I.b.weightLb, I.b.bodyFatPct, I.sessions.length, Math.round(maint || 0), newEngine()]);
   if (labCache.key === key) return labCache.v;
   const bf0 = I.b.bodyFatPct ?? 20, lean0 = I.b.comp?.leanLb ?? I.b.weightLb * (1 - bf0 / 100), fat0 = I.b.weightLb - lean0;
   let raw = null;
   if (newEngine()) {
-    raw = safe(() => PJ.nutritionLab({ baseline: I.b, profile: profFor(I, o), sessions: I.sessions, bodyLog: I.bodyLog, foodLog: I.foodLog, weeks, now: I.now, calorieRange: [-750, 1000], step: 125,
+    // No calorieRange: the engine picks it from the goal (§11 — a cut sweeps the deficit side, a bulk the surplus side).
+    raw = safe(() => PJ.nutritionLab({ baseline: I.b, profile: profFor(I, o), sessions: I.sessions, bodyLog: I.bodyLog, foodLog: I.foodLog, weeks, now: I.now, step: 125,
       proteinGPerLb: pg, fatPct, cardioDeltaMin: o.cdelta || 0, cardioModality: cmodOf(I, o), cardioIntensity: o.cint, adherence: adhOf(I, o), repeatPlan: o.repeat, useStack: o.useStack !== false }), null);
   }
   if (!raw || !(raw.points || []).length) {
@@ -394,7 +398,7 @@ export function labData(I, o, weeks, maint, pg, fatPct) {
     const maxL = Math.max(...pts.map(p => p.lean));
     const from = pts.find(p => p.lean >= maxL * 0.8 && p.surplus >= 0) || pts.find(p => p.lean >= maxL * 0.8);
     const to = pts.find(p => p.lean >= maxL * 0.97) || pts[pts.length - 1];
-    if (from && to) sweet = { from: from.surplus, to: Math.max(to.surplus, from.surplus + 125), note: 'Most of the possible muscle, without paying for it in fat.' };
+    if (from && to) sweet = { from: from.surplus, to: Math.max(to.surplus, from.surplus + 125), frame: 'surplus', label: 'Sweet spot', note: 'Most of the possible muscle, without paying for it in fat.' };
   }
   const explanation = (raw.explanation && raw.explanation.length) ? raw.explanation : [
     'Muscle can only be built so fast. Your training age, weekly volume and protein set a ceiling on lean gain.',
@@ -402,7 +406,7 @@ export function labData(I, o, weeks, maint, pg, fatPct) {
     'In a deficit you lose fat, and as a newer lifter you can still add some muscle (recomp), just more slowly.',
     'Some of what you lose is lean tissue, whatever your goal is called. How much depends on how lean you already are, how fast the weight comes off and how much protein you eat.',
   ];
-  const v = { points: pts, sweet, explanation, local: !!raw.local, lean0, fat0 };
+  const v = { points: pts, sweet, frame: raw.frame || 'surplus', explanation, local: !!raw.local, lean0, fat0 };
   labCache = { key, v };
   return v;
 }
@@ -722,7 +726,7 @@ function labChart(lab, selSurplus, weeks) {
   });
   return `<svg class="chart bd-chart bd-lab" data-kind="text" viewBox="0 0 ${W} ${H}" data-pts='${esc(JSON.stringify(tip))}' role="img" aria-label="Lean and fat gained over ${esc(String(weeks))} by daily calories">
     ${sw ? `<rect x="${x(Math.max(sw.from, x0)).toFixed(1)}" y="${T}" width="${(x(Math.min(sw.to, x1)) - x(Math.max(sw.from, x0))).toFixed(1)}" height="${H - T - B}" fill="var(--good)" opacity=".09"/>
-      <text x="${((x(Math.max(sw.from, x0)) + x(Math.min(sw.to, x1))) / 2).toFixed(1)}" y="${T - 5}" text-anchor="middle" style="fill:var(--good);font-weight:750">sweet spot</text>` : ''}
+      <text x="${((x(Math.max(sw.from, x0)) + x(Math.min(sw.to, x1))) / 2).toFixed(1)}" y="${T - 5}" text-anchor="middle" style="fill:var(--good);font-weight:750">${esc(bandName(lab).toLowerCase())}</text>` : ''}
     ${ticks.map(t => `<line x1="${L}" x2="${W - R}" y1="${y(t).toFixed(1)}" y2="${y(t).toFixed(1)}" stroke="${t === 0 ? 'var(--muted)' : 'var(--line)'}" ${t === 0 ? 'opacity=".6"' : ''}/><text x="${L - 6}" y="${(y(t) + 3).toFixed(1)}" text-anchor="end">${t > 0 ? '+' : ''}${f1(t)}</text>`).join('')}
     ${xt.map(v => `<text x="${x(v).toFixed(1)}" y="${H - B + 14}" text-anchor="middle">${v > 0 ? '+' : ''}${v}</text>`).join('')}
     <text x="${((L + W - R) / 2).toFixed(1)}" y="${H - 4}" text-anchor="middle" style="font-weight:650">kcal/day vs maintenance</text>
@@ -740,9 +744,23 @@ function labChart(lab, selSurplus, weeks) {
     ${tipG(T, H - B)}
   </svg>`;
 }
+// §11: what the green band on the lab chart is called. Under a fat-loss goal it is not a "sweet spot"
+// (that question is about maximising muscle from a surplus, which a cutter is not asking) but the rate
+// band \u2014 fast enough to be worth doing, slow enough that the lean mass survives (Garthe 2011).
+function bandName(lab) {
+  return (lab && lab.sweet && lab.sweet.label) || (lab && lab.frame === 'deficit' ? 'Target rate' : 'Sweet spot');
+}
 function takeaway(lab, weeks) {
   const P = lab.points; if (P.length < 3) return '';
-  const x1 = P[P.length - 1].surplus;
+  const x0 = P[0].surplus, x1 = P[P.length - 1].surplus;
+  // §11: under a fat-loss goal the interesting comparison is the deep end of the deficit against the
+  // band, not a bigger surplus against a smaller one. Same chart, the question the user is asking.
+  if (lab.frame === 'deficit' && lab.sweet && isFinite(lab.sweet.to)) {
+    const deep = nearestPt(P, x0), band = nearestPt(P, lab.sweet.to);
+    if (deep === band) return '';
+    const dl = band.lean - deep.lean, df = band.fat - deep.fat;
+    return `Eating <b>${sgnK(deep.surplus)}</b> instead of <b>${sgnK(band.surplus)}</b> kcal/day takes off <b style="color:var(--accent2)">${sgn(-Math.abs(df))} lb more fat</b> but costs <b style="color:var(--warn)">${sgn(dl)} lb of lean mass</b> over ${esc(String(weeks))}.`;
+  }
   const a = nearestPt(P, x1 >= 1000 ? 500 : Math.max(0, x1 / 2)), b = nearestPt(P, x1 >= 1000 ? 1000 : x1);
   if (a === b) return '';
   const dl = b.lean - a.lean, df = b.fat - a.fat;
@@ -757,14 +775,23 @@ function labCard(D, o) {
   const dLean = sm.leanLb ?? (sN.leanLb - s0.leanLb), dFat = sm.fatLb ?? ((sN.fatLb ?? sN.weightLb - sN.leanLb) - (s0.fatLb ?? s0.weightLb - s0.leanLb));
   const share = dLean > 0 && dFat > 0 ? Math.round(dLean / (dLean + dFat) * 100) : null;
   const sw = lab.sweet;
+  const dft = lab.frame === 'deficit';
+  const band = bandName(lab).toLowerCase();
   const inSweet = sw && sel != null && sel >= sw.from - 30 && sel <= sw.to + 30;
-  const verdict = !sw || sel == null ? '' : inSweet ? `<span class="badge good">in the sweet spot</span>` : sel > sw.to ? `<span class="badge warn">past the sweet spot</span>` : sel < 0 ? `<span class="badge accent">deficit</span>` : `<span class="badge">below the sweet spot</span>`;
+  // §11: under a fat-loss goal the band is a RATE band, so "past" it means losing too slowly, not eating too much.
+  const verdict = !sw || sel == null ? ''
+    : inSweet ? `<span class="badge good">in the ${esc(band)}</span>`
+    : sel > sw.to ? `<span class="badge ${dft ? '' : 'warn'}">${dft ? 'slower than the ' + esc(band) : 'past the ' + esc(band)}</span>`
+    : dft ? `<span class="badge warn">faster than the ${esc(band)}</span>`
+    : sel < 0 ? `<span class="badge accent">deficit</span>` : `<span class="badge">below the ${esc(band)}</span>`;
   return `<div class="card bd-labcard" id="pjLab">
     <div class="row between"><div class="card-title">🧪 Nutrition Lab</div>${verdict}</div>
-    <p class="small muted" style="margin-top:4px">What ${esc(horizonText(D.weeks))} of each constant calorie level would add, with your plan, protein and cardio. Tap the chart to try a level.${D.plan ? ' (Your phase plan is shown above; the lab compares single intakes.)' : ''}${D.weeks > 52 ? ' Over years a constant intake converges, so these level off.' : ''}</p>
+    <p class="small muted" style="margin-top:4px">${dft
+      ? `What ${esc(horizonText(D.weeks))} of each constant calorie level would do, with your plan, protein and cardio. Your goal is fat loss, so the green band is the rate your lean mass survives \u2014 not a muscle-gain sweet spot. Tap the chart to try a level.`
+      : `What ${esc(horizonText(D.weeks))} of each constant calorie level would add, with your plan, protein and cardio. Tap the chart to try a level.`}${D.plan ? ' (Your phase plan is shown above; the lab compares single intakes.)' : ''}${D.weeks > 52 ? ' Over years a constant intake converges, so these level off.' : ''}</p>
     <div class="bd-labyou"><div><b class="num" style="color:var(--good)">${sgn(dLean)}</b><span>lb lean</span></div><div><b class="num" style="color:var(--accent2)">${sgn(dFat)}</b><span>lb fat</span></div>${dLean > 0 && dFat <= 0 ? `<div><b class="num" style="color:var(--good)">Recomp</b><span>fat down, lean up</span></div>` : `<div><b class="num">${share != null ? share + '%' : '—'}</b><span>of gain is lean</span></div>`}</div>
     <div class="mt">${labChart(lab, sel, horizonText(D.weeks))}</div>
-    <div class="bd-legend tiny" style="justify-content:flex-start;margin-top:2px"><span><i class="bd-sw" style="background:var(--good)"></i>Lean</span><span><i class="bd-sw" style="background:var(--accent2)"></i>Fat</span>${sw ? `<span><i class="bd-sw" style="background:var(--good);opacity:.3"></i>Sweet spot ${sgnK(sw.from)} to ${sgnK(sw.to)}</span>` : ''}</div>
+    <div class="bd-legend tiny" style="justify-content:flex-start;margin-top:2px"><span><i class="bd-sw" style="background:var(--good)"></i>Lean</span><span><i class="bd-sw" style="background:var(--accent2)"></i>Fat</span>${sw ? `<span><i class="bd-sw" style="background:var(--good);opacity:.3"></i>${esc(bandName(lab))} ${sgnK(sw.from)} to ${sgnK(sw.to)}</span>` : ''}</div>
     ${takeaway(lab, horizonText(D.weeks)) ? `<p class="bd-take">${takeaway(lab, horizonText(D.weeks))}</p>` : ''}
     ${sw?.note ? `<p class="small" style="color:#cfcfd8;margin-top:8px">${esc(sw.note)}</p>` : ''}
     <ul class="tip-list bd-explain">${lab.explanation.slice(0, 2).map(t => `<li class="small">${esc(t)}</li>`).join('')}</ul>
@@ -851,6 +878,7 @@ function outputs(D, o) {
       ${res.caution === 'postpartum' ? '<p class="tiny" style="color:var(--warn);margin-top:10px">Postpartum: this projection is very rough. Check with your provider before a deficit or hard training.</p>' : ''}</div>
     ${wl ? weightLossCard(wl, D) : deficitCostCard(res)}
     ${labCard(D, o)}
+    ${muscleCard(res, weeks)}
     <div class="section-title">Trends</div>${charts}
     <div class="section-title">Projected measurements</div>${table}
     ${msHtml}
@@ -860,6 +888,42 @@ function outputs(D, o) {
     ${assumptions}
     <p class="small muted bd-disclaim">These are estimates from simple, conservative models, not promises. Real bodies vary a lot. Re-measure every 2-4 weeks and the projection re-anchors to what actually happened.</p>
     <button class="card tap bd-planlink" data-nav="plan"><span style="font-size:22px">🗓️</span><div class="grow"><div class="t">Change the plan</div><div class="s">More sessions, cardio or sets → see the projection update</div></div><span class="chev">›</span></button>`;
+}
+
+// §11 PER-MUSCLE SPECIFICITY. Bob: "if you do more arms or biceps, it's going to make the biceps
+// specifically bigger. And if you neglect quads, it's going to not make those bigger … It shouldn't just
+// be a wholesale ballooning to perfection." This card is where he can check that.
+// Shown as PERCENT of each group's own starting muscle mass, not pounds: absolute pounds hide emphasis
+// (a hammered bicep is a small muscle, so its 0.3 lb looks like nothing next to a back's 1.2 lb even
+// though it grew half again as much), and percent is also what drives the tape and the 3D body.
+const MUSCLE_LABEL = { chest: 'Chest', back: 'Back', shoulders: 'Shoulders', biceps: 'Biceps', triceps: 'Triceps',
+  forearms: 'Forearms', core: 'Abs & core', glutes: 'Glutes', quads: 'Quads', hamstrings: 'Hamstrings', calves: 'Calves' };
+function muscleCard(res, weeks) {
+  const rows = (res.muscleGain || []).filter(m => m && m.group);
+  if (rows.length < 3) return '';
+  const span = Math.max(1, ...rows.map(m => Math.abs(m.pct || 0)));
+  const neglected = rows.filter(m => (m.setsPerWeek || 0) < 1);
+  const top = rows[0];
+  return `<div class="section-title">Which muscles grow</div>
+  <div class="card bd-musc" id="pjMuscle">
+    <p class="small muted" style="margin-top:0">Growth per muscle group over ${esc(horizonText(weeks))}, as a share of that group's own current size — this is what shows up in the mirror and on a tape measure. It follows the sets your plan actually gives each group, so training more of one thing grows that thing.</p>
+    <table class="bd-ptable num bd-musctab"><thead><tr><th></th><th>Sets/wk</th><th>Growth</th><th></th><th>Room left</th></tr></thead><tbody>
+    ${rows.map(m => {
+      const p = m.pct || 0;
+      const col = p > 0.5 ? 'var(--good)' : p < -0.5 ? 'var(--warn)' : 'var(--muted)';
+      const w = Math.min(100, Math.abs(p) / span * 100);
+      return `<tr><th style="font-weight:650">${esc(MUSCLE_LABEL[m.group] || m.group)}</th>
+        <td>${f1(m.setsPerWeek || 0)}</td>
+        <td style="color:${col};font-weight:750">${Math.abs(p) < 0.05 ? '—' : (p > 0 ? '+' : '−') + f1(Math.abs(p)) + '%'}</td>
+        <td style="width:84px"><i class="bd-mbarc" style="width:${w.toFixed(0)}%;background:${col}"></i></td>
+        <td class="muted">${f1(m.roomPct || 0)}%</td></tr>`;
+    }).join('')}
+    </tbody></table>
+    <p class="tiny muted" style="margin-top:8px">"Room left" is how much more that group could add before it reaches its own share of your genetic ceiling — each muscle runs out separately, so a maxed-out shoulder doesn't hold your quads back. Sets are fractional: a press credits chest 1 set and triceps half a set, the way the dose-response research counts them (Pelland 2025).</p>
+    ${neglected.length ? `<p class="tiny" style="color:var(--warn);margin-top:6px">No planned sets for ${esc(neglected.map(m => (MUSCLE_LABEL[m.group] || m.group).toLowerCase()).join(', '))}. ${neglected.some(m => (m.pct || 0) < -0.5) ? 'In a deficit a muscle you never train gives up its full share of the lean mass you lose.' : 'With nothing to train them they hold at best, and shrink in a deficit.'} About 2-3 sets a week is enough to hold a muscle, far less than the 10-20 it takes to grow one (Bickel 2011; Spiering 2021).</p>` : ''}
+    ${top && top.pct > 1 ? `<p class="tiny muted" style="margin-top:6px">Most emphasis: <b>${esc((MUSCLE_LABEL[top.group] || top.group).toLowerCase())}</b> at ${f1(top.setsPerWeek)} sets/week.</p>` : ''}
+    <button class="btn btn-sm btn-ghost mt" data-nav="plan">Change the volume split ›</button>
+  </div>`;
 }
 
 // §23. The honest trade-off card for the weight-loss goal: what this rate costs in lean mass, what the
