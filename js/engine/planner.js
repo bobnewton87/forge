@@ -48,12 +48,12 @@
 //   alone, e.g. to compare day decisions).
 //   weekPlanSummary warns per group "Triceps 9/13 sets: short 4" and returns `minimums`
 //   ({ met, short:[{ group, name, total, min, short }] }) and `extended` ([{ date, from, to, reason }]).
-import { recommend, groupStatus, muscleStatus, sessionVolume } from './recovery.js';
+import { recommend, groupStatus, muscleStatus, sessionVolume, unitVolume, unitSets, PUSH_PATTERNS, PULL_PATTERNS } from './recovery.js';
 import { buildWorkout, estimateMinutes, addExercise, exercisesFor, swapBlock, alternatives, isStyleId } from './generator.js';
 import { getEx } from '../data/exercises.js';
 import { CARDIO, INTENSITIES, cardioOptions } from '../data/cardio.js';
 import { classify } from '../classes/classify.js';
-import { GROUPS, GROUP_ORDER, REGIONS, VOLUME_UNITS, UNIT_ORDER, unitWeight, unitCredits } from '../data/muscles.js';
+import { GROUPS, GROUP_ORDER, REGIONS, VOLUME_UNITS, UNIT_ORDER, COUNTED_UNITS, unitWeight, unitCredits } from '../data/muscles.js';
 import { DEFAULT_LOCATIONS, expandEquipment } from '../data/equipment.js';
 import { ds, parseDs, addDays, weekStart as weekStartOf, clamp, rng } from '../util.js';
 import { cardioPrefs, finisherCap, cardioCapacity, weekCardioCapacity, cardioTolerance, makeRoomProposal, volumePolicyOf, unitTargets } from './targets.js';
@@ -747,8 +747,6 @@ function fatigueOf(sets, hours, rh) {
 }
 const startMs = h => { const t = h.startedAt ? Date.parse(h.startedAt) : NaN; return Number.isFinite(t) ? t : parseDs(h.date).getTime() + 7 * 3600e3; };
 
-const PUSH_PATTERNS = new Set(['horizontal_push', 'vertical_push', 'fly']);
-const PULL_PATTERNS = new Set(['horizontal_pull', 'vertical_pull']);
 const PUSH_PULL_TOL = 1.1;   // pull ≥ push within ±10% (practitioner heuristic for shoulder balance; audit §5)
 const unitCap = (uid, raise) => (raise && VOLUME_UNITS[uid]?.tier === 'priority' ? PRIORITY_CAP : VOLUME_UNITS[uid]?.big ? 10 : 8);
 function plannedUnitVol(s, uid) {
@@ -756,35 +754,14 @@ function plannedUnitVol(s, uid) {
   for (const b of s.blocks || []) if (b.kind === 'lift') v += setsOf(b) * unitWeight(getEx(b.exId), uid);
   return v;
 }
-// Units credited by a session as if done (planned: every set; done: counted sets), classes once.
-function sessionUnits(s) {
-  const out = {}, add = (u, x) => { out[u] = (out[u] || 0) + x; };
-  let push = 0, pull = 0;
-  for (const b of s.blocks || []) {
-    if (b.kind === 'lift') {
-      const ex = getEx(b.exId); if (!ex) continue;
-      const n = s.status === 'planned' ? setsOf(b) : (b.sets || []).filter(x => x && x.done && Number(x.r) > 0).length;
-      if (!n) continue;
-      for (const [u, w] of Object.entries(unitCredits(ex))) add(u, n * w);
-      if (PUSH_PATTERNS.has(ex.pattern)) push += n; else if (PULL_PATTERNS.has(ex.pattern)) pull += n;
-    } else if (b.kind === 'class' && (s.status === 'planned' || b.done)) {
-      const m = b.classify?.muscles || {};
-      for (const u of UNIT_ORDER) { let w = 0; for (const r of VOLUME_UNITS[u].regions) if ((m[r] || 0) > w) w = m[r]; if (w > 0) add(u, w); }
-    }
-  }
-  return { units: out, push, pull };
-}
+// Units credited by a session as if done (planned: every prescribed set; done: counted sets), classes
+// once. §18: ONE counter for the whole app - recovery.unitVolume (the same one Body and the Why sheet
+// read through recovery.unitSets).
+function sessionUnits(s) { return unitVolume(s); }
 // Weekly unit totals + push/pull sets over sessions in [ws, we] (planned ones from today on).
 export function weekUnitTotals(sessions, ws, we, today = '') {
-  const units = {}; let push = 0, pull = 0;
-  for (const s of sessions || []) {
-    if (!s || !s.date || s.date < ws || s.date > we) continue;
-    if (s.status === 'planned' && (s.date < today || isRestPlan(s))) continue;
-    const v = sessionUnits(s);
-    for (const [u, x] of Object.entries(v.units)) units[u] = (units[u] || 0) + x;
-    push += v.push; pull += v.pull;
-  }
-  return { units, push, pull };
+  return unitSets((sessions || []).filter(s => !(s && s.status === 'planned' && isRestPlan(s))),
+    { from: ws, to: we, today, includePlanned: true });
 }
 
 // Tops up the week's enforcement units (VOLUME_UNITS): (1) every unit to its MIN, lengthening per
@@ -800,6 +777,9 @@ export const TARGET_WHY_TEXT = {
   session: () => 'per-session caps on every lift day',
   pushpull: () => 'keeping pull ≥ push',
   exercise: () => 'no suitable exercise at those locations',
+  nolift: () => 'no lift day scheduled this week',
+  rounds: () => 'room is left: re-plan the week to fill it',
+  session_other: () => 'the exercises that would add it are at another muscle\u2019s per-session cap',
 };
 
 function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
@@ -865,7 +845,10 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
       const gcap = groupCapFor(w, g2);
       if (x >= 0.5 ? nv > gcap + 0.01 : nv > (nv - add > gcap ? PRIORITY_CAP : gcap) + 0.01) {
         const plain = BIG_GROUPS.has(g2) ? (raise ? PRIORITY_CAP : 10) : PRIORITY_CAP;
-        return nv > plain + 0.01 ? 'session' : 'recovery';   // under the plain cap → it's the back-to-back spacing rule
+        if (nv <= plain + 0.01) return 'recovery';            // under the plain cap → the back-to-back spacing rule
+        // A per-session ceiling, but say whose: the muscle being topped up, or a different one that the
+        // only available exercises also load (so "per-session caps" never names a cap nothing has hit).
+        return uid && uid !== '__pull' && VOLUME_UNITS[uid]?.group === g2 ? 'session' : 'session_other';
       }
       if (nv >= 4 && readinessAt(g2, w.s.date) < 0.4) return 'recovery';
       for (let k = 1; k <= 2; k++) {
@@ -879,7 +862,10 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
     }
     for (const [u2, x] of Object.entries(unitCredits(ex))) {
       if ((weekMaxCheck || u2 !== uid) && (tot.units[u2] || 0) + n * x > (UT[u2]?.max ?? 99) + 0.01) return 'max';   // any credit counts toward a max
-      if (x >= 0.5 && plannedUnitVol(w.s, u2) + n * x > unitCapFor(w, u2, raise && u2 === uid) + 0.01) return unitCapFor(w, u2, raise && u2 === uid) < unitCap(u2, raise && u2 === uid) ? 'recovery' : 'session';
+      if (x >= 0.5 && plannedUnitVol(w.s, u2) + n * x > unitCapFor(w, u2, raise && u2 === uid) + 0.01) {
+        if (unitCapFor(w, u2, raise && u2 === uid) < unitCap(u2, raise && u2 === uid)) return 'recovery';
+        return u2 === uid ? 'session' : 'session_other';   // another muscle's session cap blocks this exercise
+      }
     }
     // pull ≥ push: outside the minimums, never add a press/fly that tips the balance
     if (phase !== 'min' && PUSH_PATTERNS.has(ex.pattern) && tot.push + n > PUSH_PULL_TOL * tot.pull) return 'pushpull';
@@ -958,11 +944,25 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
       const blocks = (w.s.blocks || []).map((b, i) => ({ b, i, ex: b.kind === 'lift' ? getEx(b.exId) : null }))
         .filter(x => x.ex && credit(x.ex, uid) >= 0.5 && setsOf(x.b) < MAX_SETS_PER_EX).sort((a, b) => spillValue(b.ex, uid) - spillValue(a.ex, uid) || setsOf(a.b) - setsOf(b.b));
       let found = null, dayWhy = '';
-      const note = r => { if (!dayWhy || dayWhy === 'time') dayWhy = r; };
+      // The FIRST blocker wins: the candidates are already sorted best-first, so the reason that
+      // stopped the best option is the honest reason. `timeOnly` records that some candidate was legal
+      // in every other respect and only did not fit the minutes - then lengthening the day WOULD help,
+      // so 'time' is the answer whatever a later, worse candidate ran into. (Before, note() treated
+      // 'time' as the weakest reason and let any later cap overwrite it, so a day that was simply out
+      // of minutes reported "per-session caps on every lift day".)
+      let timeOnly = false, timeHit = false;
+      // 'time' never occupies dayWhy, so a real blocker on a later candidate is still recorded.
+      const note = r => { if (r === 'time') { timeHit = true; return; } if (!dayWhy) dayWhy = r; };
+      // The cheap minute check stays first (blockOf walks days and readiness); when it is the thing in
+      // the way we confirm ONCE per day, with blockOf, that the set would otherwise have been legal.
       for (const x of blocks) {
         const trial = w.s.blocks.map((b, i) => (i === x.i ? clone(b) : b));
         setSets(trial[x.i], setsOf(x.b) + 1);
-        if (estimateMinutes(trial) > lim) { note('time'); continue; }
+        if (estimateMinutes(trial) > lim) {
+          note('time');
+          if (!timeOnly && !blockOf(w, x.ex, 1, uid, phase !== 'min' || uid === '__pull')) timeOnly = true;
+          continue;
+        }
         const r = blockOf(w, x.ex, 1, uid, phase !== 'min' || uid === '__pull');
         if (r) { note(r); continue; }
         found = { w, score: base, apply: () => { w.s.blocks = trial; bump(x.ex, 1); return credit(x.ex, uid); } };
@@ -977,13 +977,20 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
           const ns = addExercise(w.s, e.id, { sessions: ctx.history, now: noonOf(d) });
           const nb = ns.blocks.find(b => b.exId === e.id); if (!nb) continue;
           setSets(nb, 2);
-          if (estimateMinutes(ns.blocks) > lim) { note('time'); continue; }
+          if (estimateMinutes(ns.blocks) > lim) { timeOnly = true; note('time'); continue; }   // legal but for the clock
           found = { w, score: base + 1.5, apply: () => { w.s = { ...w.s, blocks: ns.blocks }; bump(e, 2); return 2 * credit(e, uid); } };
           break;
         }
       }
-      if (cur + 0.5 > (uid === '__pull' ? 99 : unitCap(uid, raise))) dayWhy = dayWhy || 'session';
-      if (!found) reasons[d] = dayWhy || (est >= lim - 2 ? 'time' : 'exercise');
+      // Reason priority, so each one is true of this day:
+      //  1. this muscle is at its own per-session ceiling → 'session' (more minutes cannot help it);
+      //  2. the day is at its time limit → 'time' (that is the constraint the user can lift);
+      //  3. some candidate was legal and only did not fit → 'time';
+      //  4. otherwise the first real blocker (recovery / weekly max / pull ≥ push / another muscle's cap).
+      // The PLAIN per-session cap, not the reduced back-to-back allowance: when spacing is what holds
+      // the muscle back, blockOf already reports 'recovery' and that is the honest reason.
+      const atCap = uid !== '__pull' && cur + 0.5 > unitCap(uid, raise) + 0.01;
+      if (!found) reasons[d] = atCap ? 'session' : (est >= lim - 2 || timeOnly) ? 'time' : (dayWhy || (timeHit ? 'time' : 'exercise'));
       if (found && (!best || found.score < best.score)) best = found;
     }
     if (dry) { why[uid] = reasons; return !!best; }
@@ -1014,16 +1021,31 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
     const cands = [];
     for (const w of W) (w.s.blocks || []).forEach((b, i) => { const ex = b.kind === 'lift' ? getEx(b.exId) : null; if (ex && PUSH_PATTERNS.has(ex.pattern)) cands.push({ w, i, ex }); });
     cands.sort((a, b) => rank(a.ex.pattern) - rank(b.ex.pattern) || setsOf(b.w.s.blocks[b.i]) - setsOf(a.w.s.blocks[a.i]));
+    const floorsHold = (ex, n) => !Object.entries(unitCredits(ex)).some(([u, x]) => UT[u]?.min > 0 && (tot.units[u] || 0) - n * x < UT[u].min - 0.25);
     for (let more = true; more && deficit('__pull') > 0.5;) {
       more = false;
       for (const c of cands) {
         if (deficit('__pull') <= 0.5) break;
-        const b = c.w.s.blocks[c.i]; if (!b || b.exId !== c.ex.id || setsOf(b) <= 2) continue;
-        const credits = unitCredits(c.ex);
-        if (Object.entries(credits).some(([u, x]) => UT[u]?.min > 0 && (tot.units[u] || 0) - x < UT[u].min - 0.25)) continue;
+        const b = c.w.s.blocks[c.i]; if (!b || b.exId !== c.ex.id) continue;
+        if (setsOf(b) <= 2) continue;
+        if (!floorsHold(c.ex, 1)) continue;
         c.w.s.blocks = c.w.s.blocks.map((x, j) => (j === c.i ? clone(x) : x)); setSets(c.w.s.blocks[c.i], setsOf(b) - 1);
         bump(c.ex, -1);
         c.w.added.push_trim = (c.w.added.push_trim || 0) - 1; c.w.changed = more = true;
+      }
+      if (more || deficit('__pull') <= 0.5) continue;
+      // Every press/fly is already down to its 2-set minimum: drop one whole push ISOLATION (flies
+      // first, by the sort order) when every floor still holds and the day keeps 3+ lift exercises.
+      // Without this the week can sit stuck above the pull >= push tolerance with nothing to trim.
+      for (const c of cands) {
+        const b = c.w.s.blocks[c.i];
+        if (!b || b.exId !== c.ex.id || c.ex.category === 'compound') continue;
+        const n = setsOf(b);
+        if (!floorsHold(c.ex, n) || c.w.s.blocks.filter(y => y.kind === 'lift').length <= 2) continue;
+        c.w.s.blocks = c.w.s.blocks.filter((_, j) => j !== c.i);
+        bump(c.ex, -n);
+        c.w.added.push_trim = (c.w.added.push_trim || 0) - n; c.w.changed = more = true;
+        break;
       }
     }
   }
@@ -1176,10 +1198,22 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
   phase = 'target';
   if (shortList().length) runPhase(shortList);   // the max pass may have freed room
   for (const u of shortList()) {
-    if (step(u, true)) { targetWhy[u] = 'session'; continue; }   // (dry run never mutates)
+    // No lift day in the week at all: say that, instead of blaming a per-session cap that no session has.
+    if (!W.length) { targetWhy[u] = 'nolift'; continue; }
+    if (step(u, true)) { targetWhy[u] = 'rounds'; continue; }   // (dry run never mutates) one more set was legal
     const rs = Object.values(why[u] || {});
     const cnt = {}; rs.forEach(r => { cnt[r] = (cnt[r] || 0) + 1; });
-    targetWhy[u] = !rs.length ? (W.length ? 'exercise' : 'session') : rs.every(r => r === 'time') ? (fillExtend ? 'time' : 'policy') : Object.entries(cnt).filter(([r]) => r !== 'time').sort((x, y) => y[1] - x[1])[0][0];
+    const caps = rs.filter(r => r === 'session' || r === 'session_other').length;
+    // Every day out of minutes → time (or policy, when targets may not lengthen a day). Otherwise the
+    // most common real blocker; 'time' only wins when it is the only thing in the way everywhere.
+    // 'session' says "per-session caps on EVERY lift day", so it is only claimed when a per-session
+    // cap really is in the way on every one of them and this muscle is at its own cap on at least one;
+    // a partial story is reported as 'session_other' instead.
+    let w0 = !rs.length ? 'exercise'
+      : rs.every(r => r === 'time') ? (fillExtend ? 'time' : 'policy')
+        : Object.entries(cnt).filter(([r]) => r !== 'time').sort((x, y) => y[1] - x[1])[0][0];
+    if (w0 === 'session' && !(caps === rs.length && rs.length === W.length)) w0 = 'session_other';
+    targetWhy[u] = w0;
   }
   phase = 'min';
   // Commit working copies.
@@ -1343,10 +1377,22 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
     for (const r of PRIORITY_REGIONS) if (v.regions[r]) rT[r] = (rT[r] || 0) + v.regions[r];
   }
   const status = (tot, t) => (tot < t.min - 0.25 ? 'under' : tot > t.max + 0.05 ? 'over' : 'ok');
+  // The one resolved target table and the one week count, used by both the group block and the unit block.
+  const UT0 = unitTargets(profile || {});
+  const uw0 = weekUnitTotals(sessions, from, to, today);
+  const uDone0 = weekUnitTotals((sessions || []).filter(s => s && s.status !== 'planned'), from, to, today);
   const groups = {};
+  // §18: a group's done/planned/total add up its COUNTED units, the same muscles its target adds up,
+  // so `total / target.target` is comparable and matches Body, Today and recovery.groupStatus. (It used
+  // to count each set once per group while the target summed the units: back read 24/18 here and
+  // 18.8/18 everywhere else, because shrugs and RDLs counted toward "back".)
+  // `groupCredit` keeps the once-per-group figure, which is what recovery/fatigue and the projection use.
   for (const [g, t] of Object.entries(T.groups)) {
-    const d = r1(done[g] || 0), p = r1(planned[g] || 0), tot = r1(d + p);
-    groups[g] = { done: d, planned: p, total: tot, target: t.target, status: status(tot, t.target) };
+    const cu = (COUNTED_UNITS[g] || []).filter(u => UT0[u]);
+    const d = r1(cu.length ? cu.reduce((a, u) => a + (uDone0.units[u] || 0), 0) : (done[g] || 0));
+    const tot = r1(cu.length ? cu.reduce((a, u) => a + (uw0.units[u] || 0), 0) : (done[g] || 0) + (planned[g] || 0));
+    groups[g] = { done: Math.min(d, tot), planned: r1(Math.max(0, tot - d)), total: tot, target: t.target, status: status(tot, t.target),
+      groupCredit: { done: r1(done[g] || 0), planned: r1(planned[g] || 0), total: r1((done[g] || 0) + (planned[g] || 0)) } };
   }
   const regions = {};
   for (const [r, t] of Object.entries(T.regions)) {
@@ -1362,9 +1408,7 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
   const prio = priorityGroups(profile);
   const underPrio = prio.filter(g => groups[g]?.status === 'under');
   // Enforcement units (VOLUME_UNITS): min / target / max per the weekly-volume audit.
-  const UT = unitTargets(profile || {});
-  const uw = weekUnitTotals(sessions, from, to, today);
-  const uDone = weekUnitTotals((sessions || []).filter(s => s && s.status !== 'planned'), from, to, today);
+  const UT = UT0, uw = uw0, uDone = uDone0;
   const units = {};
   for (const u of UNIT_ORDER) {
     const t = UT[u], total = r1(uw.units[u] || 0), done = r1(Math.min(total, uDone.units[u] || 0));
@@ -1396,8 +1440,11 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
       x.overText = o.why === 'pushpull' ? 'rows/pulldowns also keep pull ≥ push' : o.why === 'shared' ? `the same exercises cover ${o.with.map(v => (VOLUME_UNITS[v]?.name || v).toLowerCase()).join(', ')}` : 'no lighter exercise keeps the other floors';
     }
   }
+  // A week with no lift session at all (done or planned) cannot blame a per-session cap or the clock.
+  const anyLift = (sessions || []).some(s => s && s.date >= from && s.date <= to && !isRestPlan(s)
+    && (s.blocks || []).some(b => b.kind === 'lift' || b.kind === 'class'));
   const tShort = tUnits.filter(u => !tMet.includes(u)).map(u => {
-    let why = tWhy[u] || (timeBound ? 'time' : pol.fillTargets !== 'extend' ? 'policy' : null);
+    let why = anyLift ? (tWhy[u] || (timeBound ? 'time' : pol.fillTargets !== 'extend' ? 'policy' : null)) : 'nolift';
     if (why === 'time' && !timeBound) why = null;   // only claim "time" when every lift day really is at the cap
     return { unit: u, name: units[u].name, total: units[u].total, target: units[u].target, short: r1(units[u].target - units[u].total), why, whyText: why ? TARGET_WHY_TEXT[why](pol) : 'not yet planned' };
   });

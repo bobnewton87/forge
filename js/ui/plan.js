@@ -30,7 +30,7 @@ import { summarize, detailSheet } from './history.js';
 //   edit or delete them. Nothing else about past days changed.
 import { openRetroSheet, canLogPast } from './retro.js';
 import { setTargets, targetsSummaryHTML, bindTargetsSummary, makeRoomHTML, bindMakeRoom, extendedToast, openMinimumsInfo, openVolumeRoomSheet, openExtendSheet, openHitTargetsSheet } from './targets.js';
-import { resolveTargets, volumePolicyOf, CARDIO_STYLES, CARDIO_STYLE_NAMES, starredUnits, unitTargets, maxNote, STAR_LEGEND } from '../engine/targets.js';
+import { resolveTargets, volumePolicyOf, CARDIO_STYLES, CARDIO_STYLE_NAMES, starredUnits, unitTargets, maxNote, STAR_LEGEND, fmtSets } from '../engine/targets.js';
 import { UNIT_ORDER } from '../data/muscles.js';
 import { styleChipsHTML } from './styles.js';
 import { resolveStyle } from '../engine/generator.js';
@@ -263,15 +263,15 @@ function summaryCard(sessions, profile, ws, roomLine = '') {
     const done = Number(x.done) || 0, planned = Number(x.planned) || 0, total = Number(x.total) || 0;
     const scale = Math.max(x.max, total, 1);
     const st = x.status || 'ok';   // under (red) · toward (amber) · ok (green) · over (orange), vs target
-    return `<div class="pl-bar-row ${st}${x.sub ? ' pl-sub' : ''}" title="${esc(`${x.name}: ${fmtNum(total, 1)} sets · min ${x.min} · target ${x.target} · max ${x.max}`)}">
+    return `<div class="pl-bar-row ${st}${x.sub ? ' pl-sub' : ''}" title="${esc(`${x.name}: ${fmtSets(total)} sets · min ${fmtSets(x.min)} · target ${fmtSets(x.target)} · max ${fmtSets(x.max)}`)}">
       <div class="pl-bar-top"><span>${stars.has(u) ? '<span class="star">★</span> ' : ''}${esc(x.name)}</span>
-        <span class="num"><b>${fmtNum(total, 0)}</b><span class="muted"> / ${fmtNum(x.target, 0)} target</span></span></div>
+        <span class="num"><b>${fmtSets(total)}</b><span class="muted"> / ${fmtSets(x.target)} target</span></span></div>
       <div class="pl-track"><i class="d" style="width:${(done / scale) * 100}%"></i><i class="p" style="left:${(done / scale) * 100}%;width:${(planned / scale) * 100}%"></i>
         ${x.min > 0 ? `<span class="tick" style="left:${(x.min / scale) * 100}%"></span>` : ''}<span class="tick tgt" style="left:${(x.target / scale) * 100}%"></span><span class="tick max" style="left:${(x.max / scale) * 100 - 0.5}%"></span></div>
       ${(() => { const n = U[u] && maxNote(u, U[u]); return n && n.atMax ? `<details class="pl-maxd"><summary class="tiny muted">Target at the max of ${x.max}${n.capped ? ` (your settings ask ${fmtNum(n.asked, 1)})` : ''} · why ⓘ</summary><div class="tiny muted">${esc(n.text)}</div></details>` : ''; })()}
     </div>`;
   }).join('');
-  const tracked = UNIT_ORDER.filter(u => units[u] && !(units[u].min > 0 || units[u].target > 0)).map(u => `${units[u].name} ${fmtNum(units[u].total, 0)}`).join(' · ');
+  const tracked = UNIT_ORDER.filter(u => units[u] && !(units[u].min > 0 || units[u].target > 0)).map(u => `${units[u].name} ${fmtSets(units[u].total)}`).join(' · ');
   const tgt = resolveTargets(profile).cardio.minPerWeek;
   const cm = sum.cardioMinutes && typeof sum.cardioMinutes === 'object' ? sum.cardioMinutes : { done: Number(sum.cardioMinutes) || 0, planned: 0, target: tgt };
   const ctarget = Number.isFinite(Number(cm.target)) ? Number(cm.target) : tgt;
@@ -325,7 +325,7 @@ function minsLine(sum, profile) {
   const tShort = t && t.met < t.total;
   const hit = tShort && pol.fillTargets !== 'extend' && t.minutesToHit > 0;            // 'time' / 'ask': offer to lengthen
   const room = tShort && pol.fillTargets === 'extend';                                 // already lengthening: offer cap / day / Time-saver
-  return `<div class="pl-mins"><span>Minimums</span>${m.met ? '<span class="ok">✓</span>' : `<span class="bad">✗ ${m.short.length} short</span><span class="muted small">${esc(m.short.slice(0, 3).map(x => `${x.name} ${fmtNum(x.total, 0)}/${fmtNum(x.min, 0)}`).join(', '))}</span>`}
+  return `<div class="pl-mins"><span>Minimums</span>${m.met ? '<span class="ok">✓</span>' : `<span class="bad">✗ ${m.short.length} short</span><span class="muted small">${esc(m.short.slice(0, 3).map(x => `${x.name} ${fmtSets(x.total)}/${fmtSets(x.min)}`).join(', '))}</span>`}
     ${pp ? `<span class="muted small">· push:pull ${pp.push}:${pp.pull}</span>` : ''}${ext ? `<span class="muted small">· +${ext}′ added</span>` : ''}</div>
     ${t ? `<div class="pl-mins"><span class="${tShort ? 'bad' : 'ok'}">${esc(t.line || `Targets ${t.met}/${t.total}`)}</span></div>` : ''}
     <div class="pl-mins">${hit ? `<button type="button" data-a="hit-targets">Hit targets: +${t.minutesToHit} min/wk</button>` : ''}${room ? '<button type="button" data-a="vol-room">Reach targets: options</button>' : ''}<button type="button" data-a="why-min">Why these numbers?</button>${m.met || room ? '' : '<button type="button" data-a="vol-room">Make room</button>'}</div>`;
@@ -387,7 +387,7 @@ function openDay(ctx, date) {
       ${has && plan.plan ? `<span class="pl-tag ${plan.plan.auto ? 'auto' : 'custom'}">${plan.plan.auto ? 'Auto' : 'Custom'}</span>` : ''}
       ${cmin ? `<span class="badge cardio">${cmin} min cardio</span>` : ''}
     </div>
-    ${groups.length ? `<div class="pl-chips mt">${groups.map(g => `<span class="pl-mchip">${esc(g.name)} <b>${fmtNum(g.sets, 0)}</b></span>`).join('')}</div>` : ''}
+    ${groups.length ? `<div class="pl-chips mt">${groups.map(g => `<span class="pl-mchip">${esc(g.name)} <b>${fmtSets(g.sets)}</b></span>`).join('')}</div>` : ''}
     ${rationale.length ? `<ul class="pl-why">${rationale.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
     ${has ? blocksHtml(plan, profile.units, { edit: date >= t }) + (date >= t ? `<button type="button" class="btn btn-sm btn-ghost btn-block pl-exadd" data-exadd>+ Add exercise</button><p class="tiny muted center">Tap a name for form cues &amp; video · ⇄ swap just that exercise</p>` : '') : rest || sch.kind === 'rest' ? '<p class="muted small mt">Rest days let muscles rebuild. You can still plan something below.</p>' : '<p class="muted small mt">Get a suggestion that fits your recovery and weekly targets, or build your own.</p>'}
     ${date >= t ? `<div class="pl-where"><div class="tiny muted bold">Where${has ? ' · tap to re-suggest there' : ''}</div>

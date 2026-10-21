@@ -3,6 +3,7 @@
 //   workout" in the page head and on an empty selected day — the shared retro sheet (js/ui/retro.js),
 //   pre-filled with that day when one is selected on the calendar.
 import * as prog from '../engine/progression.js';
+import { blockSets } from '../engine/recovery.js';
 import { getEx } from '../data/exercises.js';
 import { CARDIO, INTENSITIES } from '../data/cardio.js';
 import { esc } from './components.js';
@@ -15,11 +16,13 @@ let selDay = null;   // filter list to one day (module state persists across re-
 const f1 = n => { n = Number(n) || 0; return Math.round(n) === n ? String(n) : n.toFixed(1); };
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+// `sets` = WORKING sets logged with reps - the same count as recovery.sessionVolume().liftSets and the
+// "sets" stat on Body (§18: warm-ups are not stored as sets, so they never count).
 export function summarize(s) {
   const blocks = s.blocks || [];
   let sets = 0, cardioMin = 0; const classes = [], cardio = [];
   for (const b of blocks) {
-    if (b.kind === 'lift') sets += (b.sets || []).filter(x => x.done && x.r > 0).length;
+    if (b.kind === 'lift') sets += blockSets(b, { planned: s.status === 'planned' });
     else if (b.kind === 'cardio') { if (b.done !== false || s.status === 'done') { cardioMin += Number(b.minutes) || 0; cardio.push(b.modality); } }
     else if (b.kind === 'class') { classes.push(b.name); cardioMin += Number(b.classify?.cardioMinutes ?? b.duration) || 0; }
   }

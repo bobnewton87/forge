@@ -42,13 +42,21 @@
 //   surplus:number|null, calories:number|null } sorted by start (max 12). Consumers may ignore them.
 import { CARDIO, cardioOptions, estimateCalories } from '../data/cardio.js';
 import { DEFAULT_LOCATIONS, expandEquipment } from '../data/equipment.js';
-import { sessionVolume, groupStatus } from './recovery.js';
-import { GROUPS, REGIONS, VOLUME_UNITS, UNIT_ORDER, MAX_WHY } from '../data/muscles.js';
+import { sessionVolume } from './recovery.js';
+import { GROUPS, GROUP_ORDER, REGIONS, VOLUME_UNITS, UNIT_ORDER, MAX_WHY, COUNTED_UNITS, TARGETED_REGIONS, isCountedUnit } from '../data/muscles.js';
 import { SCULPT_GOALS } from '../data/sculpt.js';
 import { ds, parseDs, addDays, weekStart } from '../util.js';
-import { BUILTIN_STYLES, STYLE_LIMITS, normalizeCustomStyle, styleOptions, isStyleId, resolveStyle } from './generator.js';
+import { STYLE_LIMITS, normalizeCustomStyle, styleOptions, isStyleId, resolveStyle } from './generator.js';
+// Re-exported as a live binding, not a copy: recovery.js now imports this module, so targets.js can be
+// pulled in while generator.js is still evaluating (generator → recovery → targets → generator) and a
+// spread of generator's const here would hit its TDZ. Function imports are hoisted, so they are safe.
+export { BUILTIN_STYLES as STYLES } from './generator.js';
 import { sexOf, BODY } from './sex.js';
 import { lossRateDeficit, KCAL_PER_LB_TREND } from './nutrition.js';
+// Namespace import on purpose: it lets this module read nutrition.js's own tables when they are
+// exported and fall back to a pinned copy when they are not, so the two can never resolve one target
+// to two numbers while the export lands. test/volume-cohesion.test.js pins them equal.
+import * as NUT from './nutrition.js';
 // CONTRACT-NOTE (§20 Female mode): goals.goalBodyFatPct defaults to 22 for women (15 DXA-equivalent for men, §20b) and is clamped to the
 //   female limits [14, 35] (men keep LIMITS.goalBodyFatPct [5, 30]); goalBodyFatLimits(profile) exposes them for UI steppers.
 //   Weekly set targets are NOT sex-specific: no study supports different targets for women (Roberts 2020: same relative
@@ -78,7 +86,6 @@ export const LIMITS = {
   goalWeightLb: [70, 600], lossRatePctPerWeek: [0.1, 2],
 };
 export const CARDIO_CHIPS = [90, 150, 225, 300];
-export const STYLES = [...BUILTIN_STYLES];   // built-in style ids; custom ones live in profile.customStyles
 // §23. 'cut' = get lean, KEEP muscle. 'weight_loss' = get smaller: fat first, lean mass allowed to follow.
 export const GOALS = ['recomp', 'lean_bulk', 'cut', 'weight_loss'];
 export const GOAL_INFO = {
@@ -112,6 +119,23 @@ export const LOSS_RATES = [
 export const KCAL_PER_LB = KCAL_PER_LB_TREND;   // first approximation, shared with nutrition.lossRateDeficit
 // Share of the week's weight loss Forge calls "fast". Tiers drive the warning text, not the model.
 const rateTier = r => (r <= 0.4 ? 'gentle' : r <= 0.6 ? 'slow' : r <= 0.85 ? 'steady' : r <= 1.15 ? 'fast' : 'aggressive');
+// NET kcal per minute of cardio: the energy the session ADDS over resting. cardio.estimateCalories is
+// gross (METs x kg x hours, resting burn included), and resting is 1 MET by definition, so the net
+// share is exactly (METs - 1) / METs within the same model that produced the gross number - no second
+// metabolic model, nothing to drift. The MET value is read back through the public API rather than
+// duplicated here, so a change in cardio.js flows straight through.
+// CONTRACT-NOTE: swap this for bodycomp.estimateNetCalories() once that export lands, and keep ONE
+// net-calorie function (CONTRACT §18). Careau 2021's ~0.72 exercise-compensation factor
+// (doi:10.1016/j.cub.2021.08.016) is deliberately NOT applied here: the projection applies it to the
+// cardio delta on its side, and applying it in both places would compound it.
+export function netKcalPerMin(modality = 'bike', intensity = 'easy', weightLb = 165) {
+  const W = Number(weightLb) > 0 ? Number(weightLb) : 165;
+  const gross = estimateCalories(modality, 60, intensity, W);
+  if (!(gross > 0)) return 0;
+  const mets = gross / (W / 2.20462);                 // kcal/hr / kg = METs
+  if (!(mets > 1)) return 0;                          // at or below resting: no net cost
+  return gross / 60 * (mets - 1) / mets;
+}
 
 // ---- §23 lean protection ----------------------------------------------------------------------
 // A PRESET, not a fudge factor: it writes protein and the weekly-set floors, and the projection then
@@ -162,17 +186,29 @@ export const CARDIO_STYLE_NAMES = { longer: 'Long sessions', balanced: 'Balanced
 export const MIN_SESSION_DEFAULT = { longer: 30, balanced: 20, finishers: 10 };
 export const CARDIO_STYLE_WHY = 'Separate or longer cardio sessions reduce interference with lifting (Wilson et al. 2012) and suit an endurance base.';
 export const MINIMUMS_EVIDENCE = [
-  { claim: 'The minimum is the evidence floor: about 4 fractional sets/week is the minimum effective dose, gains rise steeply to about 10 and keep rising with diminishing returns to about 20. Floors here: ~10 for priority muscles, ~6 normal, 3-4 maintenance, 0 where other lifts already cover it.', source: 'Schoenfeld, Ogborn & Krieger 2017, J Sports Sci 35:1073; Pelland et al. 2025, Sports Med, doi:10.1007/s40279-025-02344-w' },
-  { claim: 'Trained lifters do best around 12-20 sets per muscle per week. More than 20 added nothing for biceps or quads but helped triceps. Your targets sit in that range.', source: 'Baz-Valle et al. 2022, J Hum Kinet 81:199' },
-  { claim: 'The weekly max is a ceiling on what a muscle can use, not a priority setting: 20 for most muscles, 24 for triceps and side delts, 22 for back (lats + upper back), 10 for lower back (fatigue guard). Biceps: 18 sets/week grew them as much as 27 (no better with more), and 12-20 matched over 20.', source: 'Heaselgrave et al. 2019, Int J Sports Physiol Perform 14:360; Baz-Valle et al. 2022; Pelland et al. 2025' },
-  { claim: 'Indirect sets count half: presses give triceps 0.5 a set, rows and pulldowns give biceps 0.5. Each set counts once per muscle.', source: 'Pelland et al. 2025, Sports Med (fractional counting); Mannarino et al. 2021' },
+  { claim: 'About 4 fractional sets a week is the minimum effective dose; growth rises steeply to about 10 and keeps rising with shrinking returns past that. A priority muscle\u2019s floor of ~10 is the bottom of the effective range, not the smallest dose that does anything: ~6 normal, 3-4 maintenance, 0 where other lifts already cover it.', source: 'ACSM position stand 2026 (Currier et al., Med Sci Sports Exerc 58:851, doi:10.1249/MSS.0000000000003897): \u226510 sets/wk; Pelland et al. 2025, Sports Med 56:481, doi:10.1007/s40279-025-02344-w (minimum effective dose 4); Schoenfeld, Ogborn & Krieger 2017, J Sports Sci 35:1073 (+0.37%/set; the 10+ vs <5 comparison was a trend, P=0.074)' },
+  { claim: 'Trained lifters do best around 12-20 sets per muscle per week, and the dose-response flattens around 18-20. Every target here sits in or below that range.', source: 'Baz-Valle et al. 2022, J Hum Kinet 81:199, doi:10.2478/hukin-2022-0017 (12-20; note it counted every set as 1, so in the fractional sets Forge uses its range means 12-20 DIRECT sets); ACSM position stand 2026 (~18-20 weekly sets)' },
+  { claim: 'The weekly max is a ceiling on what a muscle can use, not a priority setting: 20 for most muscles, 24 for triceps and side delts, 22 for back (lats + upper back), 10 for lower back (fatigue guard). Biceps: 18 sets/week grew them as much as 27. The 20 is the best-evidenced number here; 24 and 22 are practitioner allowances, not measured ceilings.', source: 'Heaselgrave et al. 2019, Int J Sports Physiol Perform 14:360, doi:10.1123/ijspp.2018-0427 (9/18/27 sets: +4.3/+9.5/+5.4%, n.s., 6 weeks); Baz-Valle et al. 2022; Pelland et al. 2025 (lower-efficiency tier starts ~19 fractional sets, with no measured plateau)' },
+  { claim: 'Only hard working sets count, taken to failure or within about 3 reps of it; warm-ups are not hard sets, so they never count. Indirect sets count half: presses give triceps 0.5 a set, rows and pulldowns give biceps 0.5, and each set counts once per muscle.', source: 'Baz-Valle, Fontes-Villalba & Santos-Concejero 2021, J Strength Cond Res 35:870, doi:10.1519/JSC.0000000000002776 (counting hard sets to or near failure); Pelland et al. 2025, Sports Med (direct 1.0 / synergist 0.5); ACSM 2026 and Robinson et al. 2024, Sports Med 54:2209, doi:10.1007/s40279-024-02069-2 (near-failure, 2-3 reps in reserve, is enough); Mannarino et al. 2021 (a row is worth about half a curl for biceps; n=10, untrained)' },
   { claim: 'Keeping muscle takes about a third of the volume that built it, so your legs (maintenance) have low floors on purpose.', source: 'Bickel, Cross & Bamman 2011, Med Sci Sports Exerc; Spiering et al. 2021, J Strength Cond Res' },
-  { claim: 'Per session, returns flatten past ~10-11 sets for one muscle, so sessions cap at 10 (big) / 8 (small) and spread the rest. Training a muscle 2x/week beats 1x unless volume is equal; small muscles can go on back-to-back days at moderate volume.', source: 'Remmert, Pelland et al. 2025 (preprint); Schoenfeld et al. 2016, Sports Med; Schoenfeld, Grgic & Krieger 2019' },
-  { claim: 'Side and rear delts are enforced separately: pressing works the front delts, not the width-building side delts. Back counts lats and upper back only (traps and lower back are tracked but don\'t count).', source: 'Weekly-volume audit (docs/research/weekly-volume-audit.md)' },
+  { claim: 'Sessions cap at 10 sets for a big muscle and 8 for a small one and spread the rest. This is a fatigue, time and set-quality rule, not a measured hypertrophy ceiling: no peer-reviewed study has found a per-session limit, and spreading the same weekly volume mainly buys better reps per set. Training a muscle 2x/week beats 1x unless weekly volume is equal; small muscles can go on back-to-back days at moderate volume.', source: 'Remmert, Pelland et al. 2025, SportRxiv 537 (still a preprint, ~11 sets/session); Calzavara & Barroso 2026, J Strength Cond Res, doi:10.1519/JSC.0000000000005665 (9 quad sets in one session vs three: no difference in growth, 58-76% more volume load when spread); Schoenfeld et al. 2016, Sports Med 46:1689 (2x > 1x when volume is equated); Schoenfeld, Grgic & Krieger 2019, J Sports Sci 37:1286 (no frequency effect once volume is matched)' },
+  { claim: 'Side and rear delts are enforced separately: pressing works the front delts, not the width-building side delts. Back counts lats and upper back only (traps and lower back are tracked but don\'t count). The side-delt floor of 10 is the one dose directly tested in trained lifters; the 24 max above it is convention.', source: 'Larsen et al. 2025, Front Physiol 16:1611468, doi:10.3389/fphys.2025.1611468 (10 weekly sets of lateral raises grew the lateral delt 3.3-4.6% in 8 weeks); Pelland et al. 2025 (its dose-response tables contain no lateral- or rear-deltoid row at all); weekly-volume audit (docs/research/weekly-volume-audit.md)' },
 ];
 const DEF_VOLUME = { mode: 'extend', maxMinutes: 90 };
 // goalBodyFatPct: 15 % DXA-equivalent ≈ the colloquial "12 %" (§20b); a saved goal is never changed.
 const DEF = { cardioMin: 120, hardPerWeek: 1, adherence: 0.85, defaultMinutes: 45, style: 'hypertrophy', proteinGPerLb: 1.0, fatPct: 25, goalBodyFatPct: BODY.male.goalBodyFat, goal: 'recomp' };
+// §18: the protein default is PER GOAL, and nutrition.js owns the table. `DEF.proteinGPerLb` was flat
+// at 1.0, so under a cut with no protein set the Nutrition editor's slider read 1.00 while Today's
+// target computed at 1.15 g/lb - two numbers for one target, on one screen.
+// CONTRACT-NOTE: NUT.DEFAULT_PROTEIN is the source once nutrition.js exports it; PROTEIN_FALLBACK is
+// the same table, kept only so this resolves correctly before that export lands. Do not edit one
+// without the other - the cohesion test fails if they disagree.
+const PROTEIN_FALLBACK = { recomp: 1.0, lean_bulk: 1.0, cut: 1.15, weight_loss: 1.0 };
+export function defaultProteinGPerLb(profile) {
+  const table = (NUT && NUT.DEFAULT_PROTEIN && typeof NUT.DEFAULT_PROTEIN === 'object') ? NUT.DEFAULT_PROTEIN : PROTEIN_FALLBACK;
+  const v = Number(table[goalOf(profile)]);
+  return Number.isFinite(v) && v > 0 ? v : DEF.proteinGPerLb;
+}
 export function goalBodyFatLimits(profile) { return sexOf(profile) === 'female' ? BODY.female.goalBfLimits : LIMITS.goalBodyFatPct; }
 const goalBfDefault = profile => (sexOf(profile) === 'female' ? BODY.female.goalBodyFat : DEF.goalBodyFatPct);
 export function goalWeightLimits() { return LIMITS.goalWeightLb; }
@@ -220,9 +256,13 @@ export function lossPlan(profile, { weightLb = null, now = new Date() } = {}) {
   if (deficitKcal != null && deficitKcal > 500) warnings.push(`A ${deficitKcal} kcal/day deficit is past the ~500 kcal/day point where lifters stopped gaining lean mass at all (Murphy & Koehler 2022). Strength holds up better than size.`);
   // §23: cardio is the other half of a deficit. Minutes/week of easy Zone-2 work that would cover the whole
   // gap, so the user can move more instead of eating less (and so the Plan screen can say how much).
+  // This uses NET calories: cardio.estimateCalories is gross (METs x kg x hours includes the resting
+  // burn you would have spent anyway), and dividing a deficit by a gross rate under-prescribes the
+  // minutes - easy cycling is 5.5 METs, so only 4.5/5.5 of the burn is new energy and the honest
+  // figure is 22% more minutes.
   let cardioMinPerWeek = null;
   if (deficitKcal != null && W != null) {
-    const perMin = estimateCalories('bike', 60, 'easy', W) / 60;
+    const perMin = netKcalPerMin('bike', 'easy', W);
     if (perMin > 0) cardioMinPerWeek = Math.round(deficitKcal * 7 / perMin / 5) * 5;
   }
   return { goalWeightLb: goalW, goalWeightDate: date, pctPerWeek: Math.round(pct * 100) / 100, lbPerWeek, deficitKcal, cardioMinPerWeek,
@@ -497,25 +537,69 @@ export function volumePolicyOf(profile) {
     ...(VOLUME_FLOORS.includes(v.floors) ? { floors: v.floors } : {}),
     ...(v.fillTargetsSetAt ? { fillTargetsSetAt: v.fillTargetsSetAt } : {}) };
 }
-const minCache = new WeakMap();
-// Resolved weekly set targets per muscle group ({min, max}), as the planner uses them.
-export function weeklyMinimums(profile) {
-  const key = profile && typeof profile === 'object' ? profile : minCache;
-  const hit = minCache.get(key);
+// Resolved weekly set numbers per muscle GROUP: the sum over the group's COUNTED units of
+// unitTargets(). ONE derivation (CONTRACT §18): a group's sets and its target always add up the same
+// muscles, so Body's group card, Today's muscle tiles, recovery.groupStatus and Plan's group coverage
+// cannot drift. Tracked-only units (front delts, traps, lower back) and sub-units (upper chest) are
+// excluded from the sums and listed separately. → { [group]: { min, target, max, units, sub, tracked, starred } }
+const groupCache = new WeakMap();
+export function groupTargets(profile) {
+  const key = profile && typeof profile === 'object' ? profile : groupCache;
   const floor = volumeFloorOf(profile);
-  const sig = JSON.stringify([profile?.groupPriority, profile?.sculptGoals, floor]);
+  const sig = JSON.stringify([profile?.groupPriority, profile?.sculptGoals, floor, priorityLimits(profile)[0]]);
+  const hit = groupCache.get(key);
   if (hit && hit.sig === sig) return hit.v;
-  let gs = {};
-  try { gs = groupStatus([], { now: new Date(2026, 0, 5, 12), profile }); } catch (e) { gs = {}; }
-  // §23: below-floor modes scale the displayed group minimums the same way unitTargets scales the
-  // enforced ones, so Body/Plan/Today never show a floor the planner is not actually holding.
-  const ff = FLOOR_FACTOR[floor];
-  const v = Object.fromEntries(Object.entries(gs).filter(([g]) => GROUPS[g]).map(([g, x]) => [g, {
-    min: ff === 1 ? Math.round((x.target?.min || 0) * 10) / 10 : Math.round((x.target?.min || 0) * ff * 10) / 10,
-    max: Math.round((x.target?.max || 0) * 10) / 10 }]));
-  minCache.set(key, { sig, v });
+  const U = unitTargets(profile);
+  const stars = starredUnits(profile);
+  const r1 = x => Math.round(x * 10) / 10;
+  const v = {};
+  for (const g of GROUP_ORDER) {
+    if (!GROUPS[g]) continue;
+    const counted = COUNTED_UNITS[g] || [];
+    const sum = k => r1(counted.reduce((a, u) => a + (U[u]?.[k] || 0), 0));
+    v[g] = { min: sum('min'), target: sum('target'), max: sum('max'), units: [...counted],
+      sub: UNIT_ORDER.filter(u => VOLUME_UNITS[u].group === g && VOLUME_UNITS[u].sub),
+      tracked: UNIT_ORDER.filter(u => VOLUME_UNITS[u].group === g && VOLUME_UNITS[u].tier === 'tracked'),
+      starred: counted.some(u => stars.has(u)) };
+  }
+  groupCache.set(key, { sig, v });
   return v;
 }
+// Legacy name kept for callers that only want { min, max } per group. Same numbers as groupTargets.
+export function weeklyMinimums(profile) {
+  return Object.fromEntries(Object.entries(groupTargets(profile)).map(([g, x]) => [g, { min: x.min, target: x.target, max: x.max }]));
+}
+// The §23 floor factors, resolved once, so recovery.js scales region/group numbers exactly as
+// unitTargets scales the enforced ones (they used to diverge: Today showed the full target while
+// Plan showed a third of it).
+export function volumeFactors(profile) {
+  const floor = volumeFloorOf(profile);
+  return { floor, floorFactor: FLOOR_FACTOR[floor], targetFactor: TARGET_FACTOR[floor], allowZero: priorityLimits(profile)[0] === 0 };
+}
+// ONE set-count formatter for every screen (Bob: "one screen rounding 14.5 to 15 and another to 14
+// looks like a bug"). Fractional credit means halves are real, so a half shows and a whole does not.
+export function fmtSets(x) {
+  const v = Math.round((Number(x) || 0) * 10) / 10;
+  return Number.isInteger(v) ? String(v) : v.toFixed(1);
+}
+// A sculpt goal's extraWeeklySets split over its regions. The split is normalised over the regions
+// that actually feed a unit WITH A TARGET, so the whole amount the user asked for lands somewhere:
+// before this, "Traps / Yoke" lost 1.43 of its 2 sets to the tracked traps unit (target 0, clamped
+// away) and "Capped Delts"/"Upper Chest" lost their front-delt share the same way.
+// → { [regionId]: extraSets }
+export function sculptExtraByRegion(profile) {
+  const out = {};
+  for (const id of Array.isArray(profile?.sculptGoals) ? profile.sculptGoals : []) {
+    const g = SCULPT_GOALS[id]; if (!g || !(g.extraWeeklySets > 0)) continue;
+    const all = Object.entries(g.regions || {}).filter(([r, w]) => REGIONS[r] && w > 0);
+    const es = all.filter(([r]) => TARGETED_REGIONS.has(r));
+    const use = es.length ? es : all;                 // a goal with no targeted region keeps its old split
+    const tot = use.reduce((a, [, w]) => a + w, 0); if (!tot) continue;
+    for (const [r, w] of use) out[r] = (out[r] || 0) + g.extraWeeklySets * w / tot;
+  }
+  return out;
+}
+
 // Per enforcement unit (VOLUME_UNITS): min = evidence floor (fixed), target = base target × slider +
 // sculpt extras (clamped to [min, max]), max = cap. The ONE priority mechanism: sliders and sculpt
 // goals move only the target. → { [unit]: { min, target, max, base, slider, extra, name, group, tier } }
@@ -526,13 +610,7 @@ export function unitTargets(profile) {
   const sig = JSON.stringify([profile?.groupPriority, profile?.sculptGoals, floor, lim[0]]);
   const hit = unitCache.get(key);
   if (hit && hit.sig === sig) return hit.v;
-  const extraR = {};
-  for (const id of Array.isArray(profile?.sculptGoals) ? profile.sculptGoals : []) {
-    const g = SCULPT_GOALS[id]; if (!g || !(g.extraWeeklySets > 0)) continue;
-    const es = Object.entries(g.regions || {}).filter(([r, w]) => REGIONS[r] && w > 0);
-    const tot = es.reduce((a, [, w]) => a + w, 0); if (!tot) continue;
-    for (const [r, w] of es) extraR[r] = (extraR[r] || 0) + g.extraWeeklySets * w / tot;
-  }
+  const extraR = sculptExtraByRegion(profile);
   const v = {};
   const ff = FLOOR_FACTOR[floor], tf = TARGET_FACTOR[floor];
   const allowZero = lim[0] === 0;
@@ -623,7 +701,7 @@ function activeStack(profile, today) {
 }
 function nutritionOf(profile) {
   const n = profile?.nutrition || {}, bw = Number(profile?.bodyweight) || 0;
-  const pg = fin(n.proteinGPerLb) && num(n.proteinGPerLb) > 0 ? num(n.proteinGPerLb) : fin(n.protein) && num(n.protein) > 0 && bw ? Math.round(num(n.protein) / bw * 20) / 20 : DEF.proteinGPerLb;
+  const pg = fin(n.proteinGPerLb) && num(n.proteinGPerLb) > 0 ? num(n.proteinGPerLb) : fin(n.protein) && num(n.protein) > 0 && bw ? Math.round(num(n.protein) / bw * 20) / 20 : defaultProteinGPerLb(profile);
   return {
     mode: MODES.includes(n.mode) ? n.mode : 'off',
     calories: fin(n.calories) && num(n.calories) > 0 ? Math.round(num(n.calories)) : null,

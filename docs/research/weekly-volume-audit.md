@@ -253,3 +253,183 @@ Biceps ×2 now plans 20/20 (was held at 16). Legs ×2 plans quads 12/12 (was hel
 (was held at 16). Nothing goes past its max. Small overshoots above target (≤ 2.5 sets, each with a named reason) went
 from 5 to 8 of 18 weeks, because rows, face pulls and presses are no longer held back by the old rear-delt and
 front-delt caps.
+
+## 8. Addendum (2026-10-21): cross-screen cohesion, set-count semantics, and an evidence re-check
+
+Bob: *"the workout goals and the amounts that we're supposed to do, and the maximums like we have — make sure all
+that's tight, and that the number of sets across all the different pages in the software is tied together"* and
+*"we don't have different variables for things across different parts of the website."*
+
+### 8.1 What "one set" means (now written down)
+
+- **A working set counts; a warm-up never does.** Warm-ups are not stored as sets at all, so the question is
+  settled by the data model, but the counting rule is now in one function, `recovery.blockSets`: a logged set
+  counts when `done && r > 0`. A **planned** day counts its prescription (`target.sets`), because a plan has
+  nothing logged yet.
+- **"Hard sets" is the literature's unit.** The convention Forge follows is the number of sets taken to failure or
+  near it — Baz-Valle, Fontes-Villalba & Santos-Concejero 2021, J Strength Cond Res 35:870,
+  doi:10.1519/JSC.0000000000002776 ("the total number of sets to failure, or near to, seems to be an adequate
+  method to quantify training volume"). This citation was missing from §2 and is the single best source for the
+  app's set-count semantics. No paper says "exclude warm-ups" in those words; it follows from the definition.
+- **Near failure, not failure.** The 2026 ACSM position stand (Currier et al., Med Sci Sports Exerc 58:851,
+  doi:10.1249/MSS.0000000000003897) states that training to momentary failure "does not enhance" gains and that
+  2–3 reps in reserve is sufficient effort; Robinson et al. 2024, Sports Med 54:2209, doi:10.1007/s40279-024-02069-2
+  finds hypertrophy improves as sets end closer to failure while strength is flat across RIR. So the operational
+  definition is **0–3 RIR**, which is what the app's rep targets already aim at.
+- **Fractional credit, once per unit.** Direct 1.0, synergist 0.5 (Pelland et al. 2025, verified row by row), and a
+  set credits an enforcement unit once, at the largest weight over that unit's regions.
+
+### 8.2 The cohesion audit: what diverged
+
+Eight places computed a volume number locally instead of reading the shared one. All eight are fixed; see §8.3.
+
+| # | Where | What it showed | What it should have shown |
+|---|---|---|---|
+| D1 | Body "Weekly sets vs target" | rolling 7 days, logged only | the calendar week, logged + planned — the Plan tab's number. Mid-week the two differed by 2× (back 7.8 vs 18.8 against the same target of 18); on the Tuesday after a full week Plan said 0 while Body said 11. |
+| D2 | `GROUPS[g].volume.max` → `recovery.groupStatus` → Today, Body, Settings, `targets.weeklyMinimums`, `weekPlanSummary.groups` | back max **52**, shoulders max **64** (the tracked units' ceilings were added in) | back 22, shoulders 44. With a max of 52 the group-level "over the weekly max" warning and `needScore`'s over-target penalty could never fire for back or shoulders. |
+| D3 | `recovery.groupStatus().sets7d` vs its own `target` | sets counted **once per group**, target **summed the units** | the same muscles on both sides. For one lived week Today's tile read "Shoulders 30/26" while Body read "Shoulders 17/25". |
+| D4 | sculpt extras at group level | summed over **all** the group's regions, including tracked ones | only over regions that feed a target (shoulders 25.5 vs the unit sum 25). |
+| D5 | `today.sessionGroups` (Today's day card, Plan's day cards and day sheet) | **summed** the region weights inside a group | the shared per-group credit. A real 23-set session displayed "Triceps 16.5 · Shoulders 12 · Biceps 12" against true credits of 7.5 / 9 / 6. |
+| D6 | three unit counters (`planner.sessionUnits`, `body.unitSets7d`, `recovery.sessionVolume`) + `history.summarize` | four implementations of "how many sets" | one (`recovery.sessionVolume` / `unitVolume` / `unitSets`). |
+| D7 | rounding | Plan `14/15`, Body card `14.8/15`, Body detail and live session `14.8/14.5` | one formatter, `targets.fmtSets`. |
+| D8 | `recovery.js` and the §23 volume floors | region and group targets ignored the floor mode | the same scaling `unitTargets` applies, so a "maintenance floors" profile can't show the full target on Today and a third of it on Plan. |
+
+Sculpt goals also leaked extra sets: the split was normalised over **all** a goal's regions, and any share landing on
+a tracked unit (front delts, traps, lower back) was clamped away. "Traps / Yoke" delivered 0.57 of its 2 promised
+sets; "Capped Delts" 2.43 of 3; "Back Thickness" 2.1 of 3; "Upper Chest" 2.5 of 3. The split is now normalised over
+the regions that actually feed a target, so the whole amount lands somewhere. This moved two default numbers:
+**chest target 14.5 → 15** and **upper-chest sub-target 8.5 → 9**.
+
+### 8.3 One source of truth, after the fix
+
+```
+muscles.js        VOLUME_UNITS (base min/target/max) · COUNTED_UNITS[group] · unitCredits(ex) (memoized)
+   │                 GROUPS[g].volume = sum over COUNTED units only   GROUPS[g].weeklySets = untouched legacy shape
+   ▼
+targets.js        unitTargets(profile)   ← the ONE resolver: target = clamp(base × slider + sculpt extras, [min, max])
+                  groupTargets(profile)  = sum over COUNTED_UNITS[g] of unitTargets   (weeklyMinimums is a view of it)
+                  starredUnits / starredGroups · maxNote · fmtSets · volumeFactors · sculptExtraByRegion
+   ▼
+recovery.js       sessionVolume(s, {planned}) → { regions, groups, units, liftSets, cardioMin, push, pull }
+                  blockSets · unitVolume · unitSets(sessions, {from,to,today,includePlanned})
+                  groupStatus / muscleStatus: targets come from unitTargets, group sets from COUNTED units
+   ▼
+planner.js        weekUnitTotals → recovery.unitSets · weekPlanSummary.units · explainWeek
+   ▼
+UI                Plan week coverage · Body group cards + group sheet · Today tiles + day cards · Settings sliders ·
+                  live session "Your week now" · "Why these numbers?"   — none of them does volume maths of its own
+```
+
+`recovery.js` now imports `targets.js` while `targets.js` imports `sessionVolume` from `recovery.js`. The cycle is
+deliberate (the resolver resolves, the counter counts) and safe because neither side calls the other during module
+evaluation; `test/volume-cohesion.test.js` pins five entry orders, including `generator.js`, which is what forced
+`targets.STYLES` to become a re-exported live binding rather than a spread of a `const`.
+
+### 8.4 Planner reasons: the "per-session caps" artefact was real
+
+Bob had seen *"per-session caps on every lift day"* given as the binding reason suspiciously often. It was partly an
+artefact of how a day's reason was chosen:
+
+- `note()` treated `'time'` as the weakest reason, so any later, worse candidate that happened to hit a cap
+  overwrote "this day is simply out of minutes". A week of fixed-length days reported `session` 13 times and
+  `policy` 4; it now reports `policy` 23 and `session` 0.
+- A 2-lift-day week whose days both ran to the 90′ cap reported `session` for chest, back and side delts. It now
+  reports `time`, which is the constraint the user can actually lift.
+- A week with **no lift day at all** reported `session` ("per-session caps on every lift day") for every muscle.
+  There is now a `nolift` reason.
+- A successful dry-run probe was labelled `session`; it is now `rounds` ("room is left: re-plan the week to fill it").
+
+Reasons are now chosen in an order where each one is true of the day: this muscle is at its own per-session cap →
+`session`; the day is at its time limit, or a candidate was legal and only did not fit → `time`; otherwise the first
+real blocker. `session` is only reported for the week when a per-session cap is in the way on **every** lift day and
+this muscle is at its own cap on at least one; the partial case is `session_other` ("the exercises that would add it
+are at another muscle's per-session cap"). `test/volume-cohesion.test.js` checks the claim against the plan.
+
+### 8.5 Evidence re-check (2026-10-21)
+
+Every §2 citation was re-verified against the primary source. The numbers survive; several labels did not.
+
+**Corrections to §2 of this document:**
+- The **Pelland 2025** citation "Sports Med 56:481" is **correct** (accepted Oct 2025, e-pub Dec 2025, vol. 56 is the
+  2026 print volume). The §6 instruction to stop calling it a preprint stands.
+- **Baz-Valle 2022 counted volume with the TOTAL method** (every set = 1, synergists included), not fractionally. Its
+  own conclusion is that "12–20 weekly sets of **direct** triceps brachii work may be optimum". In Forge's fractional
+  units, Baz-Valle therefore supports ~12–20 for triceps, **not >20**. Its triceps finding also rests on a single
+  study (Brigatto 2019 a/b, n=27).
+- **Schoenfeld 2017** is overstated here: the 3-level comparison (<5 / 5–9 / 10+) was **a trend, P=0.074**, not a
+  finding. It is the weakest leg of the 10-set floors.
+- **Pelland 2025 reports no plateau**: explanation (iii) for its null frequency effect is "there is no plateau in
+  hypertrophy with increasing per session volumes". The model shows shrinking returns out to ~42 sets, never a wall.
+  Its frequency result is also only negligible *for hypertrophy* — it is 100% posterior positive for strength.
+- **The Schoenfeld 2016 / 2019 frequency attributions are swapped** in §2: 2016 found 2×/week > 1×/week on a
+  volume-equated basis; 2019 (25 studies) is the one finding no difference once volume is matched.
+- **Mannarino 2021** is **10 untrained men**, 8 weeks, within-subject. It corroborates the 0.5 synergist weight;
+  Pelland is the citation that carries it.
+- **Bickel 2011 and Spiering 2021 are not independent**: Spiering is a narrative review whose muscle-size claim rests
+  largely on Bickel, whose subjects were untrained at baseline.
+- **Remmert #537 is still an unreviewed preprint** (doi:10.51224/SRXIV.537); Pelland 2025 cites it as one. Do not
+  "update" it the way §6 said to update Pelland.
+
+**New sources that belong in §2:**
+
+| Source | What it adds |
+|---|---|
+| ACSM position stand 2026: Currier et al., Med Sci Sports Exerc 58:851, PMID 41843416, doi:10.1249/MSS.0000000000003897 | 137 systematic reviews. Hypertrophy: "**≥10 sets/wk (dose-response)**" — the first authoritative-body endorsement of the 10-set figure, and a far better citation for the floors than a P=0.074 trend. Narrative: the dose-response "plateaued and showed diminishing returns beyond … **~18–20 weekly sets** for hypertrophy". Failure is not required; 2–3 RIR suffices. |
+| Baz-Valle, Fontes-Villalba & Santos-Concejero 2021, J Strength Cond Res 35:870, PMID 30063555, doi:10.1519/JSC.0000000000002776 | The canonical citation for counting **hard sets to or near failure** as the unit of volume. Was missing. |
+| Larsen et al. 2025, Front Physiol 16:1611468, PMID 40692697, doi:10.3389/fphys.2025.1611468 | 24 trained lifters, 8 weeks, **exactly 10 weekly sets** of lateral raises → lateral deltoid +3.3–4.6%. The only direct support anywhere for the side-delt floor of 10. One volume arm, so no dose-response. |
+| Robinson et al. 2024, Sports Med 54:2209, PMID 38970765, doi:10.1007/s40279-024-02069-2 | Proximity-to-failure dose-response: hypertrophy rises as sets end closer to failure; strength flat across RIR. |
+| Camargo et al. 2025, Eur J Appl Physiol 125:3065, PMID 40883636, doi:10.1007/s00421-025-05959-z | Whether a saturation point exists is **unresolved**; recent trained-subject studies conflict. Declines to name a ceiling. |
+| Calzavara & Barroso 2026, J Strength Cond Res, PMID 42709978, doi:10.1519/JSC.0000000000005665 | The only **peer-reviewed** per-session test: 18 trained men, 9 weekly quad sets in one session vs three. Quad thickness rose with no group × time interaction (VL P=0.215). Volume load was 58–76% higher when spread — which is the real argument for spreading, not a growth ceiling. |
+| Boutagy & McKean 2026, SportRxiv #1100 (preprint) | Re-analysis of Pelland's own dataset: weekly volume at fixed frequency +0.170 per ln(sets) (95% CI 0.076–0.263); dividing a fixed weekly volume over more sessions −0.043 (95% CI −0.161 to 0.074), a null. |
+| "Exploring the Upper Limits of RT Volume in Trained Athletes", J Sci Sport Exerc 2026, doi:10.1007/s42978-026-00387-7 | 27 strength-trained men, a 7-week phase at 1.5× weekly sets: no extra hypertrophy or strength. |
+
+**Verdicts (fractional weekly sets). Nothing new justifies raising any max; the pressure is downward.**
+
+| Number | Verdict |
+|---|---|
+| default max **20** | **KEEP.** The best-supported number in the file: ACSM 2026 (~18–20), Baz-Valle (12–20), Heaselgrave (18 ≈ 27), Pelland (lower-efficiency tier from ~19) all converge. |
+| triceps max **24** | **KEEP, relabelled as convention.** `MAX_WHY.triceps` misstated its source and has been rewritten: Baz-Valle counted total sets and recommends 12–20 **direct**; the ">20 helped triceps" result is one study. 24 fractional is a defensible allowance for a priority, fast-recovering muscle that gets much of its volume indirectly. Dropping it to 20 and letting the target carry the priority is the defensible alternative; not taken, because it would cut Bob's current triceps ceiling with no new evidence against it. |
+| side delts max **24** | **KEEP, relabelled.** `MAX_WHY.delt_side` now says plainly that Pelland's tables contain **no lateral-deltoid row at all**, so no study has ever varied side-delt volume, and cites Larsen 2025 for the floor of 10. "Same as triceps" is gone — that was convention leaning on convention. |
+| back max **22** | **KEEP, relabelled as convention.** "Two muscles in one count" is a units argument, not evidence, but it is internally coherent and conservative: a row credits the unit 1.0, so 22 unit-sets is less work than 20 + 20 per muscle. |
+| lower back max **10** | **KEEP.** Already a labelled heuristic on a tracked-only unit. |
+| floors: back / triceps **10** | **KEEP, better cited** (ACSM 2026 "≥10 sets/wk") and **relabelled**: 10 is the bottom of the effective range, not a minimum effective dose. Pelland's MED is **4**. |
+| floor: side delts **10** | **KEEP — now with a real citation** (Larsen 2025). |
+| floor: rear delts **4** | **KEEP.** Matches Pelland's MED exactly; the best-justified floor in the file. |
+| floors: chest 8 / upper chest 4 / core 8 | **KEEP, relabelled as convention.** No upper-chest and **no abdominal** volume dose-response literature exists; §4's source for core 8 was the app's own tip, which is circular. |
+| floors: biceps 6, quads 4, hamstrings 3, glutes/calves/forearms 0 | **KEEP.** All sit in Pelland's higher-efficiency band (5–10) or at maintenance, and Kubo justifies not crediting squats to hamstrings. |
+| base targets (chest 12, back 15, side delts 14, triceps 15, …) | **KEEP.** All inside Pelland's intermediate band (11–18) and under ACSM's ~18–20 flattening. Upper chest 6 and core 11 are convention. |
+| per-session caps **8 / 10 / 12** and ~12 group-sets | **KEEP as convention, evidence claim downgraded.** §4 item 4 cited the Remmert preprint as support; it is unreviewed, Pelland explicitly reports no per-session plateau, a 2026 re-analysis of Pelland's own data finds session division a null, and the only peer-reviewed test found no penalty for cramming. The caps remain as a fatigue / time / set-quality heuristic — Calzavara's 58–76% higher volume load when volume is spread is the honest argument for them. The specific 8 / 10 / 12 split has no source. |
+| semantics: hard sets only, direct 1.0 / synergist 0.5, credit each unit once | **KEEP.** Pelland Table 1 verified row by row; the missing citation for the hard-set convention has been added. |
+
+**One practical consequence worth acting on later.** Because 10 is the bottom of the effective range and not a
+biological floor, a week that cannot fit the floors in its scheduled minutes has a cheap, well-supported option this
+app does not yet offer: cut the **non-priority** floors toward Pelland's 4–6 rather than lengthening every session.
+By Pelland's own curve, moving a normal muscle from 10 to 5 costs roughly one detectable increment. That belongs in
+the "Make room" options, as a volume choice beside the time choices.
+
+### 8.6 Addendum (2026-10-21, second pass): two more shared targets, and what is still open
+
+The same bug class, found by the nutrition audit and routed here, in `js/engine/targets.js`:
+
+| # | Where | What it showed | Fix |
+|---|---|---|---|
+| D9 | `DEF.proteinGPerLb = 1.0`, flat across goals, while `js/engine/nutrition.js` defaults `{cut: 1.15}` | under a cut with no protein set, the Nutrition editor's slider read **1.00** while Today's target was computed from **1.15 g/lb** — two numbers for one target, on one screen (170 lb: 170 g vs 195 g) | `targets.defaultProteinGPerLb(profile)` resolves per goal and reads `nutrition.DEFAULT_PROTEIN` when that export lands, with a pinned copy of the same table until then. `test/volume-cohesion.test.js` compares the resolver against `nutrition.dailyTargets` for all four goals, and fails if the two tables ever drift. |
+| D10 | the deficit → cardio-minutes conversion used **gross** kcal | `cardio.estimateCalories` is METs × kg × hours, which includes the resting burn you would have spent anyway. Dividing a deficit by a gross rate under-prescribes the minutes: easy cycling is 5.5 METs, so only 4.5/5.5 of the burn is new energy. Bob's 595 kcal/day gap asked for **590 min/week** when the honest figure is **720** (+22%). | `targets.netKcalPerMin(modality, intensity, weightLb)`, exported. Net = gross × (METs − 1)/METs — exact *within the same model that produced the gross number*, with the MET read back through `estimateCalories` rather than duplicated, so no second metabolic model exists to drift. |
+
+**Deliberately not applied: Careau et al. 2021's ~0.72 exercise-compensation factor** (Curr Biol 31:4659, doi:10.1016/j.cub.2021.08.016 — people offset roughly a quarter of exercise energy with lower resting expenditure). It belongs in this calculation on the merits, but the projection applies it to the cardio delta on its side, and applying it in both places would compound it into a ~0.52 factor. One owner should hold it. The code says so at the call site so nobody adds it twice.
+
+**Still open, in other owners' files** (reported, not edited):
+
+- **`js/classes/classify.js` → `groupCredits(muscles)` SUMS the region credits inside a group**, which is divergence D5 all over again in the CLASSES owner's module. The class picker tells Bob what a class is worth; the week counts it once per group from the same `classify.muscles`. Measured at 45 min:
+
+  | class | picker says | the week counts |
+  |---|---|---|
+  | Body Pump | back **3.5**, chest 2.5, shoulders 2, triceps 1.5, biceps 1.5 | back **1.5**, chest 2, shoulders 1, triceps 1, biceps 0.75 |
+  | Total Body Conditioning | shoulders **3.5**, triceps **3**, back 3, core 3 | shoulders 2, triceps 1.5, back 1.5, core 2 |
+  | Barre | glutes **3.5**, quads 2.5 | glutes 2, quads 1.5 |
+  | Pilates | core **4.5**, glutes 2.5 | core 3, glutes 1.5 |
+  | Zumba, Ride | (agree) | (agree — one region per group) |
+
+  The fix is one line: take the **max** over the group's regions instead of the sum, as `recovery.sessionVolume` does. Classes whose maps touch one region per group are unaffected, which is why this went unnoticed.
+- **`js/ui/retro.js` → `lineSummary()`** keeps a fourth private copy of the working-set count (`done && r > 0`). It agrees with `recovery.blockSets` today, so it is a duplication risk rather than a live bug; it should call `blockSets`.
+- **`js/classes/classify.js`**: in this branch every class name falls through to the `other` rule (no muscle credit, cardio only), which is also what the failing `data/crunch-schedule.json has the contract shape` test reports. Pre-existing on master, not caused by this work.

@@ -483,7 +483,8 @@ export function summaryHtml(s, sessions, profile) {
     </div>
     ${prs.length ? `<div class="section-title">🏆 New PRs</div><div class="tr-prs">${prs.map(r => `<div class="tr-pr"><b>${esc(exName(r.exId))}</b><span>${fmtNum(r.w)}×${r.r}${r.previous ? ` <span class="muted">(was ${fmtNum(r.previous.w)}×${r.previous.r})</span>` : ''}</span></div>`).join('')}</div>` : ''}
     ${groups.length ? `<div class="section-title">This session</div><div class="tr-sum-groups">${groups.map(([g, v]) => `<span class="badge">${esc(GROUPS[g]?.name || g)} <b>${fmtNum(v)}</b></span>`).join('')}</div>` : ''}
-    ${weekGroups.length ? `<div class="section-title">Your week now</div>${weekGroups.map(g => targetBar(GROUPS[g]?.name || g, gs[g].sets7d || 0, gs[g].target)).join('')}` : ''}
+    ${weekGroups.length ? `<div class="section-title">Your week now</div>${weekGroups.map(g => targetBar(GROUPS[g]?.name || g, gs[g].sets7d || 0, gs[g].target)).join('')}
+    <p class="tiny muted">Sets this week, counted the same way as Plan › Week coverage and Body.</p>` : ''}
     ${cardioWeekLine(s, sessions, profile, vol)}
     <button type="button" class="btn btn-primary tr-big" data-sum-close>Nice</button>
   </div>`;
