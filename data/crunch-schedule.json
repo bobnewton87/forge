@@ -5,7 +5,8 @@
   "phone": "469.824.3022",
   "locationUrl": "https://www.crunch.com/locations/allen",
   "source": "occurrences",
-  "fetchedAt": "2026-10-20T14:50:29.414Z",
+  "fetchedAt": "2026-10-21T13:28:54.238Z",
+  "keepBackDays": 90,
   "days": [
     {
       "date": "2026-10-20",
@@ -15,196 +16,42 @@
           "time": "10:30 am",
           "start": "10:30",
           "duration": 45,
-          "instructor": "Rachael C.",
-          "category": "Strength",
-          "room": "Group Fitness",
-          "description": "Transform your body and see results quickly in this exclusive barbell based hard core strength workout. Push, pull and lift your way to extreme results. Crush your goals in no time with a mix of both upper and lower body work mixed with challenging core segments designed to rev your metabolism and transform your body!",
-          "id": 7630556,
-          "classify": {
-            "type": "strength",
-            "cardioMinutes": 9,
-            "intensity": "moderate",
-            "muscles": {
-              "chest_mid": 2,
-              "chest_upper": 0.5,
-              "lats": 1,
-              "upper_back": 1.5,
-              "traps": 0.5,
-              "delt_front": 1,
-              "delt_side": 1,
-              "biceps_long": 0.75,
-              "biceps_short": 0.75,
-              "triceps_lateral": 1,
-              "triceps_long": 0.5,
-              "quads": 2,
-              "glutes": 2,
-              "hamstrings": 1,
-              "lower_back": 0.5,
-              "abs": 1
-            },
-            "label": "Barbell strength",
-            "blurb": "High-rep barbell work for the whole body: decent volume, though loads are light. It usually includes back squats, so swap those for goblet or split squats (your rule)."
-          }
+          "instructor": "Rachael C."
         },
         {
           "name": "Barbell 45",
           "time": "12:00 pm",
           "start": "12:00",
           "duration": 45,
-          "instructor": "Lauren I",
-          "category": "Strength",
-          "room": "Group Fitness",
-          "description": "Transform your body and see results quickly in this exclusive barbell based hard core strength workout. Push, pull and lift your way to extreme results. Crush your goals in no time with a mix of both upper and lower body work mixed with challenging core segments designed to rev your metabolism and transform your body!",
-          "id": 7630547,
-          "classify": {
-            "type": "strength",
-            "cardioMinutes": 9,
-            "intensity": "moderate",
-            "muscles": {
-              "chest_mid": 2,
-              "chest_upper": 0.5,
-              "lats": 1,
-              "upper_back": 1.5,
-              "traps": 0.5,
-              "delt_front": 1,
-              "delt_side": 1,
-              "biceps_long": 0.75,
-              "biceps_short": 0.75,
-              "triceps_lateral": 1,
-              "triceps_long": 0.5,
-              "quads": 2,
-              "glutes": 2,
-              "hamstrings": 1,
-              "lower_back": 0.5,
-              "abs": 1
-            },
-            "label": "Barbell strength",
-            "blurb": "High-rep barbell work for the whole body: decent volume, though loads are light. It usually includes back squats, so swap those for goblet or split squats (your rule)."
-          }
+          "instructor": "Lauren I"
         },
         {
           "name": "Barbell 45",
           "time": "5:30 pm",
           "start": "17:30",
           "duration": 45,
-          "instructor": "Phena",
-          "category": "Strength",
-          "room": "HIITZone",
-          "description": "Transform your body and see results quickly in this exclusive barbell based hard core strength workout. Push, pull and lift your way to extreme results. Crush your goals in no time with a mix of both upper and lower body work mixed with challenging core segments designed to rev your metabolism and transform your body!",
-          "id": 7630551,
-          "classify": {
-            "type": "strength",
-            "cardioMinutes": 9,
-            "intensity": "moderate",
-            "muscles": {
-              "chest_mid": 2,
-              "chest_upper": 0.5,
-              "lats": 1,
-              "upper_back": 1.5,
-              "traps": 0.5,
-              "delt_front": 1,
-              "delt_side": 1,
-              "biceps_long": 0.75,
-              "biceps_short": 0.75,
-              "triceps_lateral": 1,
-              "triceps_long": 0.5,
-              "quads": 2,
-              "glutes": 2,
-              "hamstrings": 1,
-              "lower_back": 0.5,
-              "abs": 1
-            },
-            "label": "Barbell strength",
-            "blurb": "High-rep barbell work for the whole body: decent volume, though loads are light. It usually includes back squats, so swap those for goblet or split squats (your rule)."
-          }
+          "instructor": "Phena"
         },
         {
           "name": "Superset HIIT (HIITZone)",
           "time": "6:15 pm",
           "start": "18:15",
           "duration": 45,
-          "instructor": "Nikki",
-          "category": "HIITZone",
-          "room": "HIITZone",
-          "description": "Take Strong to the next level! This unique HIITZone class utilizes supersets to challenge your strength, endurance and skill. Superset HIIT is designed to take your strength workout to the next level while incorporating a “super strength” challenge at every station.",
-          "id": 7630553,
-          "classify": {
-            "type": "hiit",
-            "cardioMinutes": 31,
-            "intensity": "intervals",
-            "muscles": {
-              "chest_mid": 1.5,
-              "lats": 1,
-              "upper_back": 1,
-              "delt_front": 1,
-              "delt_side": 1,
-              "triceps_lateral": 1,
-              "triceps_long": 0.5,
-              "biceps_long": 0.5,
-              "biceps_short": 0.5,
-              "quads": 2,
-              "glutes": 2,
-              "hamstrings": 1,
-              "abs": 1.5,
-              "obliques": 0.5,
-              "forearms": 0.5
-            },
-            "label": "Strength HIIT",
-            "blurb": "Strength-based HIIT with power moves and real loading. One of the better classes for adding muscle; also brutal conditioning, so space it from heavy leg days."
-          }
+          "instructor": "Nikki"
         },
         {
           "name": "ZUMBA",
           "time": "6:30 pm",
           "start": "18:30",
           "duration": 60,
-          "instructor": "Betsy",
-          "category": "Dance",
-          "room": "Group Fitness",
-          "description": "Fuse hypnotic Latin rhythms and easy-to-follow moves to create a high energy, calorie blasting, total body dance based workout designed to tone your body from head to toe.",
-          "id": 7630549,
-          "classify": {
-            "type": "cardio_dance",
-            "cardioMinutes": 45,
-            "intensity": "moderate",
-            "muscles": {
-              "calves": 0.5,
-              "glutes": 0.5,
-              "quads": 0.5,
-              "obliques": 0.5
-            },
-            "label": "Dance cardio",
-            "blurb": "Fun, steady cardio that keeps you moving: a good low-stress calorie burn for staying lean, with no real muscle-building stimulus."
-          }
+          "instructor": "Betsy"
         },
         {
           "name": "Yoga Body Sculpt",
           "time": "7:30 pm",
           "start": "19:30",
           "duration": 60,
-          "instructor": "Rachael C.",
-          "category": "Mind Body",
-          "room": "Group Fitness",
-          "description": "A strength-building Vinyasa flow class that focuses on sculpting your buns and thighs while flattening your belly and strengthening your core.",
-          "id": 7630555,
-          "classify": {
-            "type": "yoga",
-            "cardioMinutes": 12,
-            "intensity": "moderate",
-            "muscles": {
-              "delt_front": 0.75,
-              "delt_side": 0.5,
-              "triceps_lateral": 0.5,
-              "chest_mid": 0.5,
-              "quads": 1,
-              "glutes": 1.5,
-              "glute_med": 0.5,
-              "abs": 1.5,
-              "obliques": 0.75
-            },
-            "label": "Yoga + light weights",
-            "blurb": "Vinyasa flow with light weights, heavy on glutes, thighs and core. Good mobility plus a little core volume; too light to grow upper body."
-          }
+          "instructor": "Rachael C."
         }
       ]
     },
@@ -657,30 +504,6 @@
           }
         },
         {
-          "name": "ZUMBA",
-          "time": "9:30 am",
-          "start": "09:30",
-          "duration": 60,
-          "instructor": "Mark L",
-          "category": "Dance",
-          "room": "Group Fitness",
-          "description": "Fuse hypnotic Latin rhythms and easy-to-follow moves to create a high energy, calorie blasting, total body dance based workout designed to tone your body from head to toe.",
-          "id": 7630577,
-          "classify": {
-            "type": "cardio_dance",
-            "cardioMinutes": 45,
-            "intensity": "moderate",
-            "muscles": {
-              "calves": 0.5,
-              "glutes": 0.5,
-              "quads": 0.5,
-              "obliques": 0.5
-            },
-            "label": "Dance cardio",
-            "blurb": "Fun, steady cardio that keeps you moving: a good low-stress calorie burn for staying lean, with no real muscle-building stimulus."
-          }
-        },
-        {
           "name": "ExtremeHIIT (HIITZone)",
           "time": "9:30 am",
           "start": "09:30",
@@ -707,6 +530,30 @@
             },
             "label": "HIIT",
             "blurb": "Hard intervals plus bodyweight and turf drills. Great fat-loss and VO2 work for getting ripped; modest muscle stimulus, heavy leg fatigue."
+          }
+        },
+        {
+          "name": "ZUMBA",
+          "time": "9:30 am",
+          "start": "09:30",
+          "duration": 60,
+          "instructor": "Mark L",
+          "category": "Dance",
+          "room": "Group Fitness",
+          "description": "Fuse hypnotic Latin rhythms and easy-to-follow moves to create a high energy, calorie blasting, total body dance based workout designed to tone your body from head to toe.",
+          "id": 7630577,
+          "classify": {
+            "type": "cardio_dance",
+            "cardioMinutes": 45,
+            "intensity": "moderate",
+            "muscles": {
+              "calves": 0.5,
+              "glutes": 0.5,
+              "quads": 0.5,
+              "obliques": 0.5
+            },
+            "label": "Dance cardio",
+            "blurb": "Fun, steady cardio that keeps you moving: a good low-stress calorie burn for staying lean, with no real muscle-building stimulus."
           }
         },
         {
@@ -896,30 +743,6 @@
           }
         },
         {
-          "name": "The Ride",
-          "time": "9:30 am",
-          "start": "09:30",
-          "duration": 45,
-          "instructor": "Serena G",
-          "category": "Ride",
-          "room": "Ride",
-          "description": "Put the pedals to the metal in this fast-paced workout taught on a stationary bike. You'll climb, sprint, and train to incredible music and extraordinary instruction.",
-          "id": 7630582,
-          "classify": {
-            "type": "cycle",
-            "cardioMinutes": 41,
-            "intensity": "intervals",
-            "muscles": {
-              "quads": 1,
-              "glutes": 0.5,
-              "hamstrings": 0.25,
-              "calves": 0.5
-            },
-            "label": "Indoor cycling",
-            "blurb": "Climbs and sprints on the bike: excellent low-impact cardio for staying lean without beating up your legs like running does. Essentially no upper-body work."
-          }
-        },
-        {
           "name": "So You Think You Can't Dance",
           "time": "9:30 am",
           "start": "09:30",
@@ -941,6 +764,30 @@
             },
             "label": "Dance cardio",
             "blurb": "Fun, steady cardio that keeps you moving: a good low-stress calorie burn for staying lean, with no real muscle-building stimulus."
+          }
+        },
+        {
+          "name": "The Ride",
+          "time": "9:30 am",
+          "start": "09:30",
+          "duration": 45,
+          "instructor": "Serena G",
+          "category": "Ride",
+          "room": "Ride",
+          "description": "Put the pedals to the metal in this fast-paced workout taught on a stationary bike. You'll climb, sprint, and train to incredible music and extraordinary instruction.",
+          "id": 7630582,
+          "classify": {
+            "type": "cycle",
+            "cardioMinutes": 41,
+            "intensity": "intervals",
+            "muscles": {
+              "quads": 1,
+              "glutes": 0.5,
+              "hamstrings": 0.25,
+              "calves": 0.5
+            },
+            "label": "Indoor cycling",
+            "blurb": "Climbs and sprints on the bike: excellent low-impact cardio for staying lean without beating up your legs like running does. Essentially no upper-body work."
           }
         },
         {
@@ -1263,6 +1110,168 @@
             },
             "label": "Abs / core",
             "blurb": "Concentrated abs and obliques work. It counts toward your 6+ abs sets/week; visible abs still come from staying lean."
+          }
+        },
+        {
+          "name": "Chill the Flow Out Yoga",
+          "time": "10:30 am",
+          "start": "10:30",
+          "duration": 60,
+          "instructor": "Rita J",
+          "category": "Mind Body",
+          "room": "Group Fitness",
+          "description": "Tune out society’s noise and tap into the steadiness and ease of your body’s natural rhythms in this slow, powerful yoga flow. Build strength and resilience by creating space in every movement with mindful connection between body and breath. You’ll discover ease in your body and stillness in your mind.",
+          "id": 7657131,
+          "classify": {
+            "type": "yoga",
+            "cardioMinutes": 3,
+            "intensity": "easy",
+            "muscles": {
+              "abs": 1,
+              "delt_front": 0.5,
+              "triceps_medial": 0.25,
+              "glutes": 0.5,
+              "quads": 0.5
+            },
+            "label": "Yoga",
+            "blurb": "Mobility and stress relief. Helps you recover and move better under load, but gives almost no muscle-building stimulus."
+          }
+        },
+        {
+          "name": "Top to Bottom Burnout",
+          "time": "5:30 pm",
+          "start": "17:30",
+          "duration": 30,
+          "instructor": "Phena",
+          "category": "Strength",
+          "room": "Group Fitness",
+          "description": "Break out the booty bands and dumbbells for a hard-hitting infusion of strength to build your bone density and rock-solid confidence! Band together the bottom half, take it to the top with dumbbells, then burn out the combination for an experience your body will remember for days. Bottoms up!",
+          "id": 7657133,
+          "classify": {
+            "type": "sculpt",
+            "cardioMinutes": 9,
+            "intensity": "moderate",
+            "muscles": {
+              "chest_mid": 1.25,
+              "chest_upper": 0.25,
+              "lats": 1,
+              "upper_back": 1,
+              "delt_front": 0.75,
+              "delt_side": 1.25,
+              "delt_rear": 0.25,
+              "biceps_long": 0.75,
+              "biceps_short": 0.75,
+              "triceps_long": 0.75,
+              "triceps_lateral": 1,
+              "triceps_medial": 0.25,
+              "quads": 1.25,
+              "glutes": 1.25,
+              "hamstrings": 0.75,
+              "abs": 1.25,
+              "obliques": 0.75
+            },
+            "label": "Full-body sculpt",
+            "blurb": "Bands for lower body, dumbbells for upper, then a combined burnout. Reasonable full-body volume, but not heavy enough to replace a lift day."
+          }
+        },
+        {
+          "name": "Absolution",
+          "time": "6:00 pm",
+          "start": "18:00",
+          "duration": 30,
+          "instructor": "Phena",
+          "category": "Strength",
+          "room": "Group Fitness",
+          "description": "The perfect core strengthening solution: concentrated ab-centric exercises paired with deep restorative stretching.",
+          "id": 7657137,
+          "classify": {
+            "type": "core",
+            "cardioMinutes": 5,
+            "intensity": "moderate",
+            "muscles": {
+              "abs": 5,
+              "obliques": 3,
+              "lower_back": 1
+            },
+            "label": "Abs / core",
+            "blurb": "Concentrated abs and obliques work. It counts toward your 6+ abs sets/week; visible abs still come from staying lean."
+          }
+        },
+        {
+          "name": "The Ride",
+          "time": "6:30 pm",
+          "start": "18:30",
+          "duration": 45,
+          "instructor": "Ricardo G",
+          "category": "Ride",
+          "room": "Ride",
+          "description": "Put the pedals to the metal in this fast-paced workout taught on a stationary bike. You'll climb, sprint, and train to incredible music and extraordinary instruction.",
+          "id": 7657136,
+          "classify": {
+            "type": "cycle",
+            "cardioMinutes": 41,
+            "intensity": "intervals",
+            "muscles": {
+              "quads": 1,
+              "glutes": 0.5,
+              "hamstrings": 0.25,
+              "calves": 0.5
+            },
+            "label": "Indoor cycling",
+            "blurb": "Climbs and sprints on the bike: excellent low-impact cardio for staying lean without beating up your legs like running does. Essentially no upper-body work."
+          }
+        },
+        {
+          "name": "ZUMBA",
+          "time": "6:30 pm",
+          "start": "18:30",
+          "duration": 60,
+          "instructor": "Jackie",
+          "category": "Dance",
+          "room": "Group Fitness",
+          "description": "Fuse hypnotic Latin rhythms and easy-to-follow moves to create a high energy, calorie blasting, total body dance based workout designed to tone your body from head to toe.",
+          "id": 7657130,
+          "classify": {
+            "type": "cardio_dance",
+            "cardioMinutes": 45,
+            "intensity": "moderate",
+            "muscles": {
+              "calves": 0.5,
+              "glutes": 0.5,
+              "quads": 0.5,
+              "obliques": 0.5
+            },
+            "label": "Dance cardio",
+            "blurb": "Fun, steady cardio that keeps you moving: a good low-stress calorie burn for staying lean, with no real muscle-building stimulus."
+          }
+        }
+      ]
+    },
+    {
+      "date": "2026-10-27",
+      "classes": [
+        {
+          "name": "The Ride",
+          "time": "5:30 am",
+          "start": "05:30",
+          "duration": 45,
+          "instructor": "Serena G",
+          "category": "Ride",
+          "room": "Ride",
+          "description": "Put the pedals to the metal in this fast-paced workout taught on a stationary bike. You'll climb, sprint, and train to incredible music and extraordinary instruction.",
+          "id": 7657144,
+          "classify": {
+            "type": "cycle",
+            "cardioMinutes": 41,
+            "intensity": "intervals",
+            "muscles": {
+              "quads": 1,
+              "glutes": 0.5,
+              "hamstrings": 0.25,
+              "calves": 0.5
+            },
+            "label": "Indoor cycling",
+            "blurb": "Climbs and sprints on the bike: excellent low-impact cardio for staying lean without beating up your legs like running does. Essentially no upper-body work."
           }
         }
       ]
