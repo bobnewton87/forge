@@ -43,7 +43,10 @@ function checkWeek(name, p, out) {
   assert.ok(sum.pushPull.ok, `${name}: push ${sum.pushPull.push} vs pull ${sum.pushPull.pull}`);
   // TARGET invariant: every muscle reaches its target, or the summary names the binding constraint
   // (and "time" really means every lift day is at the cap).
-  const REASONS = new Set(['time', 'max', 'recovery', 'session', 'pushpull', 'exercise', 'policy']);
+  // VOLUME-COHESION 2026-10-21: 'session' now means "a per-session cap on EVERY lift day, and this
+  // muscle is at its own cap on at least one"; the partial case is 'session_other', a week with no lift
+  // day is 'nolift', and a dry-run probe that still had room is 'rounds'.
+  const REASONS = new Set(['time', 'max', 'recovery', 'session', 'session_other', 'pushpull', 'exercise', 'policy', 'nolift', 'rounds']);
   for (const [u, x] of Object.entries(sum.units)) {
     if (!(x.target > 0) || x.sub || x.total >= x.target - 0.25) continue;
     const sh = sum.targets.short.find(y => y.unit === u);

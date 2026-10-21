@@ -1,8 +1,9 @@
 // Body tab: recovery / volume insights, body map, cardio, strength trends, bodyweight (UI-SHELL).
 import * as rec from '../engine/recovery.js';
 import * as prog from '../engine/progression.js';
-import { REGIONS, GROUPS, GROUP_ORDER, VOLUME_UNITS, UNIT_ORDER, unitCredits } from '../data/muscles.js';
-import { unitTargets, starredGroups, STAR_LEGEND } from '../engine/targets.js';
+import { REGIONS, GROUPS, GROUP_ORDER, VOLUME_UNITS, unitsFor } from '../data/muscles.js';
+import { unitTargets, groupTargets, starredGroups, starredUnits, STAR_LEGEND, fmtSets } from '../engine/targets.js';
+import { weekStart as wkStart } from '../util.js';
 import { SCULPT_GOALS } from '../data/sculpt.js';
 import { getEx } from '../data/exercises.js';
 import { esc, readinessColor, muscleBar } from './components.js';
@@ -15,6 +16,11 @@ import { targetsSummaryHTML, bindTargetsSummary, cardioTargetHTML, bindCardioTar
 // (targets.js cardioTargetHTML: stepper + 90/150/225/300 chips, done vs planned vs target this
 // calendar week) and a "Your targets" strip sits at the top. Both write through setTargets.
 // Weekly set bars compare with the TARGET (min = floor tick), coloured by band (targets.setsBand).
+// CONTRACT-NOTE (§18 cohesion, volume audit 2026-10-21): "sets this week" means the SAME thing here as
+// on Plan - this CALENDAR week, logged work plus what is still planned from today on - counted by the
+// one shared counter (recovery.unitSets) over the group's counted enforcement units, against the one
+// shared target (targets.groupTargets). The rolling last-7-days figure is still shown, labelled as
+// such, next to each group. This screen keeps no volume maths of its own.
 let card3d = null;   // 3D opts for the "Your body" card (UI-LAB)
 
 const safe = (fn, fb) => { try { const v = fn(); return v == null ? fb : v; } catch (e) { console.error(e); return fb; } };
@@ -166,12 +172,15 @@ export function render(ctx) {
   const map = `<div class="card"><div class="bodymap"><figure>${bodyMapSvg(FRONT, ms)}<figcaption>Front</figcaption></figure><figure>${bodyMapSvg(BACK, ms)}<figcaption>Back</figcaption></figure></div>${legend}<p class="tiny muted center mt">Tap a muscle for details</p></div>`;
 
   const UT = (() => { try { return unitTargets(profile) || {}; } catch (e) { return {}; } })();
-  const uSets = unitSets7d(sessions, now);
+  const GT = (() => { try { return groupTargets(profile) || {}; } catch (e) { return {}; } })();
+  const uSets = weekUnits(sessions, now);
+  const u7 = last7Units(sessions, now);
   const starG = (() => { try { return starredGroups(profile); } catch (e) { return new Set(); } })();
   const gcards = groups.map(g0 => {
     // Use the enforcement units for this group's numbers so sets and target count the same muscles.
-    const uv = groupUnitView(g0.id, uSets, UT);
+    const uv = groupUnitView(g0.id, uSets, UT, GT);
     const g = uv ? { ...g0, sets7d: uv.sets, target: uv.t } : g0;
+    const l7 = uv ? uv.t && (GT[g0.id]?.units || []).reduce((a, id) => a + (u7[id] || 0), 0) : null;
     const G = GROUPS[g.id]; const t = g.target || G.volume || G.weeklySets || { min: 10, max: 20 };
     const tgt = t.target ?? t.min;   // weekly sets are compared with the TARGET (min = floor tick)
     const col = readinessColor(g.readiness, g.need);
@@ -182,9 +191,10 @@ export function render(ctx) {
     return `<button class="card tap gcard ${starred ? 'goal' : ''}" data-group="${g.id}">
       <div class="row"><span style="font-size:20px">${esc(G.emoji || '')}</span><div class="grow"><div class="gname">${esc(G.name)} ${starred ? '<span class="star">★</span>' : ''}</div>
         <div class="gmeta"><span style="color:${col};font-weight:700">${statusLabel(g.readiness, g.need)}</span> · ${ago(g.daysSince)}</div></div>
-        <div class="gsets" title="min ${f1(t.min)} · target ${f1(tgt)} · max ${f1(t.max || 0)}">${f1(g.sets7d || 0)}<span class="muted" style="font-weight:600">/${Math.round(tgt)} target</span></div></div>
+        <div class="gsets" title="min ${fmtSets(t.min)} · target ${fmtSets(tgt)} · max ${fmtSets(t.max || 0)}">${fmtSets(g.sets7d || 0)}<span class="muted" style="font-weight:600">/${fmtSets(tgt)} target</span></div></div>
       <div class="bar"><i style="width:${Math.min(100, ((g.sets7d || 0) / max) * 100)}%;background:${bcol}"></i>${t.min > 0 ? `<span class="tick" style="left:${(t.min / max) * 100}%"></span>` : ''}<span class="tick" style="left:${(tgt / max) * 100}%;border-left:2px dashed var(--accent2);background:none"></span></div>
       ${uv && uv.lines.length ? `<div class="tiny muted" style="margin-top:4px">${esc(uv.lines.join(' · '))}</div>` : ''}
+      ${l7 != null ? `<div class="tiny muted">Last 7 days: ${fmtSets(l7)} sets logged</div>` : ''}
     </button>`;
   }).join('');
 
@@ -220,7 +230,8 @@ export function render(ctx) {
     ${yourBodyCard(store, profile, log)}
     ${hero}
     <div class="section-title">Muscle map</div>${map}
-    <div class="section-title">Weekly sets vs target <span class="tiny muted" style="text-transform:none;letter-spacing:0">${esc(STAR_LEGEND)}</span></div>${gcards}
+    <div class="section-title">Weekly sets vs target <span class="tiny muted" style="text-transform:none;letter-spacing:0">${esc(STAR_LEGEND)}</span></div>
+    <p class="tiny muted" style="margin:-6px 4px 8px">This week (Mon–Sun), logged + still planned — the same count as Plan › Week coverage.</p>${gcards}
     <div class="section-title">Cardio</div>${cardioCard}
     <div class="section-title">Strength trends</div>${trends}
     <div class="section-title">Bodyweight</div>${bw}`;
@@ -235,6 +246,10 @@ function groupSheet(ctx, gid, focusRegion) {
   const G = GROUPS[gid]; if (!G) return;
   const { rs: goalR } = goalGroups(profile);
   const regions = G.regions.map(r => ({ id: r, st: gst.regions?.[r] || {} }));
+  // The enforced numbers for this group: its counted units, from the shared status (same sets, same
+  // target, same window as the group card and as Plan).
+  const units = Object.entries(gst.units || {});
+  const starU = safe(() => starredUnits(profile), new Set());
   const since = ds(addDays(now, -42));
   const recent = [];
   const seen = new Set();
@@ -253,8 +268,11 @@ function groupSheet(ctx, gid, focusRegion) {
   }
   const col = readinessColor(gst.readiness, gst.need);
   ctx.openSheet(`<div class="row"><span style="font-size:30px">${esc(G.emoji || '')}</span><div class="grow"><h2>${esc(G.name)}</h2>
-      <div class="small"><span style="color:${col};font-weight:700">${statusLabel(gst.readiness, gst.need)}</span> <span class="muted">· ${ago(gst.daysSince)} · ${f1(gst.sets7d || 0)} sets this week</span></div></div></div>
-    <div class="section-title">Regions</div>
+      <div class="small"><span style="color:${col};font-weight:700">${statusLabel(gst.readiness, gst.need)}</span> <span class="muted">· ${ago(gst.daysSince)} · ${fmtSets(gst.sets7d || 0)}/${fmtSets(gst.target?.target ?? 0)} sets this week</span></div></div></div>
+    ${units.length ? `<div class="section-title">Weekly sets vs target</div>
+    <div class="card flat">${units.map(([id, u]) => targetBar(VOLUME_UNITS[id].name.replace(/ \(.*\)$/, '') + (starU.has(id) ? ' ★' : ''), u.sets, { min: u.min, target: u.target, max: u.max })).join('')}</div>` : ''}
+    <div class="section-title">Per head</div>
+    <p class="tiny muted" style="margin:-6px 0 6px">Shares of the group's work, not separate targets — the enforced numbers are the ones above.</p>
     <div class="card flat">${regions.map(({ id, st }) => `<div ${focusRegion === id ? 'style="outline:1px solid var(--accent);outline-offset:6px;border-radius:6px"' : ''}>${targetBar((REGIONS[id]?.name || id) + (goalR.has(id) ? ' ★' : ''), st.sets7d || 0, st.target || REGIONS[id]?.weeklySets)}
       <div class="tiny muted" style="margin:-2px 0 10px">${ago(st.daysSince)} · readiness ${Math.round((st.readiness ?? 1) * 100)}%</div></div>`).join('')}</div>
     ${focusRegion && REGIONS[focusRegion]?.description ? `<p class="small muted">${esc(REGIONS[focusRegion].description)}</p>` : ''}
@@ -321,40 +339,26 @@ export function bind(root, ctx) {
   }
 }
 
-// Rolling-7-day sets per enforcement unit (side delts, rear delts, back = lats + upper back, …), counting each
-// set once per unit with fractional credit, the same units the planner enforces. Class blocks credit a unit
-// with their largest region estimate.
-function unitSets7d(sessions, now) {
-  const from = ds(addDays(now, -6)), to = ds(now), out = {};
-  for (const s of sessions || []) {
-    if ((s.status !== 'done' && s.status !== 'active') || s.date < from || s.date > to) continue;
-    for (const b of s.blocks || []) {
-      if (b.kind === 'lift') {
-        const ex = getEx(b.exId); if (!ex) continue;
-        const n = (b.sets || []).filter(x => x && x.done && x.r > 0).length; if (!n) continue;
-        for (const [u, w] of Object.entries(unitCredits(ex))) out[u] = (out[u] || 0) + n * w;
-      } else if (b.kind === 'class' && b.done && b.classify?.muscles) {
-        for (const id of UNIT_ORDER) {
-          const v = Math.max(0, ...VOLUME_UNITS[id].regions.map(r => b.classify.muscles[r] || 0));
-          if (v > 0) out[id] = (out[id] || 0) + v;
-        }
-      }
-    }
-  }
-  return out;
+// This calendar week's sets per enforcement unit, logged + still planned from today on: the SAME window
+// and the SAME counter the Plan tab's week coverage uses (recovery.unitSets → recovery.unitVolume).
+function weekUnits(sessions, now) {
+  const ws = ds(wkStart(now));
+  return safe(() => rec.unitSets(sessions, { from: ws, to: ds(addDays(wkStart(now), 6)), today: ds(now), includePlanned: true }).units, {});
 }
-// A group card's numbers from its counted units (tracked-only units like front delts/traps/lower back and
-// sub-units like upper chest are excluded from the sum, shown as sub-lines instead).
-function groupUnitView(gid, uSets, UT) {
-  const all = UNIT_ORDER.filter(id => VOLUME_UNITS[id].group === gid && UT[id]);
-  const counted = all.filter(id => !VOLUME_UNITS[id].sub && VOLUME_UNITS[id].tier !== 'tracked');
-  if (!counted.length) return null;
-  const sum = (ids, f) => ids.reduce((a, id) => a + f(id), 0);
+// Rolling last-7-days sets per unit (logged only), shown as a clearly-labelled secondary figure.
+function last7Units(sessions, now) {
+  return safe(() => rec.unitSets(sessions, { from: ds(addDays(now, -6)), to: ds(now) }).units, {});
+}
+// A group card's numbers: sets = the sum of its COUNTED units' credit, target = targets.groupTargets
+// (the sum of the same units' targets). Sub-units (upper chest) and tracked-only units (front delts,
+// traps, lower back) are listed under the bar, never added to the sum.
+function groupUnitView(gid, uSets, UT, GT) {
+  const t = GT[gid]; if (!t || !t.units.length) return null;
+  const all = unitsFor(gid).filter(id => UT[id]);
   return {
-    sets: sum(counted, id => uSets[id] || 0),
-    t: { min: sum(counted, id => UT[id].min), target: sum(counted, id => UT[id].target), max: sum(counted, id => UT[id].max) },
+    sets: t.units.reduce((a, id) => a + (uSets[id] || 0), 0),
+    t: { min: t.min, target: t.target, max: t.max },
     lines: all.length > 1 ? all.filter(id => VOLUME_UNITS[id].tier !== 'tracked' || (uSets[id] || 0) > 0)
-      .map(id => `${VOLUME_UNITS[id].name.replace(/ \(.*\)$/, '')} ${f1u(uSets[id] || 0)}${VOLUME_UNITS[id].tier === 'tracked' ? ' (tracked)' : `/${Math.round(UT[id].target)}`}`) : [],
+      .map(id => `${VOLUME_UNITS[id].name.replace(/ \(.*\)$/, '')} ${fmtSets(uSets[id] || 0)}${VOLUME_UNITS[id].tier === 'tracked' ? ' (tracked)' : `/${fmtSets(UT[id].target)}`}`) : [],
   };
 }
-function f1u(x) { return Math.round(x * 10) / 10; }

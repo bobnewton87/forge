@@ -9,7 +9,7 @@
 //   ("Why these numbers?"), openVolumeRoomSheet(ctx, short), openExtendSheet(ctx, { extended, onApply }),
 //   extendedToast(list), REPLAN_DAYS, ensureTargetStyles(). Styles are injected
 //   at runtime (a <style id="tg-css">) because INTEGRATOR owns no CSS file.
-import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, cardioTolerance, volumeRoomOptions, unitTargets, maxNote, starredUnits, STAR_LEGEND, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY, GOAL_INFO, GOAL_ORDER, LOSS_RATES, LEAN_PROTECTION, LEAN_PROTECTION_INFO, VOLUME_FLOORS, FLOOR_INFO, FLOOR_EVIDENCE } from '../engine/targets.js';
+import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, cardioTolerance, volumeRoomOptions, unitTargets, maxNote, starredUnits, STAR_LEGEND, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY, GOAL_INFO, GOAL_ORDER, LOSS_RATES, LEAN_PROTECTION, LEAN_PROTECTION_INFO, VOLUME_FLOORS, FLOOR_INFO, FLOOR_EVIDENCE, fmtSets } from '../engine/targets.js';
 import { planRange } from '../engine/planner.js';
 import { resolveStyle } from '../engine/generator.js';
 import { explainWeek } from '../engine/planner.js';
@@ -227,7 +227,7 @@ export function targetBar(label, sets, t = {}, { sub = '' } = {}) {
   const min = Number(t.min) || 0, target = Number(t.target ?? t.min) || 0, max = Number(t.max) || Math.max(target, min, 1);
   const band = setsBand(sets, t), scale = Math.max(max, sets, 1);
   const pct = v => Math.min(100, (v / scale) * 100);
-  const f = v => (Math.round(v * 10) / 10).toString();
+  const f = fmtSets;   // §18: one set-count formatter for every screen (targets.fmtSets)
   return `<div class="tgb ${band}" title="${esc(`${label}: ${f(sets)} sets · min ${f(min)} · target ${f(target)} · max ${f(max)} (${BAND_LABEL[band]})`)}">
     <div class="tgb-top"><span>${esc(label)}</span><span class="num"><b>${f(sets)}</b><span class="muted"> / ${f(target)} target</span></span></div>
     <div class="tgb-track"><i style="width:${pct(sets)}%"></i>${min > 0 ? `<span class="tk min" style="left:${pct(min)}%"></span>` : ''}<span class="tk tgt" style="left:${pct(target)}%"></span><span class="tk max" style="left:${pct(max)}%"></span></div>
@@ -297,7 +297,7 @@ export function openHitTargetsSheet(ctx, sum) {
   const pol = resolveTargets(ctx.store.getProfile()).training.volumePolicy;
   ctx.openSheet(`<div class="tg-sheet"><h2>Hit your targets?</h2>
     <p class="muted small">Your minimums are covered. Reaching every target needs about <b>+${t.minutesToHit} min a week</b> (${t.shortSets} more sets), spread over your lift days, never past ${pol.maxMinutes}′ a workout.</p>
-    <div class="tg-mins">${t.short.map(x => `<span class="badge">${esc(x.name)} <b>${Math.round(x.total * 10) / 10}/${x.target}</b></span>`).join('')}</div>
+    <div class="tg-mins">${t.short.map(x => `<span class="badge">${esc(x.name)} <b>${fmtSets(x.total)}/${fmtSets(x.target)}</b></span>`).join('')}</div>
     <div class="sheet-actions"><button type="button" class="btn btn-primary btn-block" data-apply>Lengthen workouts for targets</button>
     <button type="button" class="btn btn-ghost btn-block" data-cancel>Keep spare-time only</button></div></div>`, (el, close) => {
     el.querySelector('[data-cancel]').onclick = () => close();
@@ -309,7 +309,7 @@ export function openVolumeRoomSheet(ctx, short = [], targetsLine = '') {
   ensureStyles();
   const opts = volumeRoomOptions(ctx.store.getProfile());
   ctx.openSheet(`<div class="tg-sheet"><h2>${short.length ? 'Make room for your minimums' : 'Reach your targets'}</h2>
-    <p class="muted small">${short.length ? esc(short.map(x => `${x.name} ${Math.round(x.total * 10) / 10}/${x.min} sets: short ${x.short}`).join(' · ')) : esc(targetsLine || 'Every weekly minimum is covered.')}</p>
+    <p class="muted small">${short.length ? esc(short.map(x => `${x.name} ${fmtSets(x.total)}/${fmtSets(x.min)} sets: short ${fmtSets(x.short)}`).join(' · ')) : esc(targetsLine || 'Every weekly minimum is covered.')}</p>
     <div class="list mt">${opts.map(o => `<button type="button" class="list-item" data-opt="${o.id}"><div class="grow"><div class="t">${esc(o.label)}</div></div><span class="chev">›</span></button>`).join('') || '<p class="muted small">No automatic option: add a lift day in Availability.</p>'}</div>
     <div class="sheet-actions"><button type="button" class="btn btn-ghost btn-block" data-cancel>Cancel</button></div></div>`, (el, close) => {
     el.querySelector('[data-cancel]').onclick = () => close();

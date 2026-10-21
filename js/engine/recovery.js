@@ -20,9 +20,19 @@
 //   recommend() then marks an option `recovering` (with `clash:[groups]`) when it would wreck a
 //   planned session's recovery, and its reasons say "… sets this week incl. planned".
 //   Without `upcoming` everything behaves exactly as before (rolling 7 days).
-import { REGIONS, GROUPS, GROUP_ORDER, PRESETS } from '../data/muscles.js';
+// CONTRACT-NOTE (§18 cohesion, volume audit 2026-10-21): group and region TARGETS are no longer
+//   derived here from GROUPS[g].volume. A group's { min, target, max } is the sum over its COUNTED
+//   enforcement units of targets.unitTargets() (targets.groupTargets), and a group's `sets7d` is the
+//   sum of the same units' fractional credit, so a group's sets and its target always count the same
+//   muscles. (Before: the target summed the units while the sets counted each set once per group, and
+//   GROUPS[g].volume.max added the tracked units' ceilings — back 52, shoulders 64.)
+//   This module therefore imports targets.js, which imports sessionVolume from here. The cycle is
+//   deliberate and safe: both sides only call the other's hoisted function declarations at run time,
+//   never during module evaluation (test/volume-cohesion.test.js pins both import orders).
+import { REGIONS, GROUPS, GROUP_ORDER, PRESETS, VOLUME_UNITS, UNIT_ORDER, COUNTED_UNITS, unitCredits } from '../data/muscles.js';
 import { SCULPT_GOALS } from '../data/sculpt.js';
 import { getEx } from '../data/exercises.js';
+import { unitTargets, volumeFactors, sculptExtraByRegion } from './targets.js';
 import { ds, parseDs, daysBetween, addDays, weekStart, clamp } from '../util.js';
 
 const MEANINGFUL = 1;      // effective sets on a day that count as "trained"
@@ -32,6 +42,7 @@ const SMALL = new Set(['biceps', 'triceps', 'forearms', 'core', 'calves']);
 // ---------------------------------------------------------------- helpers
 
 const r2 = x => Math.round(x * 100) / 100;
+const r1 = x => Math.round(x * 10) / 10;
 const fmtSets = x => { const v = Math.round(x * 2) / 2; return String(v); };
 const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
 const toDate = now => (now instanceof Date ? now : now ? new Date(now) : new Date());
@@ -43,14 +54,31 @@ function isPlural(name) { return /s$/i.test(name) && !/^(core|chest|back)$/i.tes
 
 const countedSet = s => !!(s && s.done && Number(s.r) > 0);
 
-// Everything one session contributes. Lift sets only count when done && r>0.
-export function sessionVolume(s) {
-  const regions = {}, groups = {};
-  let liftSets = 0, cardioMin = 0;
+// How many sets of a lift block count. Only WORKING sets count, and only once they are logged with
+// reps (`done && r > 0`): warm-ups are not stored as sets, so they never count (the literature counts
+// hard sets to or near failure - docs/research/weekly-volume-audit.md §8.1). For a PLANNED session there
+// is nothing logged yet, so the prescription (target.sets) is what the week will contain.
+export function blockSets(b, { planned = false } = {}) {
+  if (!b || b.kind !== 'lift') return 0;
+  if (planned) return Number(b.target?.sets) || (b.sets || []).length || 0;
+  return (b.sets || []).filter(countedSet).length;
+}
+// A class block's credit for a unit: the largest region estimate inside the unit (one credit per unit).
+function classUnitCredit(muscles, uid) {
+  let w = 0;
+  for (const r of VOLUME_UNITS[uid].regions) { const x = muscles?.[r] || 0; if (x > w) w = x; }
+  return w;
+}
+// Everything one session contributes. Lift sets only count when done && r>0 (planned: the prescription).
+// `units` is the per-enforcement-unit fractional credit (a set credits a unit once, at the largest
+// weight over the unit's regions) - the ONE counter the planner, Plan, Body and the Why sheet all use.
+export function sessionVolume(s, { planned = false } = {}) {
+  const regions = {}, groups = {}, units = {};
+  let liftSets = 0, cardioMin = 0, push = 0, pull = 0;
   for (const b of s?.blocks || []) {
     if (b.kind === 'lift') {
       const ex = getEx(b.exId);
-      const n = (b.sets || []).filter(countedSet).length;
+      const n = blockSets(b, { planned });
       if (!n) continue;
       liftSets += n;
       if (!ex) continue;
@@ -61,8 +89,10 @@ export function sessionVolume(s) {
         if (g) gmax[g] = Math.max(gmax[g] || 0, w);
       }
       for (const [g, w] of Object.entries(gmax)) groups[g] = (groups[g] || 0) + n * w;
+      for (const [u, w] of Object.entries(unitCredits(ex))) units[u] = (units[u] || 0) + n * w;
+      if (PUSH_PATTERNS.has(ex.pattern)) push += n; else if (PULL_PATTERNS.has(ex.pattern)) pull += n;
     } else if (b.kind === 'class') {
-      if (!b.done) continue;
+      if (!(planned || b.done)) continue;
       const gmax = {};
       for (const [r, w] of Object.entries(b.classify?.muscles || {})) {
         if (!(w > 0)) continue;
@@ -71,13 +101,37 @@ export function sessionVolume(s) {
         if (g) gmax[g] = Math.max(gmax[g] || 0, w);
       }
       for (const [g, w] of Object.entries(gmax)) groups[g] = (groups[g] || 0) + w;
+      for (const u of UNIT_ORDER) { const w = classUnitCredit(b.classify?.muscles, u); if (w > 0) units[u] = (units[u] || 0) + w; }
       const cm = b.classify && typeof b.classify.cardioMinutes === 'number' ? b.classify.cardioMinutes : (b.duration || 0);
       cardioMin += cm;
     } else if (b.kind === 'cardio') {
-      if (b.done) cardioMin += Number(b.minutes) || 0;
+      if (planned || b.done) cardioMin += Number(b.minutes) || 0;
     }
   }
-  return { regions, groups, liftSets, cardioMin };
+  return { regions, groups, units, liftSets, cardioMin, push, pull };
+}
+export const PUSH_PATTERNS = new Set(['horizontal_push', 'vertical_push', 'fly']);
+export const PULL_PATTERNS = new Set(['horizontal_pull', 'vertical_pull']);
+// Per-unit credit of one session, treating a planned session as its prescription. The ONE entry point
+// for "how many sets of each muscle does this session hold" (planner.sessionUnits delegates here).
+export function unitVolume(s, { planned = s?.status === 'planned' } = {}) {
+  const v = sessionVolume(s, { planned });
+  return { units: v.units, push: v.push, pull: v.pull };
+}
+// Per-unit fractional sets over a date window. `includePlanned` counts planned sessions dated
+// `today` or later (what the Plan tab's week coverage shows); without it only logged work counts.
+// → { units: { [unit]: sets }, push, pull }
+export function unitSets(sessions, { from = '', to = '\uffff', today = '', includePlanned = false } = {}) {
+  const units = {}; let push = 0, pull = 0;
+  for (const s of sessions || []) {
+    if (!s || !s.date || s.date < from || s.date > to) continue;
+    const planned = s.status === 'planned';
+    if (planned && (!includePlanned || s.date < today)) continue;
+    const v = unitVolume(s, { planned });
+    for (const [u, x] of Object.entries(v.units)) units[u] = (units[u] || 0) + x;
+    push += v.push; pull += v.pull;
+  }
+  return { units, push, pull };
 }
 
 function hasWork(v) { return v.liftSets > 0 || v.cardioMin > 0 || Object.keys(v.regions).length > 0; }
@@ -146,25 +200,22 @@ function groupPriority(profile, g) {
   return typeof p === 'number' && Number.isFinite(p) && p >= 0 ? (p > 0 ? p : 0) : 1;
 }
 
-// Extra weekly sets per region from enabled sculpt goals.
+// Extra weekly sets per region from enabled sculpt goals - the SAME split targets.unitTargets uses
+// (targets.sculptExtraByRegion), so a sculpt goal moves region, group and unit numbers identically.
 function sculptExtras(profile) {
-  const extra = {};
-  for (const id of profile?.sculptGoals || []) {
-    const g = SCULPT_GOALS[id];
-    if (!g || !(g.extraWeeklySets > 0)) continue;
-    const entries = Object.entries(g.regions || {}).filter(([r, w]) => REGIONS[r] && w > 0);
-    const tot = entries.reduce((s, [, w]) => s + w, 0);
-    if (!tot) continue;
-    for (const [r, w] of entries) extra[r] = (extra[r] || 0) + g.extraWeeklySets * w / tot;
-  }
-  return extra;
+  try { return sculptExtraByRegion(profile); } catch (e) { return {}; }
 }
 
 // CONTRACT-NOTE (INTEGRATOR, weekly-volume audit): ONE priority mechanism. The min is the evidence
 // floor and never moves; sliders (prio) and sculpt extras move only the TARGET, clamped to [min, max].
-function scaleTarget(base, prio, extra) {
-  const min = base?.min ?? 0, max = Math.max(base?.max ?? 0, min);
-  const target = clamp((base?.target ?? min) * prio + extra, min, max);
+// §23: `ff`/`tf` scale the floor and the base target exactly as targets.unitTargets scales the enforced
+// ones, so a below-growth floor mode never shows one number on Today and another on Plan.
+function scaleTarget(base, prio, extra, ff = 1, tf = 1) {
+  const min0 = base?.min ?? 0;
+  const min = ff === 1 ? min0 : Math.round(min0 * ff * 10) / 10;
+  const max = Math.max(base?.max ?? 0, min);
+  const b = tf === 1 ? (base?.target ?? min0) : Math.round((base?.target ?? min0) * tf * 10) / 10;
+  const target = clamp(b * prio + extra, min, max);
   return { min: Math.round(min * 10) / 10, target: Math.round(target * 10) / 10, max: Math.round(max * 10) / 10 };
 }
 
@@ -195,7 +246,9 @@ function prepUpcoming(upcoming, now) {
   const out = [];
   for (const s of upcoming) {
     if (!s || !s.date || s.date < today) continue;
-    const v = sessionVolume(s);
+    // A planned day counts its prescription whether or not the caller ran simulateDone over it first
+    // (§18: one counting rule, planner.simulateDone and this agree).
+    const v = sessionVolume(s, { planned: s.status === 'planned' });
     if (!hasWork(v)) continue;
     const t = sessionTime(s);
     if (s.date === today && t <= nowMs) continue;
@@ -216,10 +269,14 @@ function statusCore(entries, now, profile, ahead = null) {
   const week = entries.filter(e => e.date >= from);
   const aheadWeek = planMode ? ahead.filter(e => e.date <= weekEnd) : [];
   const extras = sculptExtras(profile);
+  // The ONE resolved per-unit target table (targets.unitTargets) + the §23 floor factors.
+  let UT = {}, FX = { floorFactor: 1, targetFactor: 1 };
+  try { UT = unitTargets(profile) || {}; } catch (e) { UT = {}; }
+  try { FX = volumeFactors(profile); } catch (e) { FX = { floorFactor: 1, targetFactor: 1 }; }
 
   // last meaningful day per region / group
-  const dayVol = { regions: {}, groups: {} };   // key -> { date -> sets }
-  for (const e of entries) for (const kind of ['regions', 'groups']) for (const [k, w] of Object.entries(e.v[kind])) {
+  const dayVol = { regions: {}, groups: {} };   // key -> { date -> sets }  (units need no last-trained date)
+  for (const e of entries) for (const kind of ['regions', 'groups']) for (const [k, w] of Object.entries(e.v[kind] || {})) {
     const m = dayVol[kind][k] || (dayVol[kind][k] = {});
     m[e.date] = (m[e.date] || 0) + w;
   }
@@ -229,8 +286,8 @@ function statusCore(entries, now, profile, ahead = null) {
     for (const [d, w] of Object.entries(m)) if (w >= MEANINGFUL && (!best || d > best)) best = d;
     return best;
   };
-  const weekSum = (kind, k) => week.reduce((s, e) => s + (e.v[kind][k] || 0), 0) + aheadWeek.reduce((s, e) => s + (e.v[kind][k] || 0), 0);
-  const plannedSum = (kind, k) => aheadWeek.reduce((s, e) => s + (e.v[kind][k] || 0), 0);
+  const weekSum = (kind, k) => week.reduce((s, e) => s + (e.v[kind]?.[k] || 0), 0) + aheadWeek.reduce((s, e) => s + (e.v[kind]?.[k] || 0), 0);
+  const plannedSum = (kind, k) => aheadWeek.reduce((s, e) => s + (e.v[kind]?.[k] || 0), 0);
   // Next planned meaningful hit of a group after now → how recovered it would be if trained now.
   const aheadOf = (gid, rh) => {
     if (!planMode) return {};
@@ -246,7 +303,9 @@ function statusCore(entries, now, profile, ahead = null) {
   const regions = {};
   for (const r of Object.values(REGIONS)) {
     const gp = groupPriority(profile, r.group);
-    const target = scaleTarget(r.weeklySets, gp, extras[r.id] || 0);
+    // Per-head region numbers are display/selection SHARES (muscles.js CONTRACT-NOTE): the enforced
+    // numbers are per unit. They are scaled the same way so nothing contradicts the unit table.
+    const target = scaleTarget(r.weeklySets, gp, extras[r.id] || 0, FX.floorFactor, FX.targetFactor);
     const lastTrained = lastOf('regions', r.id);
     const daysSince = lastTrained ? daysBetween(lastTrained, today) : null;
     const sets7d = r2(weekSum('regions', r.id));
@@ -264,12 +323,15 @@ function statusCore(entries, now, profile, ahead = null) {
   for (const gid of GROUP_ORDER.filter(g => GROUPS[g]).concat(Object.keys(GROUPS).filter(g => !GROUP_ORDER.includes(g)))) {
     const g = GROUPS[gid];
     const gp = groupPriority(profile, gid);
-    const extra = g.regions.reduce((s, r) => s + (extras[r] || 0), 0);
-    const base = g.volume || g.weeklySets || { min: g.regions.reduce((s, r) => s + (REGIONS[r]?.weeklySets?.min || 0), 0), max: g.regions.reduce((s, r) => s + (REGIONS[r]?.weeklySets?.max || 0), 0) };
-    const target = scaleTarget(base, gp, extra);
+    // §18: the group's { min, target, max } is the SUM over its counted units of the resolved unit
+    // targets, and its sets7d is the sum of the same units' credit. One list of muscles for both.
+    const counted = (COUNTED_UNITS[gid] || []).filter(u => UT[u]);
+    const target = counted.length
+      ? { min: r1(counted.reduce((a, u) => a + UT[u].min, 0)), target: r1(counted.reduce((a, u) => a + UT[u].target, 0)), max: r1(counted.reduce((a, u) => a + UT[u].max, 0)) }
+      : scaleTarget(g.volume || g.weeklySets, gp, g.regions.reduce((s, r) => s + (extras[r] || 0), 0), FX.floorFactor, FX.targetFactor);
     const lastTrained = lastOf('groups', gid);
     const daysSince = lastTrained ? daysBetween(lastTrained, today) : null;
-    const sets7d = r2(weekSum('groups', gid));
+    const sets7d = counted.length ? r2(counted.reduce((a, u) => a + weekSum('units', u), 0)) : r2(weekSum('groups', gid));
     const rs = Object.fromEntries(g.regions.filter(r => regions[r]).map(r => [r, regions[r]]));
     const avgRegPrio = g.regions.length ? g.regions.reduce((s, r) => s + (REGIONS[r]?.priority || 1), 0) / g.regions.length : 1;
     const prio = Math.sqrt(avgRegPrio * gp);
@@ -281,7 +343,8 @@ function statusCore(entries, now, profile, ahead = null) {
       need: r2(clamp(0.6 * own + 0.4 * maxReg, 0, 1)),
       priority: r2(prio),
       regions: rs,
-      ...(planMode ? { planned: r2(plannedSum('groups', gid)), ...aheadOf(gid, g.recoveryHours || 48) } : {}),
+      units: Object.fromEntries(counted.map(u => [u, { name: UT[u].name, sets: r2(weekSum('units', u)), target: UT[u].target, min: UT[u].min, max: UT[u].max, tier: UT[u].tier }])),
+      ...(planMode ? { planned: r2(counted.length ? counted.reduce((a, u) => a + plannedSum('units', u), 0) : plannedSum('groups', gid)), ...aheadOf(gid, g.recoveryHours || 48) } : {}),
     };
   }
   return { regions, groups };

@@ -726,6 +726,52 @@ target. ★ on every screen comes from `targets.starredUnits(profile)` / `starre
 slider ≥ 0.95, OR slider > 1.05, OR sculpt extra > 0; never tracked units); legend text `targets.STAR_LEGEND`.
 See docs/research/weekly-volume-audit.md §7.
 
+Amendment (2026-10-21, volume cohesion — the §18 inventory, VOLUME-COHESION). Every number on every screen that is a
+set count, a weekly target, a minimum, a maximum, a priority multiplier or a muscle-group volume was traced to its
+source. Eight diverged (see docs/research/weekly-volume-audit.md §8.2 for the table and the numbers they showed).
+The conclusion, now enforced by `test/volume-cohesion.test.js`:
+
+- **One target table.** `targets.unitTargets(profile)` is the only resolver: `target = clamp(base × slider + sculpt
+  extras, [min, max])`, clamped once. A GROUP's `{min, target, max}` is **the sum over `muscles.COUNTED_UNITS[group]`
+  of `unitTargets`** — exposed as `targets.groupTargets(profile)`, with `targets.weeklyMinimums` a view of it and
+  `resolveTargets().minimums.groups` the same object. `recovery.groupStatus().target` now comes from there too, so
+  Today's tiles, Body's cards, the live session and `weekPlanSummary.groups` cannot disagree with Plan.
+  `GROUPS[g].volume` sums **counted** units only (tracked units no longer inflate a group's ceiling: back 22 not 52,
+  shoulders 44 not 64). `GROUPS[g].weeklySets` stays the untouched legacy shape that `engine/projection.js` uses.
+- **One counter.** `recovery.sessionVolume(s, { planned })` returns `{ regions, groups, units, liftSets, cardioMin,
+  push, pull }`; `recovery.blockSets`, `unitVolume` and `unitSets(sessions, { from, to, today, includePlanned })` are
+  the only ways to count sets. `planner.sessionUnits` / `weekUnitTotals`, Body's weekly sets and `history.summarize`
+  all delegate. No screen counts sets itself.
+- **One meaning for "sets this week": this calendar week (Mon–Sun), logged plus still planned from today on.** Body's
+  "Weekly sets vs target" uses that window, says so, and shows the rolling last-7-days figure as its own labelled
+  line. A group's sets and its target count the same muscles, so `sets/target` is comparable (`groupStatus().units`
+  carries the per-unit split behind each group bar).
+- **One rounding rule:** `targets.fmtSets` — a half shows, a whole does not. Used by Plan, Body, `targetBar`, the day
+  cards and every sheet.
+- **One priority mechanism, unchanged:** tier + slider (0.5–2×) + sculpt extras move only the target. Sculpt extras
+  are now normalised over the regions that feed a unit **with a target** (`targets.sculptExtraByRegion`), so a goal
+  delivers all of its `extraWeeklySets` instead of silently losing the share that landed on a tracked unit. This
+  moved two defaults: chest target 14.5 → 15, upper-chest sub-target 8.5 → 9.
+- **Day cards show real set counts.** `today.sessionGroups` reads the shared per-group credit (a set counts once per
+  group) instead of summing region weights, which had inflated every chip by roughly 2×.
+- **Binding reasons must be true of the day.** `session` ("per-session caps on every lift day") is only reported when
+  a per-session cap is in the way on every lift day and the muscle is at its own cap on at least one; the partial
+  case is `session_other`, a week with no lift day is `nolift`, and a day that is simply out of minutes is `time`.
+- **The cycle is deliberate.** `recovery.js` imports `targets.js` (the resolver) and `targets.js` imports
+  `sessionVolume` from `recovery.js` (the counter). Neither calls the other during module evaluation, and
+  `targets.STYLES` is a re-exported live binding for that reason. Five entry orders are pinned by test.
+
+Set-count semantics (documented in docs/research/weekly-volume-audit.md §8.1): only **working sets** count, at 0–3
+reps in reserve; warm-ups are not stored as sets and never count; a planned day counts its prescription; credit is
+fractional (direct 1.0, synergist 0.5) and each enforcement unit is credited once per set, at the largest weight over
+its regions.
+
+The maxes and floors survived a full re-check against the primary sources (weekly-volume audit §8.5): every number is
+KEEP. What changed is honesty of labelling — `MAX_WHY.triceps` misstated Baz-Valle 2022 (which counted total, not
+fractional, sets and recommends 12–20 *direct*), `MAX_WHY.delt_side` claimed kinship with triceps where no study has
+ever varied side-delt volume, the floors are "the bottom of the effective range" rather than a minimum effective dose
+(Pelland's MED is 4), and the per-session caps are a fatigue/time heuristic, not a measured hypertrophy ceiling.
+
 ## 16c. Segment lengths per side (2026-10-20)
 Bob: "add various elbow-to-shoulder lengths for both sides, knee-to-ankle and knee-to-hip, to capture asymmetries and make
 the 3D model more accurate, smooth and accurate in rendering, specifically head to neck but everywhere."

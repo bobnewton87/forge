@@ -15,9 +15,12 @@
 //   training-distribution shape. REGIONS[r].weeklySets ({min, target, max}) are per-head display and
 //   exercise-selection shares (all > 0), not enforced.
 //
-// Evidence base: dose-response meta-analyses (Schoenfeld et al. 2017; Pelland et al. 2024 preprint)
-// suggest hypertrophy keeps rising up to roughly 10-20 weekly sets per muscle, with diminishing
-// returns beyond that. Small muscles (delts, arms, calves, abs) recover in ~48h. Large or heavily
+// Evidence base: dose-response meta-analyses (Schoenfeld et al. 2017, doi:10.1080/02640414.2016.1210197;
+// Pelland et al. 2025, Sports Med 56:481, doi:10.1007/s40279-025-02344-w) and the 2026 ACSM position
+// stand (Currier et al., Med Sci Sports Exerc 58:851, doi:10.1249/MSS.0000000000003897, '>=10 sets/wk',
+// flattening around 18-20) put useful hypertrophy volume at roughly 10-20 weekly sets per muscle with
+// diminishing returns beyond that. Pelland reports no measured plateau, so the maxes below are where
+// returns have shrunk to the point of not being worth the fatigue, not a wall. Small muscles (delts, arms, calves, abs) recover in ~48h. Large or heavily
 // loaded muscles (pecs, lats, quads, hamstrings, glutes, spinal erectors) need ~72h after hard work.
 
 const R = (id, name, group, description, recoveryHours, min, max, priority, target) =>
@@ -159,16 +162,16 @@ export const VOLUME_UNITS = {
 // Why each weekly max (fractional sets) is what it is. The max is a PHYSIOLOGICAL ceiling and does not
 // depend on priority: priority (tier, sliders, sculpt goals) moves only the target (max audit 2026-10-20,
 // docs/research/weekly-volume-audit.md §7).
-const MAX_DEFAULT_WHY = '20: top of the 12-20 sets/week range for trained lifters; going past 20 added no measurable growth for biceps or quads (Baz-Valle 2022), and returns keep shrinking past ~19 sets (Pelland 2025)';
+const MAX_DEFAULT_WHY = '20: top of the 12-20 sets/week range for trained lifters; going past 20 added no measurable growth for biceps or quads (Baz-Valle 2022), returns keep shrinking past ~19 fractional sets (Pelland 2025) and the 2026 ACSM position stand puts the flattening at about 18-20 weekly sets';
 export const MAX_WHY = {
   chest: MAX_DEFAULT_WHY,
   chest_upper: '20: same muscle as chest (its upper fibres), so the same ceiling; the chest max still caps the total',
   back: '22: two muscles (lats + upper back) in one count; each set is counted once, so slightly above the one-muscle 20',
-  delt_side: '24: small, fast-recovering muscle with little systemic fatigue (convention, no direct study), same as triceps',
+  delt_side: '24: convention, not a measured ceiling - the dose-response tables (Pelland 2025) contain no lateral-deltoid row at all, so no study has ever varied side-delt volume. It is set above the default 20 because the muscle is small, recovers fast and carries little systemic fatigue. The floor of 10 below it IS tested: 10 weekly sets of lateral raises grew the lateral delt 3.3-4.6% in 8 weeks in trained lifters (Larsen 2025)',
   delt_rear: MAX_DEFAULT_WHY,
-  triceps: '24: over 20 sets/week grew triceps more than 12-20 did (Baz-Valle 2022)',
+  triceps: '24: Baz-Valle 2022 found over 20 sets/week grew triceps more than 12-20 did, but it counted every set as 1, and its own conclusion recommends 12-20 DIRECT sets (the evidence is one study, Brigatto 2022). In the fractional sets Forge counts, 24 is a practitioner allowance for a priority muscle that recovers fast and gets much of its volume indirectly from pressing - not a measured ceiling',
   biceps: '20: 12-20 sets/week is optimal and more than 20 added nothing for biceps (Baz-Valle 2022); 27 sets grew biceps no more than 18 did (Heaselgrave 2019)',
-  core: MAX_DEFAULT_WHY,
+  core: MAX_DEFAULT_WHY + '; convention for abs in particular, as no study has varied abdominal volume',
   quads: '20: going past 20 added nothing for quads (Baz-Valle 2022); your maintenance choice lives in the target, not the max',
   hamstrings: MAX_DEFAULT_WHY + '; your maintenance choice lives in the target',
   glutes: MAX_DEFAULT_WHY + '; your maintenance choice lives in the target',
@@ -185,15 +188,37 @@ export function unitWeight(ex, unitId) {
   let w = 0; for (const r of u.regions) { const x = ex.muscles?.[r] || 0; if (x > w) w = x; }
   return w;
 }
+// Memoized per exercise object: unit credits are recomputed for every set of every session on every
+// planner pass, and the answer only depends on ex.muscles (frozen data).
+const creditCache = new WeakMap();
 export function unitCredits(ex) {
+  if (!ex || typeof ex !== 'object') return {};
+  const hit = creditCache.get(ex);
+  if (hit) return hit;
   const out = {};
   for (const id of UNIT_ORDER) { const w = unitWeight(ex, id); if (w > 0) out[id] = w; }
+  creditCache.set(ex, out);
   return out;
 }
 const LEGACY_GROUP_SETS = { chest: { min: 12, max: 21 }, back: { min: 16, max: 30 }, shoulders: { min: 20, max: 36 }, biceps: { min: 10, max: 20 },
   triceps: { min: 13, max: 22 }, forearms: { min: 4, max: 8 }, core: { min: 9, max: 18 }, glutes: { min: 6, max: 12 }, quads: { min: 8, max: 14 },
   hamstrings: { min: 4, max: 8 }, calves: { min: 3, max: 6 } };
-const groupUnits = g => Object.values(VOLUME_UNITS).filter(u => u.group === g && !u.sub);
+// A unit is COUNTED when the group's displayed volume adds it up: not a sub-unit (upper chest lives
+// inside chest) and not tracked-only (front delts, traps, lower back have no target, so adding their
+// max to the group's max produced nonsense ceilings - back 52, shoulders 64 - that nothing enforced).
+export function isCountedUnit(uid) { const u = VOLUME_UNITS[uid]; return !!u && !u.sub && u.tier !== 'tracked'; }
+const groupUnits = g => Object.values(VOLUME_UNITS).filter(u => u.group === g && isCountedUnit(u.id));
+// The counted units / regions of a group, in UNIT_ORDER. The ONE list every screen sums over, so a
+// group's sets and its target always count the same muscles (weekly-volume audit SS3.1).
+export const COUNTED_UNITS = Object.fromEntries([...new Set(UNIT_ORDER.map(u => VOLUME_UNITS[u].group))]
+  .map(g => [g, UNIT_ORDER.filter(u => VOLUME_UNITS[u].group === g && isCountedUnit(u))]));
+export const COUNTED_REGIONS = Object.fromEntries(Object.entries(COUNTED_UNITS)
+  .map(([g, us]) => [g, [...new Set(us.flatMap(u => VOLUME_UNITS[u].regions))]]));
+// Every region that feeds a unit with a target (so nothing a user asks for is silently dropped).
+export const TARGETED_REGIONS = new Set(UNIT_ORDER.filter(u => VOLUME_UNITS[u].target > 0).flatMap(u => VOLUME_UNITS[u].regions));
+export function countedUnitsFor(g) { return COUNTED_UNITS[g] ? [...COUNTED_UNITS[g]] : []; }
+// All of a group's units (counted first, then sub, then tracked) for the per-muscle sub-lines.
+export function unitsFor(g) { return UNIT_ORDER.filter(u => VOLUME_UNITS[u].group === g); }
 
 export const GROUPS = Object.fromEntries(GROUP_DEFS.map(([id, name, emoji, regions]) => {
   const rs = regions.map(r => REGIONS[r]);
@@ -203,7 +228,10 @@ export const GROUPS = Object.fromEntries(GROUP_DEFS.map(([id, name, emoji, regio
     // LEGACY summed-region numbers, kept only as the projection's training-distribution shape
     // (js/engine/projection.js TYPICAL_SHARE). Not a minimum; nothing enforces them.
     weeklySets: { ...LEGACY_GROUP_SETS[id] },
-    // Display volume = the sum of the group's units (enforcement is per unit, see VOLUME_UNITS).
+    // The group's counted units (what its displayed volume adds up), in UNIT_ORDER.
+    units: COUNTED_UNITS[id] ? [...COUNTED_UNITS[id]] : [],
+    // Display volume = the sum of the group's COUNTED units at the base numbers (enforcement is per
+    // unit, see VOLUME_UNITS; the resolved per-profile numbers come from targets.groupTargets).
     volume: {
       min: us.reduce((a, u) => a + u.min, 0),
       target: us.reduce((a, u) => a + u.target, 0),

@@ -22,17 +22,17 @@
 //   finisher switch; preview: "+10′ cardio". Today's plan card offers "Rebuild for <here>" when the
 //   plan is for another location.
 import { ds, fmtDay, fmtShort, parseDs } from '../util.js';
-import { GROUPS, GROUP_ORDER, PRESETS, REGIONS } from '../data/muscles.js';
+import { GROUPS, GROUP_ORDER, PRESETS } from '../data/muscles.js';
 import { SCULPT_GOALS } from '../data/sculpt.js';
 import { expandEquipment } from '../data/equipment.js';
 import { cardioOptions, CARDIO, INTENSITIES } from '../data/cardio.js';
 import { getEx } from '../data/exercises.js';
-import { recommend, groupStatus, weekSummary, cardioStatus, streak } from '../engine/recovery.js';
+import { recommend, groupStatus, weekSummary, cardioStatus, streak, sessionVolume } from '../engine/recovery.js';
 import { buildWorkout, estimateMinutes, swapBlock, addExercise, resolveStyle, isStyleId, restyle } from '../engine/generator.js';
 import { styleChipsHTML, openStyleEditor, openStyleInfo } from './styles.js';
 import { contextFor, suggestForDay } from '../engine/planner.js';
 import { renderClassPicker, bindClassPicker } from './classes.js';
-import { resolveTargets, suggestFinisher } from '../engine/targets.js';
+import { resolveTargets, suggestFinisher, fmtSets } from '../engine/targets.js';
 import { targetsSummaryHTML, bindTargetsSummary } from './targets.js';
 // CONTRACT-NOTE (§24): params.date may also be a PAST date (within retro.RETRO_DAYS). The builder
 //   then runs in LOG mode: same build flow, but the primary button logs it on that day (an 'active'
@@ -112,19 +112,15 @@ function cardioAt(loc, modality) {
 }
 
 // Muscle groups a session works, weighted by sets: [{ g, name, sets }] (strongest first).
+// Which muscle groups a session trains, and how many SETS of each. §18 cohesion: the set count is the
+// shared per-group credit (recovery.sessionVolume: each set counts once per group, at the strongest
+// muscle credit inside it), so a day card's "Chest 4" is the same 4 that Week coverage and Body count.
+// It used to SUM the region weights inside a group, which inflated every chip (a 23-set session showed
+// "Triceps 16.5 · Shoulders 12 · Biceps 12" against real credits of 7.5 / 9 / 6).
 export function sessionGroups(s, { min = 1.5 } = {}) {
-  const acc = {};
-  for (const b of (s && s.blocks) || []) {
-    let mus = null, n = 1;
-    if (b.kind === 'lift') { mus = getEx(b.exId)?.muscles; n = b.target?.sets || (b.sets || []).length || 3; }
-    else if (b.kind === 'class') mus = b.classify?.muscles;
-    if (!mus) continue;
-    for (const [r, w] of Object.entries(mus)) {
-      const g = REGIONS[r]?.group; if (!g) continue;
-      acc[g] = (acc[g] || 0) + (b.kind === 'lift' ? (w >= 0.5 ? w * n : 0) : w);
-    }
-  }
-  let out = Object.entries(acc).filter(([, v]) => v >= min).sort((a, b) => b[1] - a[1]).map(([g, v]) => ({ g, name: GROUPS[g]?.name || g, sets: v }));
+  const planned = !s || s.status === 'planned' || !(s.blocks || []).some(b => b.kind === 'lift' && (b.sets || []).some(x => x && x.done));
+  const acc = safe(() => sessionVolume(s, { planned }).groups, {});
+  let out = Object.entries(acc).filter(([, v]) => v >= min).sort((a, b) => b[1] - a[1]).map(([g, v]) => ({ g, name: GROUPS[g]?.name || g, sets: Math.round(v * 10) / 10 }));
   if (!out.length) out = (s?.targets || []).map(t => (GROUPS[t] ? t : PRESETS[t]?.groups?.[0] || SCULPT_GOALS[t]?.group || null)).filter(Boolean)
     .filter((g, i, a) => a.indexOf(g) === i).map(g => ({ g, name: GROUPS[g]?.name || g, sets: 0 }));
   return out;
@@ -301,7 +297,7 @@ function builderSection(sessions, profile, loc) {
     return `<button type="button" class="tr-tile ${on ? 'on' : ''}" style="--rc:${col}" data-t="group" data-id="${g}" aria-pressed="${on}">
       <span class="tr-tile-dot"></span>
       <span class="tr-tile-name">${esc(GROUPS[g].name)}</span>
-      <span class="tr-tile-sub">${daysAgo(st.daysSince)} · ${fmtNum(st.sets7d ?? 0, 0)}/${tgt != null ? Math.round(tgt) : '?'}</span>
+      <span class="tr-tile-sub">${daysAgo(st.daysSince)} · ${fmtSets(st.sets7d ?? 0)}/${tgt != null ? fmtSets(tgt) : '?'}</span>
     </button>`;
   }).join('');
 

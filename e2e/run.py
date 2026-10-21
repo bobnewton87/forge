@@ -2109,6 +2109,94 @@ def t_retro_past_day(t, ctx):
     t.check(not errs, 'no page errors while logging a past day', 'no console/page errors', '; '.join(errs[:3]))
 
 
+@test('V1', 'Cohesion: one muscle\'s weekly set count is identical on Plan, Body and "Why these numbers?" (CONTRACT §18)')
+def t_volume_cohesion(t, ctx):
+    """Bob: "the number of sets across all the different pages in the software is tied together". Read the
+    SAME muscle's weekly sets and target off Plan (week coverage), Body (group card + group sheet) and the
+    "Why these numbers?" sheet, and require all of them to agree - including the rounding."""
+    app = t.app
+
+    def nums(txt):
+        """'19.5 / 19 target' -> (19.5, 19)."""
+        m = re.search(r'([\d.]+)\s*/\s*([\d.]+)', (txt or '').replace(',', ''))
+        return (float(m.group(1)), float(m.group(2))) if m else (None, None)
+
+    app.load(bobir(app), 'plan')
+    # Triceps: one enforcement unit whose group holds only that unit, so Body's group number and Plan's
+    # unit row are the same quantity and must print the same string.
+    want = app.page.evaluate(r"""async () => {
+      const T = await import('/js/engine/targets.js');
+      const k = Object.keys(localStorage).find(x => /profile$/.test(x));
+      const p = JSON.parse(localStorage.getItem(k) || '{}');
+      const U = T.unitTargets(p), G = T.groupTargets(p);
+      return { target: U.triceps.target, min: U.triceps.min, max: U.triceps.max, group: G.triceps.target, fmt: T.fmtSets(U.triceps.target) };
+    }""")
+    t.check(want and want['target'] > 0, 'engine resolves a triceps target', 'targets.unitTargets().triceps', want)
+    t.check(abs(want['group'] - want['target']) < 0.051, 'a group target is the sum of its counted units',
+            f"groupTargets.triceps == unitTargets.triceps ({want['target']})", want['group'])
+
+    if not app.has('.pl-bar-row'):
+        run_plan(app)
+        app.page.wait_for_timeout(400)
+    t.check(app.has('.pl-bar-row'), 'Plan week coverage', 'per-muscle bars', short(app.text('.pl-sum'), 160))
+    plan_row = app.page.evaluate(r"""() => { const r = [...document.querySelectorAll('.pl-bar-row')]
+        .find(x => /Triceps/.test(x.querySelector('.pl-bar-top span')?.innerText || ''));
+      return r ? { num: (r.querySelector('.num')?.innerText || '').replace(/\s+/g, ' '), title: r.getAttribute('title') || '' } : null; }""")
+    t.check(plan_row, 'Plan has a Triceps row', '.pl-bar-row for Triceps', short(app.text('.pl-bars'), 200))
+    p_sets, p_target = nums(plan_row['num'])
+    t.sub('V1a', 'Plan week coverage shows the shared target', p_target is not None and abs(p_target - want['target']) < 0.051,
+          'Plan > Week coverage > Triceps', f"/ {want['fmt']} target", plan_row['num'])
+    t.check(f"min {want['min']}" in plan_row['title'] and f"max {want['max']}" in plan_row['title'],
+            'the row tooltip quotes the shared min/max', f"min {want['min']} ... max {want['max']}", short(plan_row['title'], 120))
+
+    # "Why these numbers?" - the sliders -> targets -> plan table, from planner.explainWeek.
+    app.click('[data-a="why-min"]')
+    t.check(app.wait_sheet('.tg-xtab'), 'Why these numbers? sheet', 'the sliders -> targets -> plan table', short(app.text(app.sheet()), 200))
+    why = app.page.evaluate(r"""() => { const s = document.querySelector('#sheet-root > .sheet:last-child');
+      const row = [...s.querySelectorAll('.tg-xtab tbody tr')].find(r => /^Triceps$/i.test((r.cells[0]?.innerText || '').trim()));
+      const unit = [...s.querySelectorAll('.tg-unit')].find(u => /Triceps/.test(u.querySelector('b')?.innerText || ''));
+      return { target: row ? (row.cells[2]?.innerText || '').replace(/\s+/g, ' ') : '', planned: row ? (row.cells[3]?.innerText || '').trim() : '',
+               unit: unit ? unit.innerText.replace(/\s+/g, ' ') : '' }; }""")
+    t.check(why['planned'], 'the Why sheet lists Triceps', 'a Triceps row in the table', why)
+    t.sub('V1b', 'Why-these-numbers planned sets = Plan week coverage', p_sets is not None and abs(float(why['planned']) - p_sets) < 0.051,
+          '"Why these numbers?" > Triceps > Planned', p_sets, why['planned'])
+    wt = re.search(r'[\d.]+', why['target'])
+    t.check(wt and abs(float(wt.group(0)) - want['target']) < 0.051, 'and the same target', want['fmt'], short(why['target'], 60))
+    t.check(f"min {want['min']}" in why['target'], 'and the same minimum', f"min {want['min']}", short(why['target'], 60))
+    t.check(f"max {want['max']}" in why['unit'], 'and the same max, with its reason', f"max {want['max']} + why", short(why['unit'], 200))
+    app.page.evaluate('() => document.querySelector("#sheet-root > .sheet-backdrop")?.click()')
+    app.page.wait_for_timeout(150)
+
+    # Body: the group card, then the group sheet's per-muscle bar.
+    app.tab('body')
+    t.check(app.has('.gcard[data-group="triceps"]'), 'Body group card', '.gcard[data-group=triceps]', short(app.text(), 160))
+    card = app.page.evaluate(r"""() => { const c = document.querySelector('.gcard[data-group="triceps"]');
+      return { sets: (c.querySelector('.gsets')?.innerText || '').replace(/\s+/g, ' '),
+               lines: [...c.querySelectorAll('.tiny.muted')].map(x => x.innerText).join(' | ') }; }""")
+    b_sets, b_target = nums(card['sets'])
+    t.sub('V1c', 'Body group card shows the SAME sets as Plan', b_sets is not None and p_sets is not None and abs(b_sets - p_sets) < 0.051,
+          'Body > Weekly sets vs target > Triceps', f'{p_sets} sets (this week, logged + planned)', card['sets'])
+    t.sub('V1d', 'Body group card shows the SAME target as Plan', b_target is not None and abs(b_target - want['target']) < 0.051,
+          'Body > Triceps > /N target', want['fmt'], card['sets'])
+    t.check('Last 7 days' in card['lines'], 'the rolling 7-day figure is labelled, not shown against the weekly target',
+            '"Last 7 days: N sets logged"', short(card['lines'], 140))
+    pn = re.search(r'[\d.]+', plan_row['num']); bn = re.search(r'[\d.]+', card['sets'])
+    t.sub('V1e', 'both screens print the number identically (one rounding rule)', bool(pn and bn) and pn.group(0) == bn.group(0),
+          'Plan vs Body', pn and pn.group(0), bn and bn.group(0))
+
+    app.click('.gcard[data-group="triceps"]')
+    t.check(app.wait_sheet('.tgb'), 'Body group sheet', 'per-muscle target bars', short(app.text(app.sheet()), 200))
+    gsheet = app.page.evaluate(r"""() => { const s = document.querySelector('#sheet-root > .sheet:last-child');
+      const bar = [...s.querySelectorAll('.tgb')].find(x => /Triceps/.test(x.querySelector('.tgb-top span')?.innerText || ''));
+      return { num: bar ? (bar.querySelector('.num')?.innerText || '').replace(/\s+/g, ' ') : '',
+               head: s.innerText.split('\n').slice(0, 6).join(' | ') }; }""")
+    s_sets, s_target = nums(gsheet['num'])
+    t.sub('V1f', 'Body group sheet agrees with the card and with Plan',
+          s_sets is not None and p_sets is not None and abs(s_sets - p_sets) < 0.051 and abs(s_target - want['target']) < 0.051,
+          'Body > Triceps sheet > Weekly sets vs target', f"{p_sets} / {want['fmt']}", gsheet['num'])
+    t.check('sets this week' in gsheet['head'], 'the sheet header quotes the same week', 'N/T sets this week', short(gsheet['head'], 140))
+
+
 @test('E1', 'No console/page errors during flows')
 def t_errors(t, ctx):
     app = t.app
