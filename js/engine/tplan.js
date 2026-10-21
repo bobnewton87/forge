@@ -73,6 +73,118 @@ export const COMBOS = [
   { ids: ['zma', 'vitamin_d'], name: 'Correct zinc + vitamin D', why: 'Correcting real deficiencies. Does nothing if you are replete, which is most men.' },
 ];
 
+// ============================================================ §22.9 the width of "normal", and scenarios
+// Bob: "enclomiphene works for non hypogonadal males if there is some specific issue that is causing low T,
+// it's game changing for a lot of people. I want the game changing results to be the default with the caveats."
+//
+// He is describing FUNCTIONAL SECONDARY HYPOGONADISM, which is a real clinical entity, not a loophole:
+// Grossmann & Matsumoto 2017 (J Clin Endocrinol Metab 102:1067-75, doi:10.1210/jc.2016-3580) — "such men do not
+// demonstrate anatomical hypothalamic-pituitary-testicular axis pathology but have functional hypogonadism that
+// is POTENTIALLY REVERSIBLE". And it is exactly the population where the only body-composition result on a SERM
+// was measured (Soares 2018: obese men, T 226 +/- 70, lean/fat-free/muscle mass all up).
+//
+// The harmonized reference range makes the point by itself. Travison 2017 (J Clin Endocrinol Metab 102:1161-73,
+// doi:10.1210/jc.2016-2935) pooled 9,054 men across four US/European cohorts, cross-calibrated to the CDC
+// reference method: in HEALTHY NON-OBESE men 19-39 the 2.5th/5th/50th/95th/97.5th percentiles are
+// 264 / 303 / 531 / 852 / 916 ng/dL. End to end that is a 3.5-fold range, and a man at 350 is inside it while
+// sitting at the 10th percentile and possibly far below his own set point.
+//
+// So Forge no longer leads with one invented point estimate. It leads with a BAND of scenarios. Each is
+// labelled as a scenario and none of them is a claim about the man reading it; the assumed baseline is
+// unchanged (`averageTotalT`), and his own level still drives every row below the band.
+export const T_REFERENCE_RANGE = Object.freeze([264, 916]);
+export const T_REFERENCE_PCTILE = Object.freeze([[2.5, 264], [5, 303], [50, 531], [95, 852], [97.5, 916]]);
+export const T_REFERENCE_SOURCE = 'Travison 2017, 9,054 men, four cohorts, CDC-calibrated (doi:10.1210/jc.2016-2935); healthy non-obese men 19–39.';
+
+// The therapies the band is computed for. Enclomiphene leads because it is the one Bob asked about, and the
+// combination is included because it is the one people ask about most.
+export const SCENARIO_IDS = Object.freeze(['enclomiphene', 'clomiphene', 'clomiphene+hcg']);
+
+// Four baselines. LH is set normal in every one, because that is what makes the scenario SECONDARY/functional —
+// the case these drugs treat. A raised LH is a different man and the planner fades the effect out for him.
+export const SCENARIOS = Object.freeze([
+  { key: 'suppressed', totalT: 300, lh: 3.2, label: 'Suppressed axis', short: '≈300 ng/dL', pctile: '≈5th percentile',
+    headline: 'This is the population the muscle result was actually measured in.',
+    body: 'Functional secondary hypogonadism: the axis is being held down by something — fat mass, sleep debt, under-eating, years of endurance volume, alcohol, opioids, a high prolactin — rather than by a testis or pituitary that cannot work. It is potentially reversible (Grossmann & Matsumoto 2017), and it is the population Soares 2018 randomized when it measured lean, fat-free and muscle mass going up on clomiphene. 300 ng/dL is at the bottom of the harmonized range (the 5th percentile is 303) and at the threshold the AUA and the Endocrine Society use to call testosterone low — note that it is still technically INSIDE the range, whose 2.5th percentile is 264.' },
+  { key: 'lowNormal', totalT: 400, lh: 3.6, label: 'Low-normal', short: '≈400 ng/dL', pctile: '≈15th percentile',
+    headline: 'Inside "normal" on the lab report, and still a long way below the middle of it.',
+    body: 'This is the man the reference range hides. 400 ng/dL is not flagged by any laboratory, is well above the 264 cut-off, and is 131 ng/dL below the median healthy young man. If a reversible cause is doing that to him, he has the same thing wrong with him as the man at 300 — just less of it. Nobody has weighed a man starting here on a SERM.' },
+  { key: 'average', totalT: 550, lh: 4.0, label: 'Population average', short: '≈550 ng/dL', pctile: '≈50th percentile',
+    headline: 'The middle of the range — and the baseline Forge assumes when you have entered no lab.',
+    body: 'Travison’s median for a healthy non-obese man aged 19–39 is 531 ng/dL. The hormone response here is measured (Tenover & Bremner 1991 took five healthy men from 519 to 1,390 ng/dL on clomiphene; Bremner 1987 took 490 to 980). What has never been measured is what that buys in muscle, because nobody has run a body-composition trial on a man who was not hypogonadal.' },
+  { key: 'highNormal', totalT: 750, lh: 4.2, label: 'High-normal', short: '≈750 ng/dL', pctile: '≈85th percentile',
+    headline: 'Little headroom, and the least reason to do anything.',
+    body: 'A man already near the top of the range has the smallest modeled rise (the measured SERM effect is a roughly constant number of ng/dL, so it is a shrinking percentage as the baseline climbs) and the furthest distance from any trial population. This row is here to show the gradient, not as an option.' },
+]);
+
+// ---------------------------------------------------- §22.9 reversible causes ("what may be holding yours down")
+// A SERM and fixing the cause attack the same problem from opposite ends: the cause fix raises the set-point, the
+// SERM overrides the feedback the cause is acting through. So the planner has to name the causes, say whether it
+// can SEE each one in this man's data, and point at the catalogue item that models it.
+//   status 'yes'     Forge can see it in what you entered
+//   status 'no'      what you entered rules it out
+//   status 'unknown' no data entered — which for most men is most of this list
+const SUPPRESSORS = [
+  { key: 'obesity', label: 'Carrying a lot of fat', fix: 'fat_loss',
+    detect: c => c.bmi == null ? 'unknown' : c.bmi >= MET.OBESE_BMI ? 'yes' : 'no',
+    text: 'The commonest reversible cause, and the one with the clearest reversal: adipose aromatase converts testosterone to estradiol, which feeds back on the hypothalamus. Weight loss raises it back, and the effect scales with how much is lost. Soares 2018 — the one trial that weighed anybody on a SERM — enrolled exactly these men.',
+    said: { yes: 'Your BMI is in the obese range, so Forge models this as actively costing you testosterone.', no: 'Your BMI is below 30, so Forge models no cost from this.', unknown: 'Add your height and weight and Forge will model it.' } },
+  { key: 'sleep', label: 'Sleep debt', fix: 'sleep_hygiene',
+    detect: c => c.sleepHours == null ? 'unknown' : c.sleepHours < 7 ? 'yes' : 'no',
+    text: 'One week of 5 hours a night cut daytime testosterone 10–15% in healthy young men (Leproult 2011). It reverses in days, it is free, and it is the first thing to fix before considering a drug.',
+    said: { yes: 'You sleep under 7 hours, so Forge models a cost and a recovery from fixing it.', no: 'You already sleep 7 hours or more, so there is no restriction here to undo.', unknown: 'Enter your typical sleep and Forge will model it.' } },
+  { key: 'energy', label: 'Under-eating / low energy availability', fix: 'energy_availability',
+    detect: c => c.deficitKcal == null ? 'unknown' : c.deficitKcal >= 500 ? 'yes' : 'no',
+    text: 'The fastest way for a lean, hard-training man to lower his own testosterone, and it reverses within days to weeks. The suppression curve Forge uses is an interpolation between a measured null at mild restriction (Koehler 2016) and the Friedl 2000 / Rossow 2013 extremes, so the middle of it is an assumption.',
+    said: { yes: 'The deficit you entered is large enough that Forge models it suppressing your level.', no: 'The deficit you entered is small enough that the controlled studies found no testosterone change.', unknown: 'Forge models NO energy-availability cost because you have not entered a typical deficit. For a lean man on an appetite-suppressing medication with a high training load, that is the assumption most likely to be wrong.' } },
+  { key: 'endurance', label: 'Years of endurance volume', fix: 'endurance_load',
+    detect: c => c.enduranceMin == null ? 'unknown' : c.enduranceMin >= 240 ? 'yes' : c.enduranceMin >= 150 ? 'maybe' : 'no',
+    text: 'The "exercise-hypogonadal male" picture: a persistent 25–50% lower resting testosterone that takes years of near-daily endurance training to appear and partly reverses when volume is cut (Hackney 2020). In a cohort of 196 runners it plateaued about 30–35% lower. It is central and comes with higher SHBG, so free testosterone falls a little further than total.',
+    said: { yes: 'Your weekly cardio target is high enough that this is worth taking seriously.', maybe: 'Your cardio volume is moderate. This condition takes years of near-daily endurance training, so it is a question for a lab rather than a conclusion.', no: 'Your cardio volume is low enough that Forge models no cost.', unknown: 'Add it from the catalogue to see what your running volume might be costing.' } },
+  { key: 'alcohol', label: 'A daily drinking habit', fix: 'alcohol',
+    detect: c => (c.inStack && c.inStack.has('alcohol') ? 'yes' : 'unknown'),
+    text: 'About three drinks a day for three weeks lowered testosterone roughly 7% in a randomized crossover. Occasional drinks are not the issue; a daily habit is.',
+    said: { yes: 'It is in your stack, so its cost is modeled.', unknown: 'Add it from the catalogue if this is a daily habit and Forge will model the cost.' } },
+  { key: 'prolactin', label: 'A raised prolactin', fix: 'cabergoline',
+    detect: c => c.prolactin == null ? 'unknown' : c.prolactin > MET.PROLACTIN_HIGH ? 'yes' : 'no',
+    text: 'A specific, treatable cause: a prolactin-secreting pituitary adenoma suppresses GnRH, and treating it with a dopamine agonist restores the axis. It is rare, it is the one cause here with a drug that fixes the cause itself, and it is invisible without the lab.',
+    said: { yes: 'Your prolactin is above the reference range, so this is worth a doctor’s attention on its own account.', no: 'Your prolactin is normal, so there is nothing here to treat.', unknown: 'Prolactin is on the panel. Cabergoline does nothing unless this is high.' } },
+  { key: 'opioids', label: 'Opioid medication', fix: null,
+    detect: () => 'unknown',
+    text: 'One of the best-documented causes and one of the most missed. Opioids suppress the axis by inhibiting GnRH synthesis and secretion; the prevalence of androgen deficiency on chronic opioid therapy runs between 20% and 80% depending on the drug, the dose, the duration and how low testosterone was defined (Kafel 2025, Andrology 13:2010-21, doi:10.1111/andr.70013). Forge does NOT model this — there is no catalogue item for it — so if it applies to you, every number here is too optimistic about your baseline.',
+    said: { unknown: 'Not modeled by Forge. If you take opioids regularly, say so to whoever orders the panel.' } },
+  { key: 'shbg', label: 'High SHBG hiding a low free testosterone', fix: null,
+    detect: c => c.shbg == null ? 'unknown' : c.shbg > 57 ? 'yes' : 'no',
+    text: 'Total testosterone can read mid-normal while the fraction that is actually available is low, because SHBG is holding it. SHBG rises with age, with under-eating and in endurance-trained men. This is the one case where a "normal" total genuinely misleads, and the fix is to measure free testosterone (equilibrium dialysis, or calculated from total T and SHBG) rather than to treat the total.',
+    said: { yes: 'Your SHBG is above the usual adult male range, so your free testosterone matters more than your total.', no: 'Your SHBG is inside the usual range.', unknown: 'SHBG is on the panel, and Forge is assuming a mid-range value until you enter it.' } },
+];
+
+// Things about THIS man that make a below-average baseline plausible. Computed from his profile, never asserted
+// as a diagnosis: the honest output is "plausible, and a lab would settle it".
+function riskFlags(profile, ctx) {
+  const out = [];
+  const stack = ctx.inStack || new Set();
+  if (ctx.enduranceMin != null && ctx.enduranceMin >= 150) {
+    out.push({ key: 'endurance', label: 'A big endurance-running background',
+      text: `Your weekly cardio target is ${Math.round(ctx.enduranceMin)} minutes. The exercise-hypogonadal picture takes years of near-daily endurance training to develop, and in the cohorts that have been measured it sits 25–35% below untrained men (Hackney 2020). That is enough on its own to move a man from the middle of the range into the low-normal band.` });
+  }
+  if (STIMULANT_IDS.some(id => stack.has(id))) {
+    out.push({ key: 'stimulant', label: 'An appetite-suppressing stimulant',
+      text: 'A prescribed stimulant blunts appetite, and the consequence Forge cares about here is not the drug itself — no trial has measured stimulant medication against testosterone — but what it does to how much you eat. Chronic under-eating is a measured suppressor of the axis, and it is the mechanism that connects this to your testosterone.' });
+  }
+  if (ctx.deficitKcal == null && out.length) {
+    out.push({ key: 'lea', label: 'Low energy availability you have not quantified',
+      text: 'The two above combine into the one cause Forge currently models at ZERO for you, because you have not entered a typical daily deficit. A lean, hard-training man whose appetite is chemically blunted is the textbook low-energy-availability case, and it is reversible within days to weeks. Entering a deficit in Metabolic values is the cheapest way to see what Forge thinks it is costing.' });
+  }
+  if (out.length) {
+    out.push({ key: 'verdict', label: 'What this does and does not mean', verdict: true,
+      text: `Taken together these make a baseline BELOW the ${Math.round(T_REFERENCE_PCTILE[2][1])} ng/dL median plausible for you specifically. They do not make it a fact. Forge is still assuming the population average for your age and will keep doing so until you enter a lab — one morning draw, fasted, 7–10 am, repeated on a separate day, settles it and replaces every assumed number on this page.` });
+  }
+  return out;
+}
+// Stimulants with an appetite effect that Forge models elsewhere (nutrition, projection).
+const STIMULANT_IDS = ['adderall'];
+
 // --------------------------------------------------------------------- labs
 export function labStatus(profile) {
   const m = (profile && profile.metabolic) || {};
@@ -144,10 +256,13 @@ export function tPlan(profile, opts = {}) {
   const lv = base.levels || {};
   const ctxFacts = { bmi: MET.bmiOf(profile, bw), prolactin: num(lv.prolactin, 0, 5000), lh: num(lv.lh, 0, 200),
     totalT: num(lv.totalT, 1, 5000), tAssumed: lv.totalTSource === 'assumed', sleepHours: num(lv.sleepHours, 0, 16),
-    deficitKcal: num(lv.deficitKcal, 0, 4000), estradiol: num(lv.estradiol, 0, 1000) };
+    deficitKcal: num(lv.deficitKcal, 0, 4000), estradiol: num(lv.estradiol, 0, 1000),
+    // §22.9: the two extra facts the reversible-cause list and the risk flags read.
+    shbg: num((profile.metabolic || {}).shbg, 1, 300), enduranceMin: num(profile.cardioTargetMin, 0, 2000) };
 
   const inStack = new Set((Array.isArray(profile.supplements) ? profile.supplements : [])
     .filter(e => e && e.active !== false && (!e.end || e.end > today)).map(e => e.id));
+  ctxFacts.inStack = inStack;
   const onExogenous = EXOGENOUS_IDS.some(id => inStack.has(id));
 
   // Reference projection: what happens if he changes nothing.
@@ -249,6 +364,13 @@ export function tPlan(profile, opts = {}) {
       shbg: t.shbg != null ? r1(t.shbg) : null,
       lean: { lb: r2(lean), lo: r2(leanLo), hi: r2(leanHi) },
       fat: { lb: r2(fat), lo: r2(fatLo), hi: r2(fatHi) },
+      // §22.9 THE NUMBER THE ROW LEADS WITH. It is the modeled CENTRAL estimate of net lean-minus-fat with its
+      // range, and it is deliberately NOT `score` below. `score` is a RANKING rule that pins an unmeasured item
+      // to the conservative end of its own range; putting it in the headline made a row announce "±0 lb net"
+      // directly above its own body saying "+4.4 lb lean", which is incoherent and read as "this does nothing".
+      // Ranking may be conservative; the displayed number must be the estimate. The honesty lives in the range
+      // (which still starts at zero for an unmeasured item), the Extrapolated badge and the notes.
+      net: { lb: r2(lean - fat), lo: r2(leanLo - fatHi), hi: r2(leanHi - fatLo) },
       projected, weeks,
       // Ranking score. An item whose body-composition effect has never been MEASURED is ranked on the
       // conservative end of its own range (which is zero), not on the mid-point of an extrapolation
@@ -269,10 +391,14 @@ export function tPlan(profile, opts = {}) {
     };
   };
 
+  // `only` builds a named subset of the candidates. Used by the scenario band below, which needs the same row
+  // builder (so a scenario's numbers come through project() exactly like the man's own) without paying for 33 rows.
+  const want = Array.isArray(opts.only) && opts.only.length ? new Set(opts.only) : null;
   const rows = [];
-  for (const id of SINGLE_IDS) { const r = buildRow({ ids: [id] }); if (r) rows.push(r); }
+  for (const id of SINGLE_IDS) { if (want && !want.has(id)) continue; const r = buildRow({ ids: [id] }); if (r) rows.push(r); }
   for (const c of COMBOS) {
-    if (typeof c.when === 'function' && !c.when(ctxFacts)) continue;
+    if (want && !want.has(c.ids.join('+'))) continue;
+    if (!want && typeof c.when === 'function' && !c.when(ctxFacts)) continue;
     const r = buildRow(c); if (r) rows.push(r);
   }
   // Rank by what it does to his body, not by the size of the testosterone number.
@@ -302,16 +428,91 @@ export function tPlan(profile, opts = {}) {
   if (num((profile.metabolic || {}).shbg, 1, 300) == null) assumptions.push(`SHBG: assumed ${MET.ASSUMED_SHBG} nmol/L (mid adult male reference), used to compute free testosterone.`);
   if (ctxFacts.deficitKcal == null) assumptions.push('Typical daily calorie deficit: not entered, so Forge models no energy-availability cost. For a lean man on an appetite-suppressing medication with a high training load, that is the assumption most likely to be wrong.');
 
+  // §22.9 scenario band. Computed by scenarioBand() below, which costs four more sub-plans and therefore runs
+  // OFF the synchronous route render (the UI calls it from an idle callback and patches the card in place). It is
+  // opt-in here so tests can ask for it inline.
+  const scenarios = opts.band === true && !want ? scenarioBand(profile, opts) : null;
+  // Reversible causes, and whether Forge can see each one in this man's data.
+  const causes = want ? [] : SUPPRESSORS.map(sp => {
+    const status = sp.detect(ctxFacts) || 'unknown';
+    return { key: sp.key, label: sp.label, status, text: sp.text, said: sp.said[status] || sp.said.unknown || null,
+      fix: sp.fix, fixName: sp.fix ? (SUPPLEMENTS[sp.fix]?.name.split(' (')[0] || null) : null, modeled: !!sp.fix };
+  });
+  const flags = want ? [] : riskFlags(profile, ctxFacts);
+
   const notes = [];
   if (onExogenous) notes.push('You have exogenous testosterone in your stack. It suppresses your own production, so every option here is modeled at zero until you come off it.');
   notes.push('Ranked by modeled 12-month lean and fat change, not by how much the testosterone number moves. Those are different lists: the aromatase inhibitor produces the biggest number here and, in the trials that measured it, no muscle at all.');
 
   return {
     tAssumed, tAssumedLevel,
+    // §22.9: the band replaces "one assumed number" as the planner's opening statement; causes and flags say
+    // what could put this man in a lower column than the one Forge is assuming for him.
+    scenarios, causes, flags, referenceRange: T_REFERENCE_RANGE, referencePctile: T_REFERENCE_PCTILE,
+    referenceSource: T_REFERENCE_SOURCE,
     female: false, hidden: false, labs, actions, rows, notes, assumptions, wada: WADA_NOTE,
     exogenous: EXOGENOUS_IDS.map(id => ({ id, name: SUPPLEMENTS[id]?.name })),
     facts: ctxFacts, weeks, projected: canProject, projections,
   };
+}
+
+/**
+ * scenarioBand(profile, opts) → [{ ...SCENARIOS[i], rows, belowRange, yours }]
+ *
+ * §22.9. Instead of leading with one invented point estimate, lead with what the model says across the width of
+ * "normal". Each scenario re-runs the SAME row builder against a synthetic profile whose only change is the
+ * baseline (plus a normal LH, which is what makes it the secondary/FUNCTIONAL case these drugs treat), so a
+ * scenario's lean and fat come through project() exactly like the man's own rows do — no parallel model.
+ *
+ * The assumed baseline for HIM is untouched (`averageTotalT`): every column is labelled as a scenario, and
+ * `yours` marks whichever column is nearest his own level so the band never reads as a prediction about him.
+ *
+ * COST: four sub-plans, each with its own reference projection — about as much work again as tPlan() itself.
+ * That is why the UI computes it after the first paint rather than inside it (CONTRACT §22.9).
+ */
+export function scenarioBand(profile, opts = {}) {
+  profile = profile && typeof profile === 'object' ? profile : {};
+  if (sexOf(profile) === 'female') return null;
+  const now = parseDate(opts.now) || new Date();
+  const today = ds(now);
+  const inStack = new Set((Array.isArray(profile.supplements) ? profile.supplements : [])
+    .filter(e => e && e.active !== false && (!e.end || e.end > today)).map(e => e.id));
+  // On exogenous testosterone the whole own-axis question is moot and every column would read zero.
+  if (EXOGENOUS_IDS.some(id => inStack.has(id))) return null;
+  const labBefore = addDays(today, -120);
+  // His own level: the entered lab if there is one, otherwise the same population average tPlan() assumes.
+  const own = num((profile.metabolic || {}).totalT, 1, 5000) ?? MET.averageTotalT(num(opts.age, 10, 120) ?? 39);
+  // Every column in the band is a SECONDARY (functional) case, because that is the only kind these drugs treat.
+  // A man whose own LH is clearly raised alongside a low testosterone is not in that premise at all: the signal
+  // is already maximal and is not being acted on, so none of these columns is about him and the band must not
+  // flag one as "closest to you". His own rows below already model this correctly at zero; without this the band
+  // would be the one place on the page that contradicts them.
+  const ownLh = num((profile.metabolic || {}).lh, 0, 200);
+  const outsidePremise = ownLh != null && ownLh > MET.LH_PRIMARY && own < MET.LOW_T;
+  const whyNot = outsidePremise
+    ? `Your own LH (${ownLh} IU/L) is clearly raised while your testosterone is low. Every column below is a SECONDARY case — the pituitary signal is not being sent — and that is the only kind these drugs treat. Your pattern is the other kind: the signal is already being shouted and is not being acted on. So none of these columns is about you, and Forge has not marked one as yours. (That is about how your testes respond to the signal, not how they look or feel — see the LH note on the lab panel.) The band is still here because it is the honest picture of who these drugs help.`
+    : null;
+  return SCENARIOS.map(sc => {
+    // labDate is set 120 days back so the engine does not treat the synthetic lab as "drawn while on therapy"
+    // (which would suppress the item's modeled effect) — see the labAfter branch in modifiersAt.
+    const synth = { ...profile, metabolic: { ...(profile.metabolic || {}), totalT: sc.totalT, lh: sc.lh, labDate: labBefore, onTrtT: null } };
+    let sub = null;
+    try { sub = tPlan(synth, { ...opts, band: false, only: SCENARIO_IDS, maxProjections: 6 }); } catch (e) { sub = null; }
+    const rows = (sub?.rows || []).filter(r => SCENARIO_IDS.includes(r.id))
+      .sort((a, b) => SCENARIO_IDS.indexOf(a.id) - SCENARIO_IDS.indexOf(b.id))
+      .map(r => ({ id: r.id, name: r.name, net: r.net, lean: r.lean, fat: r.fat, t: r.t, bodyComp: r.bodyComp,
+        extrapolated: r.extrapolated, evidence: r.evidence, rx: r.rx,
+        tolerability: r.tolerability ? { grade: r.tolerability.grade, short: r.tolerability.short } : null }));
+    return { ...sc, rows,
+      // At or under the harmonized 5th percentile (303 ng/dL) — i.e. the bottom of the range, and at or below
+      // the ~300 ng/dL threshold the AUA and Endocrine Society use to define low testosterone. NOT "outside the
+      // range": the harmonized 2.5th percentile is 264, so 300 is still technically inside it, which is exactly
+      // the confusion this band exists to clear up.
+      lowEnd: sc.totalT <= T_REFERENCE_PCTILE[1][1],
+      belowRange: sc.totalT < T_REFERENCE_RANGE[0],
+      notApplicable: outsidePremise, whyNot,
+      yours: !outsidePremise && own != null && SCENARIOS.every(o => Math.abs(o.totalT - own) >= Math.abs(sc.totalT - own)) };
+  });
 }
 
 export const WADA_NOTE = 'If you ever race in a drug-tested event: SERMs and other anti-estrogens (clomiphene, enclomiphene, tamoxifen) are WADA-prohibited at all times under S4.2, aromatase inhibitors under S4.1, hCG in males under S2.2, and testosterone by any route under S1. Ashwagandha, tongkat ali, cabergoline, sleep and food are not prohibited.';

@@ -58,8 +58,18 @@ test('clomiphene raises effective T in a low-T secondary profile, and the lean e
   // CHANGED 2026-10-20: the reference level was hard-coded 500 (the old flat body-composition cap). The credit
   // is no longer clipped there for a man inside Soares 2018's population, so the reference now follows the
   // credited level the engine actually reports.
-  const te = testosteroneEffect(on.testosterone.leanLevel, { baselineT: 300, weeksOn: 12, age: 39 });
+  // CHANGED 2026-10-21 (§22.9): the accrual clock runs on EFFECTIVE exposure, not raw weeks on the stack, so the
+  // 6-week serum ramp delays the curve instead of permanently removing ~20% of its asymptote. The assertion is
+  // unchanged in intent — the engine still routes through testosteroneEffect() and not an ad-hoc number — but it
+  // reads the effective exposure the engine reports rather than assuming it equals the elapsed weeks.
+  assert.equal(on.testosterone.weeksOn, 12, 'raw weeks on the stack');
+  assert.ok(on.testosterone.weeksEff > 0 && on.testosterone.weeksEff < 12, `effective exposure ${on.testosterone.weeksEff} lags the raw 12 weeks`);
+  const te = testosteroneEffect(on.testosterone.leanLevel, { baselineT: 300, weeksOn: on.testosterone.weeksEff, age: 39 });
   assert.ok(Math.abs(on.leanDirectLbPerWeek - te.leanDirectLbPerWeek) < 0.02, 'matches the shared curve at the credited level');
+  // ...and the ramp no longer docks the end point: a long horizon converges on the Bhasin asymptote.
+  const far = stackTimeline(P([entry('clomiphene', 0)], LOW), { from: DATE, weeks: 208 });
+  const asym = testosteroneEffect(on.testosterone.leanLevel, { baselineT: 300, weeksOn: 1040, age: 39 }).asymptoteLb;
+  assert.ok(far.cumLeanDirect > asym * 0.95, `long-run direct lean ${far.cumLeanDirect} reaches the asymptote ${asym}`);
 });
 
 // REWRITTEN 2026-10-20. This test used to assert that clomiphene, enclomiphene and hCG do NOTHING for a man
@@ -99,7 +109,14 @@ test('gates: high LH (primary) blocks the SERM/hCG class; cabergoline needs a hi
   assert.ok(mild.testosterone.level < modifiersAt(P([entry('clomiphene')], LOW), DATE).testosterone.level);
   const primary = modifiersAt(P([entry('clomiphene')], { ...LOW, lh: 22 }), DATE);
   assert.equal(primary.testosterone.level, primary.testosterone.natural);
-  assert.ok(primary.contributions.some(c => /testicular\) failure/i.test(c.text)));
+  // REWORDED 2026-10-21: the note used to say "primary (testicular) failure", which Bob read as something he
+  // could check by looking ("I don't have small testicles as far as I can tell"). It now explains that LH is the
+  // instruction and that this is about whether the testes ACT on it, not how they look.
+  const pNote = primary.contributions.map(c => c.text).join(' ');
+  assert.match(pNote, /primary/i, 'names the state');
+  assert.match(pNote, /not being acted on|already being shouted/i, 'explains that the signal is maximal and unheeded');
+  assert.match(pNote, /RESPOND, not how they look|not how they look/i, 'and that it is not something you can see');
+  assert.match(pNote, /Leydig/i, 'and says which cells are involved');
 
   const noPrl = modifiersAt(P([entry('cabergoline')], { totalT: 280, labDate: '2026-07-01' }), DATE);
   assert.equal(noPrl.testosterone.level, noPrl.testosterone.natural, 'no prolactin entered → nothing');

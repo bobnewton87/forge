@@ -35,6 +35,9 @@
 //       'none'         trials measured body composition and found none → tLeanShare 0
 //     bcMaxLevel                the serum T up to which muscle is credited (see bcNote for where the number comes from)
 //     monitor: [labs], fertility, timeCourse, wada, suits, notSuits   (shown by the planner, never computed from)
+//     interactions: [{ with, kind: 'pharmacodynamic'|'pharmacokinetic'|'additive', text }]  (§22.9, catalogue only)
+//     unknowns: [string]        what has NOT been measured. A catalogue entry that lists only findings reads as
+//                               more settled than the literature is; this is the column that says where it ends.
 // CONTRACT-NOTE (§22.8 Tolerability, added 2026-10-20): "better tolerated" is a claim people make about these
 //   drugs constantly, and before this the catalogue had no way to express it, so it could only be a vibe. Every
 //   item that has comparative or placebo-controlled adverse-event data now carries `model.tolerability`:
@@ -883,7 +886,7 @@ const LIST = [
       'HDL ("good") cholesterol fell significantly in the one trial that measured body composition (Soares 2018, p<0.001). Enclomiphene did not do this in the trial that looked (Wiehle 2013, p=0.78), and in baboons the two isomers moved cholesterol in opposite directions, so this looks like a zuclomiphene effect.',
       'In the only head-to-head, the same men reported side effects far more often on clomiphene than after switching to enclomiphene — 47% vs 13.8%, driven by low libido, low energy and mood (Saffati 2024). That study is retrospective and unblinded, but it is the only direct comparison that exists.',
       'Libido was lower on clomiphene than on testosterone therapy in a meta-analysis (−0.54, 95% CI −0.87 to −0.21).',
-      'It needs testes that can respond. A clearly raised LH together with a low testosterone is primary (testicular) failure, and then it is the wrong tool — but a normal or slightly raised LH is not a reason to rule it out (Keihani 2020).',
+      'It needs testes that can respond to the signal. A clearly raised LH together with a low testosterone means the signal is already maximal and is not being acted on ("primary"), and then this is the wrong tool — it works by raising LH further. You cannot tell that by looking: the testosterone-making Leydig cells are a small part of testis volume, so they can be failing at normal size, and the usual causes are age-related Leydig decline, a past varicocele, mumps orchitis, trauma or chemotherapy. A normal or slightly raised LH is not a reason to rule it out (Keihani 2020), and a raised LH with a still-normal testosterone ("compensated", Tajar 2010) is not either.',
       'Using it in a man whose testosterone is already normal has no outcome data at all. The hormone moves; whether anything else does is unmeasured, and the only long-term safety data in men are retrospective series in hypogonadal patients.',
       'Long-term safety data come from retrospective series, not trials; one 400-man series followed men for an average of about two years with 88% reaching normal levels.',
     ],
@@ -972,6 +975,22 @@ const LIST = [
           'Shahid Z, et al. Clomiphene-induced myocardial infarction in a young male: a case report. Sci Prog. 2025;108(3). doi:10.1177/00368504251349392',
         ],
       },
+      interactions: [
+        { with: 'Aromatase inhibitors (anastrozole, letrozole)', kind: 'pharmacodynamic', text: 'They push the SAME lever — less estrogen feedback at the hypothalamus — so the testosterone effects do not add, and Forge models them as sharing one final path. The AI also blocks estrogen ACTION, which carries a measured fat and bone cost (Finkelstein 2013; Burnett-Bowie 2009), so the combination buys no extra testosterone and brings a cost of its own.' },
+        { with: 'hCG', kind: 'pharmacodynamic', text: 'Randomized and measured: clomiphene +158 ng/dL, hCG +134, both together +153 (Habous 2018, 282 men, p=0.57 for the combination vs clomiphene alone). The combination was NOT better. Both end at the same Leydig cell, which is why Forge takes the larger of the two rather than adding them.' },
+        { with: 'Exogenous testosterone (any route)', kind: 'pharmacodynamic', text: 'Pointless and contradictory. Exogenous testosterone suppresses LH and FSH; clomiphene works by raising them. Forge models every own-axis item at zero while exogenous testosterone is in the stack.' },
+        { with: 'Anything that suppresses the axis (alcohol, opioids, a large deficit, short sleep)', kind: 'additive', text: 'These lower the baseline the drug then works from. Because the measured SERM effect is a roughly constant number of ng/dL (Hohl 2025) rather than a percentage, a lower baseline mostly means a lower END point, not a smaller rise.' },
+        { with: 'Prescription medicines generally', kind: 'pharmacokinetic', text: 'No clinically important cytochrome-P450 interaction is established for clomiphene in men, unlike tamoxifen. That is an absence of documented interactions, not a guarantee — your prescriber has your full medication list and Forge does not.' },
+      ],
+      unknowns: [
+        'Whether it builds muscle in a man whose testosterone is already normal. The hormone rise there is measured (Tenover 1991, Bremner 1987); the body-composition consequence has never been measured in anyone who was not hypogonadal.',
+        'Whether an endogenous rise builds the same muscle as the same rise given from outside. The curve Forge runs the credit through (Bhasin 2001) came from exogenous testosterone with the gonadotropins switched off. This is the single biggest gap in this whole category.',
+        'The achieved testosterone level in the one trial that measured body composition (Soares 2018) is not published, so the 500 ng/dL bound Forge uses is inferred from the entry criterion plus the pooled rise — an assumption, not a measurement.',
+        'Dose-response. There is no within-trial dose ladder in men: 25 mg/day and 50 mg/day look indistinguishable across trials, and the 1,390 ng/dL figure came from 100 mg/day in five men.',
+        'Strength, function and performance. Nothing has measured them on clomiphene. The one trial in this class that did look (Liu 2002, hCG) found +2 kg of lean mass and NO improvement in shoulder or knee strength, gait, balance or physical activity — which is a warning that lean mass on a bioimpedance machine is not the same thing as being stronger.',
+        'Bone mineral density on treatment. Never measured in men on clomiphene.',
+        'Long-term safety from a randomized trial. Everything past 6 months is retrospective series.',
+      ],
       bodyComp: 'measured', bcMaxLevel: 500, bcExtrapMaxLevel: 1390, bcMaxBaseline: 300,
       bcNote: 'MEASURED up to ≈500 ng/dL, EXTRAPOLATED above it. Soares 2018 measured body composition by bioimpedance in obese men starting at 226 ± 70 ng/dL and found lean, fat-free and muscle mass all improved; the achieved level is not in the abstract, and 500 ng/dL is inferred from that baseline plus the pooled rise in obese men (+333 ng/dL, Tienforti 2023), so the bound itself is an ASSUMPTION. Above 500 the hormone rise IS measured (Tenover 1991 reached 1,390 ng/dL in healthy young men), but no trial has measured body composition there, so Forge runs it through the testosterone→lean curve, labels it an extrapolation, and starts its range at zero. The deeper gap: that curve (Bhasin 2001) was built on testosterone given from outside with the gonadotropins switched off. Whether an endogenous rise of the same size builds the same muscle has never been tested.',
       monitor: ['Total testosterone (morning, 4–6 weeks in)', 'Estradiol (sensitive assay)', 'Hematocrit', 'PSA', 'LH/FSH', 'Vision changes: stop and call the prescriber'],
@@ -979,7 +998,7 @@ const LIST = [
       timeCourse: 'Levels move within 2 weeks; trials ran 8–30 weeks. Long-term data are retrospective.',
       wada: 'WADA prohibited at all times, S4.2 (anti-estrogenic substances / SERMs).',
       suits: 'Low testosterone (two morning draws under ~300) with a normal or slightly raised LH, especially when fertility matters. It also raises the number in men who are already normal — that part is measured — but what that buys you is not.',
-      notSuits: 'A clearly raised LH together with a low testosterone (primary testicular failure: the signal is not what is missing). Anyone already on testosterone. And anyone who wants a muscle result rather than a lab result at a normal baseline, because that has never been measured on this drug.',
+      notSuits: 'A clearly raised LH together with a low testosterone — "primary": the signal is already maximal and the testes are not acting on it, so raising the signal further is the wrong lever. (That is about how the testes RESPOND, not how they look or feel; see the LH note on the lab panel.) Anyone already on testosterone. And anyone who wants a muscle result rather than a lab result at a normal baseline, because that has never been measured on this drug.',
       levelRisks: [{ min: 1, text: 'Estradiol rises on clomiphene, so breast tenderness or gynecomastia can appear; your prescriber tracks it along with hematocrit and PSA.' }],
       // No `lowTOnly` / `noEffectAbove` any more: the eugonadal response is measured, not absent (Tenover 1991,
       // Bremner 1987). `secondaryOnly` now fades rather than cliffs — see LH_PRIMARY / LH_PRIMARY_HARD.
@@ -1012,7 +1031,7 @@ const LIST = [
       'Serum estradiol goes UP, not down (Thomas 2023: 29.5 → 67 pg/mL). The "no estrogen" framing is wrong; what the evidence supports is fewer estrogen-mediated SIDE EFFECTS, not a lower estradiol.',
       'IGF-1 fell on every dose in phase 2, more than on testosterone gel. The significance of that is unknown, and for someone whose goal is muscle it is the one finding that should give pause.',
       'In phase 3 the two treatment discontinuations in the 25 mg arm were for a high hematocrit/hemoglobin and a high PSA — the same two things any testosterone-raising therapy is monitored for.',
-      'It still needs testes that can respond and a pituitary that is not the problem: a clearly raised LH with a low testosterone is primary failure and this is the wrong tool.',
+      'It still needs testes that respond to the signal and a pituitary that is not the problem: a clearly raised LH with a low testosterone means the signal is already maximal and is not being acted on, and this drug works by raising the signal. Nothing about testis size or feel tells you which case you are in — only LH does.',
     ],
     typicalUse: 'Prescribed off-label from a compounding pharmacy for secondary hypogonadism, especially when fertility matters; the prescriber sets dosing and monitors labs. The doses studied were 6.25, 12.5 and 25 mg once daily.',
     sources: [
@@ -1102,6 +1121,21 @@ const LIST = [
       e2Note: 'Estradiol goes UP on enclomiphene, not down — about as much as on clomiphene, because what drives it is the extra testosterone being aromatised and removing the cis-isomer does nothing to aromatase. Thomas 2023 measured 29.5 → 67 pg/mL (p=0.003). What the isomer removal changes is estrogen ACTION in tissue, and the side effects that follow from it, not the number on the lab report. As with clomiphene, Forge credits no fat change from a SERM\'s serum-E2 rise.',
       e2ActionNote: 'Forge tracks estrogen ACTION separately from serum estradiol, and applies a fat effect only when action is BLOCKED (aromatase inhibitors, Finkelstein 2013). A SERM raises the hormone while blocking the receptor centrally and acting as an agonist or antagonist elsewhere depending on tissue — net direction unknown — so no fat term is applied here for either isomer. The e2ActionPct figure is carried for documentation and is not read by the fat model for SERMs.',
       shbgNote: 'SHBG rises a little, as on clomiphene; the pooled SERM change was not significant (+3.63 nmol/L, p=0.09, Hohl 2025). Forge models +3 nmol/L, and the bioavailable fraction is treated as unchanged (measured directly for clomiphene in Bremner 1987: 65% → 66% of total).',
+      interactions: [
+        { with: 'Clomiphene', kind: 'pharmacodynamic', text: 'The same molecule minus the cis-isomer, so taking both is taking one drug twice. No trial has randomized one against the other.' },
+        { with: 'Aromatase inhibitors', kind: 'pharmacodynamic', text: 'Same shared lever as clomiphene, and the same conclusion: no extra testosterone, plus the AI\u2019s own estrogen-action cost.' },
+        { with: 'hCG', kind: 'pharmacodynamic', text: 'One final common path (the Leydig cell), so not additive. The direct evidence is on the clomiphene + hCG pair (Habous 2018); it has never been tested with enclomiphene.' },
+        { with: 'Exogenous testosterone', kind: 'pharmacodynamic', text: 'Opposite directions: testosterone suppresses LH and FSH, this raises them. Modeled at zero while exogenous testosterone is in the stack.' },
+        { with: 'Compounding variability', kind: 'pharmacokinetic', text: 'Not a drug interaction, but it belongs here: enclomiphene is not an FDA-approved product and reaches people through compounding pharmacies, so the content of what is dispensed is not verified the way an approved product\u2019s is.' },
+      ],
+      unknowns: [
+        'Body composition. No enclomiphene trial has ever measured it, at any baseline. Every lean figure Forge shows for it is an extrapolation.',
+        'Eugonadal men. No trial has enrolled one, so the hormone rise above about 350 ng/dL is itself inferred rather than measured — a weaker position than clomiphene, which has been measured in healthy men.',
+        'Whether it really is better tolerated. The isomer rationale is sound and the one direct comparison favours it (13.8% vs 47%, Saffati 2024), but that study is retrospective, unblinded and within-patient, and no trial has randomized the two.',
+        'Safety past 16 weeks. The phase-3 programme ran 16 weeks. There is no long-term safety dataset of any kind, which is the single most important thing to know about it and the main respect in which clomiphene is better characterised.',
+        'Regulatory standing. FDA\u2019s advisory committee voted 8\u20134 against the 503A bulks list in 2022 citing a lack of clinical efficacy evidence; FDA has not acted on that vote either way.',
+        'Strength and function, bone density, fertility outcomes beyond sperm concentration: none measured.',
+      ],
       bodyComp: 'extrapolated', bcMaxLevel: 604,
       bcNote: 'EXTRAPOLATED TWICE OVER, and still the weakest row of the three SERMs. (1) No enclomiphene trial has ever measured body composition, at any baseline, so the 604 ng/dL bound is not "where a body-composition trial landed" — it is simply the highest morning group mean any enclomiphene trial reached (Wiehle 2013, 25 mg, day-42 C0 = 604 ± 160), and Forge refuses to run the muscle curve above a level the drug has never been shown to produce. (2) No enclomiphene trial has ever enrolled a eugonadal man, so the hormone rise shown above ~350 ng/dL is itself inferred. And the Bhasin curve the credit runs through came from testosterone given from OUTSIDE with the gonadotropins switched off, which is not what this drug does. Range starts at zero.',
       // §22.8. The reason this entry exists in its current form: Bob asked whether enclomiphene is better
@@ -1211,6 +1245,18 @@ const LIST = [
           'Habous M, et al. BJU Int. 2018;122(5):889-897.',
         ],
       },
+      interactions: [
+        { with: 'Clomiphene / enclomiphene', kind: 'pharmacodynamic', text: 'Not additive, and this is the one combination in the category that has actually been randomized: clomiphene +158, hCG +134, both +153 ng/dL (Habous 2018, p=0.57). Forge takes the larger, not the sum.' },
+        { with: 'Exogenous testosterone', kind: 'pharmacodynamic', text: 'The one pairing here that is deliberate and supported: low-dose hCG alongside testosterone therapy maintains intratesticular testosterone and sperm production, which testosterone alone suppresses. That is a fertility-preservation strategy run by a clinician, not a muscle strategy.' },
+        { with: 'Aromatase inhibitors', kind: 'pharmacodynamic', text: 'Commonly stacked to blunt the estradiol rise, which on hCG is large (about +150%, Liu 2002). The AI adds no testosterone on top and brings its own fat and bone cost, so what it buys is symptom control, not more hormone.' },
+      ],
+      unknowns: [
+        'Chronic use in a man with a normal testosterone. Nobody has done it. The eugonadal numbers come from single-injection Leydig stimulation TESTS (Cailleux-Bounacer 2008, Panidis 2002), which is a different thing from taking it for a year.',
+        'The achieved level in the trial that weighed people. Liu 2002 does not publish it, so the 870 ng/dL bound is inferred from the \u2264433 entry criterion plus the reported +150%.',
+        'Why the lean mass did not translate. Liu 2002 is the only placebo-controlled lean-mass result in this category and it found +2 kg of lean with NO gain in shoulder or knee strength, gait, balance or physical activity. Whether that reflects the measurement, the population (men over 60) or the lean mass being something other than contractile muscle is unresolved, and it is the most important unknown here.',
+        'Adverse events. No trial has ever tabulated them against a comparator in this population. The "moderate" grade rests on two measured pharmacological effects (testes shrank about 5 mL; estradiol rose about 150%) rather than on a safety table.',
+        'Dose-response in men for body composition, and anything beyond 3 months.',
+      ],
       bodyComp: 'measured', bcMaxLevel: 870, bcMaxBaseline: 433,
       bcNote: 'MEASURED, and the only placebo-controlled lean-mass result in this whole class: Liu 2002, 40 men over 60, 3 months, lean +2 kg (p<0.001) and fat −1 kg (p<0.05) — with NO improvement in shoulder or knee strength, gait, balance or physical activity. The 870 ng/dL bound is inferred from the ≤433 ng/dL entry criterion and the reported +150%; the achieved mean is not published, so the bound is an assumption.',
       monitor: ['Total testosterone and estradiol', 'Hematocrit', 'Testis volume (it fell ~5 mL in the trial)', 'LH/FSH (they are suppressed while you use it)'],
@@ -1218,7 +1264,7 @@ const LIST = [
       timeCourse: 'Levels rise within days; Liu 2002 ran 3 months.',
       wada: 'WADA prohibited at all times in males, S2.2 (chorionic gonadotropin).',
       suits: 'Low testosterone with fertility to protect, including men already on testosterone therapy. It works even when the pituitary signal is the problem, because it replaces LH.',
-      notSuits: 'Primary (testicular) failure where the testes cannot respond; anyone who would rather not inject. At a normal baseline it still raises the number — that is what a Leydig stimulation test is — but no one has run it chronically in a eugonadal man or measured what it does to him.',
+      notSuits: '"Primary" failure, where the Leydig cells cannot respond to the signal however loudly it is sent — hCG replaces the LH signal, so a testis that is already ignoring a maximal LH will ignore this too. That is a response problem, not a size problem, and LH is the only way to see it. Also anyone who would rather not inject. At a normal baseline it still raises the number — that is what a Leydig stimulation test is — but no one has run it chronically in a eugonadal man or measured what it does to him.',
       // Primary (testicular) failure blocks this: hCG replaces the LH signal, but a testis that cannot respond
       // to its own already-maximal LH will not respond to hCG either. `lowTOnly`/`noEffectAbove` removed — see
       // the curve comment above.
@@ -1293,6 +1339,16 @@ const LIST = [
           'Helo S, et al. A randomized prospective double-blind comparison trial of clomiphene citrate and anastrozole in raising testosterone in hypogonadal infertile men. J Sex Med. 2015;12(8):1761-1769. (safety data as tabulated by Hohl 2025, doi:10.20945/2359-4292-2025-0093)',
         ],
       },
+      interactions: [
+        { with: 'SERMs (clomiphene, enclomiphene, tamoxifen)', kind: 'pharmacodynamic', text: 'Same lever, so no extra testosterone — and the costs do not cancel. A SERM raises estradiol while blocking the receptor centrally; an AI removes the hormone itself everywhere, including bone and fat tissue.' },
+        { with: 'hCG', kind: 'pharmacodynamic', text: 'Used to blunt hCG\u2019s large estradiol rise. It adds no testosterone and brings its own measured bone and fat cost.' },
+        { with: 'Anything that depends on estrogen action', kind: 'pharmacodynamic', text: 'That includes bone maintenance and fat regulation in men. This is the mechanism, not a side effect: Finkelstein 2013 showed androgen runs muscle and estrogen runs fat, and the one-year randomized trial measured spine bone density FALLING on anastrozole (Burnett-Bowie 2009).' },
+      ],
+      unknowns: [
+        'Nothing important about muscle is unknown here, which is why this item is graded as having no muscle effect rather than an unmeasured one: two separate 12-month randomized trials measured body composition and strength and found no change, while bone density fell.',
+        'The one population where the fat cost did not appear is severely obese hypogonadal men (Colleluori 2020). Whether that generalises past severe obesity is unknown.',
+        'Long-term fracture risk in men treated this way off-label has never been studied.',
+      ],
       bodyComp: 'none', bcMaxLevel: 0,
       bcNote: 'MEASURED AND NULL. Two 12-month randomized trials (Burnett-Bowie 2009 ×2) measured body composition by CT and DXA and strength and found no change; Loves 2013 found nothing on any predefined endpoint despite +150% testosterone; Mauras 2000 found no change in fat-free mass, fat mass or protein synthesis. Forge therefore raises your testosterone number and credits ZERO muscle — the clearest case in this whole area that a bigger number is not more muscle.',
       monitor: ['Estradiol (sensitive assay) — the point is not to crush it', 'Total testosterone', 'Spine bone-mineral density if used beyond a few months', 'Lipids'],
@@ -1358,6 +1414,17 @@ const LIST = [
         note: 'Krause 1992 is the trial Forge\'s testosterone curve rests on and it reported hormones, not an adverse-event table. Grading this "good" because nothing bad was reported would be reading silence as safety, which is the error this field exists to prevent. The VTE risk is real enough to be on every tamoxifen label, and nobody has measured what it is in this population.',
         sources: ['Krause W, Holland-Moritz H, Schramm P. Int J Androl. 1992;15(1):14-18. doi:10.1111/j.1365-2605.1992.tb01110.x'],
       },
+      interactions: [
+        { with: 'Strong CYP2D6 inhibitors (paroxetine, fluoxetine, bupropion, quinidine)', kind: 'pharmacokinetic', text: 'The one genuinely important pharmacokinetic interaction in this whole category. Tamoxifen is a PRODRUG: CYP2D6 converts it to endoxifen, the metabolite with roughly 100-fold greater affinity for the estrogen receptor. Strong CYP2D6 inhibitors severely impair that conversion, and poor-metaboliser CYP2D6 genotypes do the same thing genetically (Brauch 2009, Clin Chem 55:1770-82, doi:10.1373/clinchem.2008.121756). Several very common antidepressants are on that list.' },
+        { with: 'Anticoagulants (warfarin)', kind: 'pharmacokinetic', text: 'Tamoxifen potentiates warfarin and the combination is contraindicated on the drug label. This is a prescriber-level interaction, not a thing to manage yourself.' },
+        { with: 'Aromatase inhibitors and the other SERMs', kind: 'pharmacodynamic', text: 'Shared lever, so no additive testosterone effect.' },
+      ],
+      unknowns: [
+        'Body composition on tamoxifen in men: never measured, at any baseline.',
+        'Whether its tissue-selectivity profile matters for muscle. Tamoxifen is an estrogen antagonist in some tissues and an agonist in others, and which of those applies in skeletal muscle and bone in men is not established.',
+        'Thromboembolic risk in healthy men taking it off-label for this purpose. The elevated risk is established in the breast-cancer populations it was studied in; the absolute risk in a healthy 40-year-old man is unquantified.',
+        'Long-term use in men for this indication: no trial beyond 6 months (Krause 1992).',
+      ],
       bodyComp: 'extrapolated', bcMaxLevel: 790,
       bcNote: 'EXTRAPOLATED: nobody has ever measured body composition on tamoxifen in men. Krause 1992 is the only PLACEBO-CONTROLLED testosterone rise in men who were not hypogonadal (490 → 790 ng/dL vs 530 → 560 on placebo, 30 mg/day, 6 months, n=39 vs 37), so Forge runs it through the Bhasin curve and stops at 790. The lower end of the range is zero, because zero is what has actually been measured — and because that curve was built on testosterone given from outside, not made by your own testes.',
       monitor: ['Total testosterone and estradiol', 'Any leg swelling, chest pain or breathlessness: venous thromboembolism is the serious risk', 'Eye symptoms', 'Liver panel'],
@@ -1381,7 +1448,9 @@ const LIST = [
     risks: ['Nausea, dizziness, low blood pressure on standing; valvular heart effects at the much higher doses used in Parkinson\'s disease.', 'Side effects occurred in about 4.5% of men in the trial.'],
     typicalUse: 'Prescribed and monitored by an endocrinologist for confirmed hyperprolactinemia, after looking for the cause (medications, pituitary imaging).',
     sources: [
-      'Colao A, et al. Prolactinomas in men: effect of 2 years of normalization of serum prolactin on bone density and other clinical features. J Clin Endocrinol Metab. 2004;89(4):1704-1711.',
+      'Colao A, et al. Prolactinomas in men: effect of 2 years of normalization of serum prolactin on bone density and other clinical features. J Clin Endocrinol Metab. 2004;89(4):1704-1711. doi:10.1210/jc.2003-030979',
+      'Melmed S, et al. Diagnosis and treatment of hyperprolactinemia: an Endocrine Society clinical practice guideline. J Clin Endocrinol Metab. 2011;96(2):273-288. doi:10.1210/jc.2010-1692 — the guideline that sets out when a raised prolactin is worth treating at all, and how to tell a drug-induced rise from a tumour.',
+      'Webster J, et al. A comparison of cabergoline and bromocriptine in the treatment of hyperprolactinemic amenorrhea. N Engl J Med. 1994;331(14):904-909. doi:10.1056/NEJM199410063311403 — the randomized trial (459 patients, double-blind for 8 weeks) that made cabergoline first-line: stable normoprolactinemia in 83% vs 59% (p<0.001), and 3% vs 12% stopping for intolerance (p<0.001). Women, because that is the population it was developed in.',
     ],
     model: {
       kind: 'tEndogenous',
@@ -1416,6 +1485,16 @@ const LIST = [
         note: 'This grade only means anything for a man who actually has a high prolactin. For everyone else the item is modeled at zero, so its tolerability is not a trade-off he is making.',
         sources: ['Colao A, et al. J Clin Endocrinol Metab. 2004;89(4):1704-1711.'],
       },
+      interactions: [
+        { with: 'Dopamine antagonists (antipsychotics, metoclopramide, domperidone)', kind: 'pharmacodynamic', text: 'Direct opposition: cabergoline works as a dopamine agonist at the pituitary, and these block the same receptor. They are also themselves among the commonest causes of a raised prolactin in the first place — so if one of them is the reason prolactin is high, the conversation to have is about that medicine, not about adding a second one.' },
+        { with: 'Blood-pressure medicines', kind: 'additive', text: 'Dopamine agonists can lower blood pressure, particularly on the first doses.' },
+        { with: 'The SERMs and hCG', kind: 'pharmacodynamic', text: 'A different mechanism (fixing a specific cause) rather than a shared lever, which is why Forge models it as raising the baseline the other drugs then work from rather than competing with them. It does nothing at all unless prolactin is actually high.' },
+      ],
+      unknowns: [
+        'Body composition: never measured on cabergoline in men, at any prolactin level.',
+        'Everything about it in men whose prolactin is normal. There is nothing to treat, no trial has looked, and Forge models zero.',
+        'The valve disease signal comes from the much higher doses used in Parkinson\u2019s disease; whether the low prolactin-level doses carry any of that risk is still debated and is the reason echocardiographic monitoring is sometimes advised.',
+      ],
       bodyComp: 'extrapolated', bcMaxLevel: 700,
       bcNote: 'EXTRAPOLATED: Colao 2004 measured bone density, not body composition. Forge runs the restored testosterone through the Bhasin curve and stops at 700 ng/dL, roughly the normal range the responders reached. 39% of men did NOT normalize and still needed replacement.',
       monitor: ['Prolactin (repeat it before acting — one high value is not a diagnosis)', 'Total testosterone', 'Pituitary MRI if prolactin is confirmed high', 'Echocardiogram only at the much higher Parkinson\'s doses'],
@@ -2009,7 +2088,10 @@ export function worstTolerability(items) {
 export const T_LAB_PANEL = Object.freeze([
   { k: 'totalT', label: 'Total testosterone', why: 'The number everything is gated on. Morning (7–10 am), fasted, and repeated on a separate day — it is pulsatile.' },
   { k: 'freeT', label: 'Free testosterone', why: 'Equilibrium dialysis, or calculated from total T and SHBG. Normal total with low free points at high SHBG.' },
-  { k: 'lh', label: 'LH', why: 'The single most decisive one. Low T with a normal or low LH is secondary (what clomiphene, enclomiphene and hCG treat); low T with a high LH is testicular and those drugs will not work.' },
+  // REWORDED 2026-10-21. Bob read "testicular" as something he could check by looking, and answered "I don't
+  // have small testicles as far as I can tell." That is a fair reading of a bad word, and it could make someone
+  // dismiss a real result, so the entry now says what LH actually measures and that size tells you nothing.
+  { k: 'lh', label: 'LH', why: 'The single most decisive one. LH is the pituitary\u2019s instruction to your testes. Low T with a normal or low LH means the instruction is not being sent — that is "secondary", and it is what clomiphene, enclomiphene and hCG treat. Low T with a HIGH LH means the instruction is being shouted and not obeyed, so pushing it louder will not help. That second case is NOT something you can tell by looking or feeling: most of a testis is sperm-producing tubules, and the Leydig cells that make testosterone are a small fraction of its volume, so they can be underperforming at a perfectly normal size. In between is "compensated" — LH already raised while testosterone is still normal — which is the common way a man in his late thirties starts to drift (Tajar 2010, EMAS). Forge treats LH as a gradient, not a switch.' },
   { k: 'fsh', label: 'FSH', why: 'Drawn with LH; together they stage the axis and track fertility.' },
   { k: 'estradiol', label: 'Estradiol (sensitive assay)', why: 'Men need it: it is what keeps fat down (Finkelstein 2013) and bone intact. It decides whether an aromatase inhibitor makes any sense.' },
   { k: 'shbg', label: 'SHBG', why: 'Converts total T into free T, and rises with under-eating and age.' },

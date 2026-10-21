@@ -249,7 +249,12 @@ test('primary hypogonadism blocks every axis drug; exogenous testosterone suppre
   for (const id of ['clomiphene', 'enclomiphene', 'hcg', 'aromatase_inhibitor', 'tamoxifen']) {
     const m = mods(P([e(id)], PRIMARY));
     assert.equal(m.testosterone.level, m.testosterone.natural, `${id} must not raise T when LH is clearly high`);
-    assert.ok(m.contributions.some(c => c.id === id && /testicular\) failure/i.test(c.text)), `${id} explains why`);
+    // REWORDED 2026-10-21 — see the note in supp-endogenous.test.js. The assertion checks the substance of the
+    // explanation rather than the old "(testicular)" parenthesis that Bob misread.
+    const note = m.contributions.filter(c => c.id === id).map(c => c.text).join(' ');
+    assert.match(note, /primary/i, `${id} explains why`);
+    assert.match(note, /not being acted on|already being shouted/i, `${id} says the signal is maximal and unheeded`);
+    assert.match(note, /not how they look/i, `${id} says it is not visible from outside`);
     const mild = mods(P([e(id)], PRIMARY_MILD)).testosterone;
     assert.ok(mild.level > mild.natural, `${id} must still do something at a only slightly raised LH`);
   }
@@ -455,4 +460,222 @@ test('catalogue bookkeeping: rx flags, exogenous routes and combination definiti
   assert.ok(tShiftPct(SUPPLEMENTS.cabergoline.model, { baselineT: 250, lh: 3, prolactin: 60 }).pct > 50);
   // Tongkat ali's zero in the normal range is also genuine (the meta-analysis subgroup was not significant).
   assert.equal(SUPPLEMENTS.tongkat_ali.model.tPct, 0);
+});
+
+// ====================================================================== §22.9 presentation, scenarios, causes
+// Bob: "Right now it's barely adding anything, and I just don't think that's accurate. It helps a lot of people
+// a lot." Then: "enclomiphene works for non hypogonadal males if there is some specific issue that is causing
+// low T ... I want the game changing results to be the default with the caveats mentioned."
+// He was right twice over, and the first half was a bug Forge introduced, not a disagreement about evidence.
+import { scenarioBand, SCENARIOS, SCENARIO_IDS, T_REFERENCE_RANGE, T_REFERENCE_PCTILE } from '../js/engine/tplan.js';
+import { rampExposureLoss, stackTimeline } from '../js/engine/metabolic.js';
+
+const BOB = { now: DATE, age: 39, bodyweightLb: 164, weeks: 52 };
+const BOB_PROJ = { ...BOB, baseline: { weightLb: 164, bfPct: 9, date: DATE }, sessions: [], projectFn: PJ.project, maxProjections: 20 };
+
+test('§22.9 a row leads with the CENTRAL estimate, not the conservative ranking score', () => {
+  const plan = tPlan(P(), BOB_PROJ);
+  const clo = plan.rows.find(r => r.id === 'clomiphene');
+  assert.ok(clo, 'clomiphene row exists');
+  // THE BUG. For a man at an assumed mid-normal baseline the row used to headline `score`, which for an item
+  // with no body-composition measurement is pinned to the conservative END of its own range (zero). The row
+  // therefore announced "±0 lb net" immediately above its own body saying "+4.4 lb lean".
+  assert.ok(clo.net, 'the row carries a net estimate');
+  assert.ok(clo.lean.lb > 2, `lean is substantial (${clo.lean.lb} lb)`);
+  assert.ok(clo.net.lb > 2, `and the headline says so (${clo.net.lb} lb net) instead of ~0`);
+  // net is lean minus fat, and its range is the widest honest reading of the two.
+  assert.ok(Math.abs(clo.net.lb - (clo.lean.lb - clo.fat.lb)) < 0.02, 'net = lean − fat');
+  assert.ok(Math.abs(clo.net.lo - (clo.lean.lo - clo.fat.hi)) < 0.02, 'net.lo pairs the low lean with the high fat');
+  assert.ok(Math.abs(clo.net.hi - (clo.lean.hi - clo.fat.lo)) < 0.02, 'net.hi pairs the high lean with the low fat');
+  assert.ok(clo.net.lo <= clo.net.lb && clo.net.lb <= clo.net.hi, 'the estimate sits inside its own range');
+  // AND THE HONESTY IS UNCHANGED. The range still starts at (or below) zero because nothing has been weighed in
+  // a man like him, the per-man evidence class still says so, and the score still ranks conservatively.
+  assert.equal(clo.bodyComp, 'extrapolated', 'still labelled an extrapolation for this man');
+  assert.equal(clo.extrapolated, true);
+  assert.ok(clo.lean.lo <= 0, 'the lean range still starts at zero where nothing was measured');
+  assert.ok(clo.score <= 0.05, 'the RANKING score is still the conservative end');
+  assert.ok(clo.score < clo.net.lb, 'ranking is conservative, display is the estimate — they are different numbers');
+  assert.ok(clo.t.assumed === true, 'and the row still says the starting number was assumed');
+  assert.ok(clo.tolerability && clo.tolerability.grade, 'tolerability still travels with the row');
+});
+
+test('§22.9 the scenario band shows the measured, much larger result at a suppressed baseline', () => {
+  const band = scenarioBand(P(), BOB_PROJ);
+  assert.equal(band.length, 4, 'four scenarios across the width of the reference range');
+  assert.deepEqual(band.map(s => s.key), ['suppressed', 'lowNormal', 'average', 'highNormal']);
+  const sup = band.find(s => s.key === 'suppressed');
+  const avg = band.find(s => s.key === 'average');
+  const hi = band.find(s => s.key === 'highNormal');
+  for (const sc of band) assert.deepEqual(sc.rows.map(r => r.id), [...SCENARIO_IDS], `${sc.key} covers the same therapies`);
+  const net = (sc, id) => sc.rows.find(r => r.id === id).net.lb;
+  // THE POINT BOB WAS MAKING. In a man whose own axis is suppressed these are not modest, and the result is
+  // MEASURED rather than extrapolated (Soares 2018 for clomiphene, Liu 2002 for hCG).
+  assert.ok(net(sup, 'clomiphene+hcg') > 8, `suppressed axis: clomiphene + hCG ${net(sup, 'clomiphene+hcg')} lb net`);
+  assert.equal(sup.rows.find(r => r.id === 'clomiphene').bodyComp, 'measured');
+  assert.equal(sup.rows.find(r => r.id === 'clomiphene+hcg').bodyComp, 'measured');
+  // 300 ng/dL is at the BOTTOM of the harmonized range, not outside it — the 5th percentile is 303 and the
+  // 2.5th is 264. That distinction is the whole reason the band exists, so the data has to get it right.
+  assert.equal(sup.lowEnd, true, '300 ng/dL is at or below the harmonized 5th percentile');
+  assert.equal(sup.belowRange, false, '...and still technically inside the range, whose floor is 264');
+  // ...and it is a gradient, not a cliff: the modeled benefit falls monotonically as the baseline rises.
+  for (const id of SCENARIO_IDS) {
+    assert.ok(net(sup, id) >= net(avg, id) - 0.01, `${id}: suppressed ≥ average`);
+    assert.ok(net(avg, id) >= net(hi, id) - 0.01, `${id}: average ≥ high-normal`);
+  }
+  assert.ok(net(sup, 'clomiphene') > net(avg, 'clomiphene') * 1.5, 'and the gap is large, not cosmetic');
+  // THE LINE NOT TO CROSS: the band must never read as a prediction about him. Exactly one column is marked as
+  // nearest his own level, it is the population average, and nothing here changed the baseline Forge assumes.
+  assert.equal(band.filter(s => s.yours).length, 1, 'exactly one column is flagged as closest to him');
+  assert.equal(band.find(s => s.yours).key, 'average', 'and with no lab that column is the population average');
+  const plan = tPlan(P(), BOB);
+  assert.equal(plan.tAssumed, true);
+  assert.ok(plan.tAssumedLevel > 500 && plan.tAssumedLevel < 600, `assumed baseline is unchanged (${plan.tAssumedLevel})`);
+  assert.equal(plan.rows.find(r => r.id === 'clomiphene').t.from, plan.tAssumedLevel, 'his rows still run off his own level');
+  // A man WITH a low lab gets the suppressed column flagged as his, which is the same machinery read the other way.
+  assert.equal(scenarioBand(P([], LOW), BOB).find(s => s.yours).key, 'suppressed');
+  // ...and a man whose LH says PRIMARY is outside the band's premise entirely. Every column is a secondary case,
+  // his own rows are correctly modeled at zero, and the band must not be the one place that contradicts them.
+  const prim = scenarioBand(P([], PRIMARY), BOB);
+  assert.equal(prim.filter(s => s.yours).length, 0, 'no column is flagged as his');
+  assert.equal(prim[0].notApplicable, true);
+  assert.match(prim[0].whyNot, /SECONDARY/, 'says why the band does not apply to him');
+  assert.match(prim[0].whyNot, /not how they look|respond to the signal/i, 'without the "small testicles" misreading');
+  const primPlan = tPlan(P([], PRIMARY), BOB_PROJ);
+  assert.equal(primPlan.rows.find(r => r.id === 'clomiphene').net.lb, 0, 'and his own row stays at zero');
+  // Every column carries its caveats as data, not as prose the UI has to remember.
+  for (const sc of band) { assert.ok(sc.headline && sc.body && sc.pctile, `${sc.key} carries its own caveats`); }
+});
+
+test('§22.9 the width of "normal" is the harmonized range, and it is wide', () => {
+  assert.deepEqual([...T_REFERENCE_RANGE], [264, 916], 'Travison 2017, healthy non-obese men 19–39');
+  const pct = Object.fromEntries(T_REFERENCE_PCTILE);
+  assert.equal(pct[5], 303); assert.equal(pct[50], 531); assert.equal(pct[95], 852);
+  assert.ok(T_REFERENCE_RANGE[1] / T_REFERENCE_RANGE[0] > 3.4, 'end to end it is a >3.4-fold spread');
+  // A man at 350 is inside the range and still far below the median: that is the gap these drugs are used in.
+  assert.ok(350 > T_REFERENCE_RANGE[0] && 350 < pct[50] * 0.7);
+  const plan = tPlan(P(), BOB);
+  assert.deepEqual([...plan.referenceRange], [264, 916], 'and the planner hands it to the UI');
+});
+
+test('§22.9 reversible causes are named, graded against this man\'s data, and point at the fix', () => {
+  const plan = tPlan(P(), BOB);
+  const keys = plan.causes.map(c => c.key);
+  for (const k of ['obesity', 'sleep', 'energy', 'endurance', 'alcohol', 'prolactin', 'opioids', 'shbg']) {
+    assert.ok(keys.includes(k), `names ${k} as a reversible cause`);
+  }
+  for (const c of plan.causes) {
+    assert.ok(['yes', 'maybe', 'no', 'unknown'].includes(c.status), `${c.key} status`);
+    assert.ok(c.text && c.said, `${c.key} says what it is and what Forge can see`);
+  }
+  const by = Object.fromEntries(plan.causes.map(c => [c.key, c]));
+  // Forge must not claim to know what it has not been told.
+  assert.equal(by.prolactin.status, 'unknown', 'no prolactin lab entered → unknown, not ruled out');
+  assert.equal(by.energy.status, 'unknown', 'no deficit entered → unknown');
+  assert.equal(by.opioids.modeled, false, 'opioids are a documented cause Forge does NOT model, and says so');
+  // ...and must use what it has.
+  assert.equal(by.obesity.status, 'no', 'a lean man: ruled out by the data entered');
+  const fat = tPlan(P([], {}, { bodyweight: 260 }), { ...BOB, bodyweightLb: 260 });
+  assert.equal(fat.causes.find(c => c.key === 'obesity').status, 'yes');
+  assert.equal(tPlan(P([], { sleepHours: 5 }), BOB).causes.find(c => c.key === 'sleep').status, 'yes');
+  assert.equal(tPlan(P([], { prolactin: 60 }), BOB).causes.find(c => c.key === 'prolactin').status, 'yes');
+  assert.equal(tPlan(P([], { shbg: 80 }), BOB).causes.find(c => c.key === 'shbg').status, 'yes');
+  assert.equal(tPlan(P([], { deficitKcal: 900 }), BOB).causes.find(c => c.key === 'energy').status, 'yes');
+  // Each modeled cause points at a catalogue item that models it, so "fix the cause" is actionable, not advice.
+  for (const c of plan.causes) if (c.modeled) assert.ok(SUPPLEMENTS[c.fix], `${c.key} → ${c.fix} exists`);
+});
+
+test('§22.9 this man\'s own risk factors are flagged as plausible, never asserted', () => {
+  const bare = tPlan(P(), BOB);
+  assert.deepEqual(bare.flags, [], 'a profile with no risk factors gets no flags');
+  // Bob's three: an endurance background, a prescribed appetite-suppressing stimulant, and the low energy
+  // availability that follows from both and that Forge currently models at zero.
+  const bob = tPlan(P([e('adderall')], {}, { cardioTargetMin: 300 }), BOB);
+  const keys = bob.flags.map(f => f.key);
+  assert.deepEqual(keys, ['endurance', 'stimulant', 'lea', 'verdict']);
+  const verdict = bob.flags.find(f => f.verdict);
+  assert.match(verdict.text, /plausible/i, 'the verdict is that a low baseline is PLAUSIBLE');
+  assert.match(verdict.text, /do not make it a fact|not make it a fact/i, 'and explicitly not a fact');
+  assert.match(verdict.text, /lab/i, 'and a lab settles it');
+  // The flags must not move the number. Forge still assumes the population average for him.
+  assert.equal(bob.tAssumed, true);
+  assert.equal(bob.tAssumedLevel, bare.tAssumedLevel, 'risk factors do not lower the assumed baseline');
+  // Entering a deficit resolves the one Forge was blind to.
+  const quantified = tPlan(P([e('adderall')], { deficitKcal: 800 }, { cardioTargetMin: 300 }), BOB);
+  assert.ok(!quantified.flags.some(f => f.key === 'lea'), 'the "unquantified" flag goes away once he quantifies it');
+  assert.ok(quantified.flags.some(f => f.key === 'endurance'), 'the other two stand');
+});
+
+test('§22.9 the serum ramp delays the muscle curve; it no longer docks its asymptote', () => {
+  // THE DOUBLE DISCOUNT THAT WAS REAL. The accrual curve is saturating (most of the gain in the first weeks,
+  // rate decaying as e^(−w/τ)) while the endogenous items ramp their serum level in over `rampWeeks`. Evaluating
+  // the decaying rate at RAW elapsed weeks meant the highest-rate weeks were spent at a reduced amplitude and
+  // the clock had already passed them by the time the level arrived. A 6-week titration permanently removed
+  // ~20% of the asymptote — for Bob, 3.05 lb instead of 3.83 lb, for ever. No trial supports that.
+  assert.equal(rampExposureLoss(52, 0), 0, 'no ramp, no loss');
+  assert.equal(rampExposureLoss(52, 6), 3, 'past the ramp the lag is half the ramp window');
+  assert.ok(Math.abs(rampExposureLoss(6, 6) - 3) < 1e-9, 'at the end of the ramp, exactly half of it');
+  assert.ok(Math.abs(rampExposureLoss(3, 6) - 2.25) < 1e-9, 'inside the ramp it is the integral of (1 − ramp)');
+  assert.ok(rampExposureLoss(2, 6) < rampExposureLoss(4, 6), 'monotone while ramping');
+
+  const wk12 = modifiersAt(P([e('clomiphene', '2026-07-28')]), DATE, { age: 39 });
+  assert.ok(wk12.testosterone.weeksEff > 0 && wk12.testosterone.weeksEff < wk12.testosterone.weeksOn,
+    `effective exposure (${wk12.testosterone.weeksEff}) lags elapsed weeks (${wk12.testosterone.weeksOn})`);
+
+  // It is a DELAY: run the clock out and the cumulative gain reaches the Bhasin asymptote instead of stalling
+  // a fifth of the way short of it.
+  const p = P([e('clomiphene', DATE)]);
+  const short = stackTimeline(p, { from: DATE, weeks: 20, age: 39, bodyweightLb: 164 });
+  const year = stackTimeline(p, { from: DATE, weeks: 52, age: 39, bodyweightLb: 164 });
+  const far = stackTimeline(p, { from: DATE, weeks: 260, age: 39, bodyweightLb: 164 });
+  const lvl = modifiersAt(P([e('clomiphene', '2025-10-21')]), DATE, { age: 39 }).testosterone;
+  const asym = testosteroneEffect(lvl.leanLevel, { baselineT: lvl.natural, weeksOn: 2000, age: 39 }).asymptoteLb;
+  assert.ok(asym > 3 && asym < 5, `the undamped asymptote is the Bhasin number (${asym} lb)`);
+  assert.ok(short.cumLeanDirect < year.cumLeanDirect, 'still monotone in time');
+  assert.ok(year.cumLeanDirect > asym * 0.95, `12 months reaches the asymptote (${year.cumLeanDirect} vs ${asym})`);
+  assert.ok(far.cumLeanDirect > asym * 0.95 && far.cumLeanDirect < asym * 1.1, 'and settles there rather than running away');
+  // The ramp still exists and still costs time early on — that part is measured (levels move over 2–6 weeks).
+  assert.ok(short.cumLeanDirect < asym * 0.85, '20 weeks is NOT the full asymptote: the titration still costs time');
+});
+
+test('§22.9 every endogenous entry reads as an encyclopedia entry, including what is unknown', () => {
+  for (const id of ['clomiphene', 'enclomiphene', 'hcg', 'aromatase_inhibitor', 'tamoxifen', 'cabergoline']) {
+    const md = SUPPLEMENTS[id].model;
+    assert.ok(Array.isArray(md.unknowns) && md.unknowns.length >= 3, `${id}: says what is NOT known`);
+    assert.ok(Array.isArray(md.interactions) && md.interactions.length >= 3, `${id}: lists interactions`);
+    for (const ix of md.interactions) {
+      assert.ok(ix.with && ix.text, `${id}: an interaction names what it is with and what happens`);
+      assert.ok(['pharmacodynamic', 'pharmacokinetic', 'additive'].includes(ix.kind), `${id}: ${ix.with} kind`);
+    }
+    // The things the planner shows must all be there to show.
+    assert.ok(['measured', 'extrapolated', 'none'].includes(md.bodyComp), `${id}: body-composition evidence class`);
+    assert.ok(md.monitor && md.monitor.length, `${id}: monitoring`);
+    assert.ok(md.suits && md.notSuits, `${id}: who it suits and does not`);
+    assert.ok(md.timeCourse && md.wada, `${id}: time course and anti-doping`);
+    assert.ok(md.tolerability && md.tolerability.events.length, `${id}: adverse events with denominators`);
+    assert.ok(SUPPLEMENTS[id].sources.length >= 3, `${id}: citations`);
+  }
+  // The one interaction in this category that genuinely changes drug levels is flagged as such.
+  const tam = SUPPLEMENTS.tamoxifen.model.interactions.find(i => /CYP2D6/.test(i.with));
+  assert.ok(tam && tam.kind === 'pharmacokinetic', 'tamoxifen: CYP2D6 is a pharmacokinetic interaction');
+  // ...and enclomiphene's missing long-term safety data is listed as an unknown, because it is the main one.
+  assert.ok(SUPPLEMENTS.enclomiphene.model.unknowns.some(u => /16 week|long-term/i.test(u)));
+});
+
+test('§22.9 the planner never hides a positive estimate behind a conservative bucket', () => {
+  // The second face of the same bug: the UI bucketed rows on the SIGN of `score`. Because `score` is
+  // leanLo − fatHi and the projection can put a hair of fat on the high side, clomiphene scored −0.1 and was
+  // filed under "changes something, but not in your favour" — a drug the same page credits with +4 lb of lean.
+  // The engine now has to make the distinction available: evidence class and central estimate, separately.
+  const plan = tPlan(P(), BOB_PROJ);
+  const live = plan.rows.filter(r => r.applies && !r.cost);
+  const positive = live.filter(r => r.net.lb > 0.05);
+  assert.ok(positive.length >= 3, 'several therapies are modeled to add lean mass for him');
+  for (const r of positive) {
+    assert.ok(r.bodyComp === 'measured' || r.bodyComp === 'extrapolated',
+      `${r.id}: a positive estimate carries an evidence class that explains it`);
+    assert.ok(r.net.hi >= r.net.lb, `${r.id}: range contains the estimate`);
+  }
+  // A row with a genuinely measured null stays null — the fix must not promote those.
+  const ai = live.find(r => r.id === 'aromatase_inhibitor');
+  if (ai) assert.ok(ai.net.lb <= 0.05 || ai.bodyComp === 'none', 'the AI does not become a muscle drug');
 });

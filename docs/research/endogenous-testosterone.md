@@ -1321,3 +1321,228 @@ panel, repeated. Forge's planner says the same thing, and for Bob specifically i
 this section at a **score of zero**, because no trial has ever measured body composition on any SERM in a man
 whose testosterone was already normal. The hormone moves; whether the muscle follows is untested. A clinician
 with his numbers in front of them is the right person to decide what, if anything, to do about that.
+
+---
+
+## 14. The presentation fix, the audit of the discount chain, and the scenario band (2026-10-21)
+
+Bob, on the planner: *"For the experimental drugs ... I'd really like it if the encyclopedia showed an
+optimistic view, but it is what it is. Right now it's barely adding anything, and I just don't think that's
+accurate. It helps a lot of people a lot."* Then: *"enclomiphene works for non hypogonadal males if there is
+some specific issue that is causing low T, it's game changing for a lot of people. I want the game changing
+results to be the default with the caveats mentioned."*
+
+He was right twice, and only one of the two was a disagreement about evidence. The first was a bug.
+
+### 14.1 The bug: the headline was the ranking score, not the estimate
+
+For his profile (no labs, modeled baseline 548 ng/dL) the clomiphene row read:
+
+> Clomiphene citrate · ℞ · Moderate · Extrapolated · Tolerability: moderate · **±0 lb net**
+> › TOTAL T 548 → 823 … LEAN **+4.4 lb** ±0 to +5.4 over 12 mo · FAT −0.4 lb
+
+The headline contradicted the body of its own row. `±0` was `row.score`, which for an item whose
+body-composition effect has never been measured is deliberately pinned to the **conservative end** of the row's
+own range (zero) so that a drug with a published hormone rise and no body-composition trial cannot outrank
+something that was actually weighed. That is a defensible **ranking** rule. It should never have been the
+**displayed** number.
+
+Fixed: every row now carries `net = { lb, lo, hi }` — the modeled central estimate of lean minus fat, with its
+range — and that is what the row leads with. `score` still exists and still ranks. They are different numbers
+and the code says so. Bob's row now reads **+4.3 lb net · 0 to +5.4**, with the Extrapolated badge, the
+tolerability grade, the zero-floored range, the "start assumed" marker and every note unchanged.
+
+A second face of the same bug: the UI **bucketed** rows on the sign of `score`. Because `score` is
+`leanLo − fatHi` and the 12-month projection puts about 0.1 lb of fat on the high side, clomiphene scored −0.1
+and was filed under *"Changes something, but not in your favour"* — a drug the same page credits with +4.4 lb
+of lean. Buckets are now chosen by **evidence class** (was body composition measured in a man like this one?)
+and the **sign of the central estimate**, which is what those headings actually claim.
+
+### 14.2 Audit of the testosterone → lean chain, for a sustained 548 → 823 ng/dL
+
+Every discount, measured rather than reasoned about:
+
+| # | Discount | Bites for Bob? | Cost | Verdict |
+|---|---|---|---|---|
+| 1 | `tPctByBaseline` taper above 550 ng/dL | No (he sits at the anchor) | 0 | Justified; labelled an assumption where it does bite |
+| 2 | `tCI [0.70, 1.30]` (Hohl 2025's CI) | Range only | 0 on the point estimate | Justified |
+| 3 | Credit bound `bcBoundOf` = max(`bcMaxLevel` 500, `bcExtrapMaxLevel` 1390) | **No** — 823 < 1390 | 0 | n/a for him |
+| 4 | `freeAdj`, capped at 1 | **No** — computes to exactly 1.000 | 0 | Not double-counting; see 14.3 |
+| 5 | `tAgeResponse(39)` = 0.98 | Yes | −2% | Justified (Bhasin 2005: older men nearly as responsive) |
+| 6 | Saturating time course, τ = 12 wk | Yes, correctly | — | Justified; reproduces the 20-week fit at 20 weeks |
+| 7 | **Serum ramp advancing the accrual clock** | **Yes** | **−20% of the asymptote, permanently** | **Double-counting. Removed.** |
+| 8 | Range floor to zero when `extrapolated` | Yes, on the range | 0 on the point estimate | Keep — this is the honesty |
+| 9 | `score = leanLo − fatHi` as the headline | Yes | −100% of the headline | **The bug. Fixed (14.1).** |
+
+So: **the central estimate was not being double-discounted by the credit logic.** The Bhasin dose-response is
+applied in full — ln(823/548) × 3.53 kg/ln × 0.98 = 1.409 kg = **3.10 lb at 20 weeks**, which is exactly what
+`testosteroneEffect` returns. Bob's intuition that the model was suppressing the number was right about the
+*displayed* number and wrong about the *modeled* one, with one real exception, #7.
+
+### 14.3 `freeAdj` is inert, not a discount
+
+`freeAdj = clamp((freeT/freeTBase) / (level/T0), 0, 1)` was added to answer the objection that a SERM raises
+SHBG, so free testosterone might move less than total. Measured across the catalogue, uncapped:
+
+| item | T0 | level | SHBG | uncapped `freeAdj` |
+|---|---|---|---|---|
+| clomiphene | 548 | 823 | 35 → 39 | **1.015** |
+| clomiphene | 300 | 573 | 35 → 39 | 1.021 |
+| enclomiphene | 548 | 763 | 35 → 38 | 1.014 |
+| hCG | 548 | 1,100 | 35 (no change) | 1.165 |
+| tamoxifen | 548 | 790 | 35 | 1.074 |
+
+It is **≥ 1 for every item at every baseline tested**, so the cap at 1 means it can only ever be a no-op, and it
+is. It costs exactly zero. That is the correct answer and it matches the measurement the catalogue already
+cites — Bremner 1987 found the bioavailable fraction went 65% → 66% of total on clomiphene, i.e. unchanged. The
+cap stays, because crediting the >1 values would run the Bhasin curve (which is denominated in **total** T)
+on a quantity it was not fitted to. Nothing to remove.
+
+### 14.4 The one real double-discount: the serum ramp was docking the asymptote
+
+The accrual curve is saturating, `cumulative(w) = A·(1 − e^(−w/τ))`, so the rate decays as `e^(−w/τ)` and almost
+all of the gain is earned early. The endogenous items also ramp their serum level in over `rampWeeks` (2–6
+weeks to plateau — measured, and right). Evaluating a decaying rate at **raw elapsed weeks** while the amplitude
+`A` is still ramping means the highest-rate weeks are spent at a reduced amplitude, and the clock has already
+run past them by the time the level arrives. The amplitude recovers; the decay does not.
+
+Measured, for Bob on clomiphene (548 → 823 ng/dL), `stackTimeline().cumLeanDirect`:
+
+| weeks | before | after |
+|---|---|---|
+| 12 | 2.00 lb | 2.00 lb |
+| 20 | 2.31 | 2.92 |
+| 52 | 3.00 | **3.81** |
+| 104 | 3.05 | 3.88 |
+| 416 | **3.05 — for ever** | 3.88 |
+
+Against an undamped Bhasin asymptote of **3.83 lb**. A six-week titration was permanently removing 0.77 lb,
+about 20%, and no trial supports that: nothing in Bhasin 1996/2001 says a slower titration costs you muscle you
+would otherwise have built. A ramp should **delay** a trajectory, not dock its end point. The
+exogenous-testosterone branch in the same file never had the bug, because it feeds the full level from week 0
+and lets τ do the timing — so this was also an inconsistency between two uses of one curve.
+
+Fix (`rampExposureLoss` in `js/engine/metabolic.js`): the accrual clock counts **effective exposure** — elapsed
+time minus the exposure lost while the level was still climbing, which is `∫(1 − ramp)`, i.e. `w − w²/(2R)`
+while `w ≤ R` and a constant `R/2` afterwards. A 6-week ramp now delays the curve by 3 weeks and converges on
+the same asymptote. The titration still costs time (20 weeks reaches 76% of the asymptote, not 100%); it no
+longer costs muscle.
+
+### 14.5 Duration: the extrapolation to 12 months is sound
+
+The Bhasin curves are 20 weeks and the row projects 12 months. The model reaches the 20-week fit value **at 20
+weeks** by construction (τ = 12 wk gives `sat = 1 − e^(−20/12) = 0.811`, and `A = lean20/sat`), then adds only
+the remaining ~23% over the following 32 weeks. Nothing is silently truncated: the projection path steps week
+by week through `modifiersAt` and accumulates, and `stackTimeline` sums the weekly rates. The week-52 modifiers
+object shows a near-zero instantaneous rate because the asymptote has been reached, which is correct and is not
+what the cumulative figure is computed from.
+
+### 14.6 Bounds that bite for OTHER items, and why they stay
+
+| item | modeled level at T0 = 548 | credit clipped to | why that is not an extra body-composition penalty |
+|---|---|---|---|
+| clomiphene | 823 | 823 (no clip) | `bcExtrapMaxLevel` 1,390 = Tenover 1991's measured maximum |
+| enclomiphene | 763 | **604** | 604 is the highest **morning** group mean ever reported (Wiehle 2013 day-42 C0); 764 is a 24-h Cmax, and Forge's serum numbers are morning levels. The clip corrects a known generosity in the *level* model, it is not a second penalty on the muscle |
+| hCG | 1,100 | **870** | `ceilingNg` 1,100 is explicitly an **assumption** (top of the male reference range); 870 is the highest level actually observed (Liu 2002, inferred). Same reasoning |
+
+Both were left alone. Removing them would be optimism, not accuracy. They are now visible in the scenario band,
+which is why enclomiphene reads as weak at a mid-normal baseline and strong at a suppressed one — that is the
+evidence, not a thumb on the scale.
+
+### 14.7 The scenario band: stop leading with one invented baseline
+
+Bob's second point. **Functional secondary hypogonadism** is a real clinical entity, not a loophole:
+Grossmann & Matsumoto 2017 (J Clin Endocrinol Metab 102:1067–75, doi:10.1210/jc.2016-3580) — *"such men do not
+demonstrate anatomical hypothalamic-pituitary-testicular axis pathology but have functional hypogonadism that
+is potentially reversible."* And it is exactly the population the only SERM body-composition result was
+measured in (Soares 2018, obese men, T 226 ± 70).
+
+The reference range makes the point by itself. **Travison 2017** (J Clin Endocrinol Metab 102:1161–73,
+doi:10.1210/jc.2016-2935), 9,054 men across four US/European cohorts cross-calibrated to the CDC reference
+method: in healthy **non-obese** men 19–39 the 2.5th / 5th / 50th / 95th / 97.5th percentiles are
+**264 / 303 / 531 / 852 / 916 ng/dL**. End to end that is a **3.5-fold** spread. A man at 350 is "normal" on
+every lab report ever printed, sits near the 10th percentile, and can be a long way below his own set point.
+
+So the planner now opens with a **band of four scenarios** rather than one point estimate
+(`scenarioBand()` in `js/engine/tplan.js`): suppressed ≈300, low-normal ≈400, population average ≈550,
+high-normal ≈750, each with a normal LH (which is what makes it the secondary/functional case these drugs
+treat). Each column re-runs the **same row builder** against a synthetic profile, so its lean and fat come
+through `project()` exactly like the man's own rows. For a man Bob's size, 12 months:
+
+| baseline | enclomiphene | clomiphene | clomiphene + hCG |
+|---|---|---|---|
+| **≈300 suppressed** | +8.4 lb net (0 to +10.4) · extrapolated | **+10.2 lb net (+7.8 to +12.3) · MEASURED** | **+15.8 lb net (+11.1 to +21) · MEASURED** |
+| ≈400 low-normal | +6.2 (0 to +7.9) · extrapolated | +8.0 (0 to +9.2) · extrapolated | +12.9 · measured |
+| ≈550 average | +1.4 (−0.1 to +1.4) · extrapolated | +6.0 (0 to +7.1) · extrapolated | +7.7 (0 to +9.3) · extrapolated |
+| ≈750 high-normal | ±0 · extrapolated | +4.4 (0 to +5.2) · extrapolated | +4.9 · extrapolated |
+
+**The line that is not crossed.** The assumed default baseline is unchanged (`averageTotalT`, 548 for a
+39-year-old). Every column is labelled a scenario; exactly one is marked "closest to what Forge assumes for
+you" and with no lab that is the ≈550 column; his own rows below still run entirely off his own level. A man
+whose LH says **primary** gets no column marked as his at all and a note saying why, because every column is a
+secondary case and his own rows are correctly modeled at zero.
+
+### 14.8 Reversible causes, and this man's own risk factors
+
+A SERM and fixing the cause attack the same problem from opposite ends — the cause fix raises the set-point,
+the SERM overrides the feedback the cause acts through — so the planner names the causes with the same weight
+as the drugs, says whether Forge can **see** each one in this man's data (`yes` / `maybe` / `no` / `unknown`),
+and links to the catalogue item that models it: obesity → `fat_loss`, sleep debt → `sleep_hygiene`, low energy
+availability → `energy_availability`, endurance volume → `endurance_load`, alcohol → `alcohol`, raised
+prolactin → `cabergoline`, high SHBG masking a low free T (no item; the fix is to measure free T), and
+**opioids**, which Forge does **not** model and says so — prevalence of androgen deficiency on chronic opioid
+therapy is 20–80% and the mechanism is inhibition of GnRH synthesis and secretion (Kafel 2025, Andrology
+13:2010–21, doi:10.1111/andr.70013).
+
+Separately, `riskFlags()` names what in *this* profile makes a below-average baseline plausible — a big
+endurance background (`cardioTargetMin` ≥ 150), an appetite-suppressing stimulant in the stack, and the low
+energy availability that follows from both and that Forge currently models at **zero** because no deficit has
+been entered. The verdict line says in terms that these make a low baseline **plausible**, *"They do not make
+it a fact"*, and that a lab settles it. None of this moves a number.
+
+### 14.9 "Testicular" was being misread
+
+Bob read the lab-panel line *"low T with a high LH is testicular"* and replied: *"I don't have small testicles
+as far as I can tell."* That is a fair reading of a bad word, and it could lead someone to dismiss a real
+finding. Everywhere the app used "primary"/"testicular" as a bare term it now says that LH is the pituitary's
+**instruction**, that a high LH with a low T means the instruction is being sent loudly and not obeyed, and
+that this is **not visible from outside** — most of a testis is seminiferous tubules and the Leydig cells that
+make testosterone are a small fraction of its volume, so they can underperform at a normal size (age-related
+Leydig decline, past varicocele, mumps orchitis, trauma, chemotherapy). The **compensated** state (raised LH,
+still-normal testosterone; Tajar 2010, doi:10.1210/jc.2009-1796) is named as the real intermediate it is, and
+as the one a man in his late thirties is most likely to drift into.
+
+### 14.10 The catalogue as an encyclopedia
+
+`detailSheet` rendered mechanism, effects, risks, tolerability, typical use and sources, and stopped. Every
+other field in the catalogue was dead data. The sheet now also renders, for every item that has them: the
+**body-composition evidence class** with its bounds and `bcNote`; what the item does to **estradiol and SHBG**;
+who it **suits and does not**; **interactions** (new field, each tagged pharmacodynamic / pharmacokinetic /
+additive); **what is not known** (new field); and time course, fertility, monitoring and anti-doping. Browse
+rows now carry the evidence grade, the body-composition class and the tolerability grade, so an entry can be
+triaged without opening it.
+
+The one genuinely important **pharmacokinetic** interaction in the category is now documented: tamoxifen is a
+prodrug requiring CYP2D6 to form endoxifen, and strong CYP2D6 inhibitors — paroxetine and fluoxetine among them
+— severely impair that conversion (Brauch 2009, Clin Chem 55:1770–82, doi:10.1373/clinchem.2008.121756).
+Cabergoline, which had a single citation, gained the Endocrine Society guideline (Melmed 2011,
+doi:10.1210/jc.2010-1692) and the randomized trial that made it first-line (Webster 1994, N Engl J Med
+331:904–9, doi:10.1056/NEJM199410063311403).
+
+### 14.11 Where Bob's intuition is not supported
+
+Stated plainly, because the point is accuracy:
+
+1. **The model was not systematically suppressing the clomiphene number.** Apart from the ramp artefact in
+   14.4, the Bhasin curve was being applied in full. The problem was the headline, not the model.
+2. **A mid-normal baseline really does mean a smaller modeled effect**, and that is evidence, not pessimism.
+   The measured SERM effect is a roughly constant number of ng/dL (Hohl 2025; neither Keihani 2020 nor Kim 2026
+   found baseline total T predicted the response), so the *percentage* shrinks as the baseline rises — and the
+   lean credit runs off a **log** ratio, so it shrinks again.
+3. **"It helps a lot of people a lot" is true for hypogonadal men and unproven for eugonadal ones.** Nobody has
+   weighed a man with a normal testosterone on any drug in this class. The band shows the large numbers where
+   they were measured and refuses to move them to the column where they were not.
+4. **Enclomiphene specifically is the weakest of the three on evidence**, despite being the one Bob asked
+   about: no trial has ever measured body composition on it at any baseline, none has enrolled a eugonadal man,
+   and there is no safety data past 16 weeks. The isomer rationale is sound and the tolerability signal
+   favours it, but it rests on one unblinded retrospective chart review.

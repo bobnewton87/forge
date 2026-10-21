@@ -7,7 +7,7 @@
 import { esc } from './components.js';
 import { SUPPLEMENTS, NOT_MODELED, CATEGORIES, EVIDENCE, isUnapproved, isModeled, itemFor, TOLERABILITY, tolerabilityOf, fmtRate } from '../data/supplements.js';
 import { modifiersAt, testosteroneEffect, averageTotalT, resolveDose, stackAt, T_MODEL, T_MODEL_F } from '../engine/metabolic.js';
-import { tPlan, rowEntries } from '../engine/tplan.js';
+import { tPlan, rowEntries, scenarioBand, T_REFERENCE_RANGE, T_REFERENCE_PCTILE, T_REFERENCE_SOURCE } from '../engine/tplan.js';
 import { sexOf, femaleStatus, FEMALE_LABS, FEMALE_T_RANGE } from '../engine/sex.js';
 // CONTRACT-NOTE (§20 Female mode): for women the catalogue reads through itemFor(item, 'female'), labs show female
 //   reference ranges, the testosterone chart is on a female scale (Huang 2014 + trans-men fit, 24-week lean change),
@@ -129,10 +129,21 @@ function stackList(list, mods, today, sex = 'male') {
         <button class="btn btn-sm" data-restart="${i}">Restart</button><button class="btn btn-sm btn-ghost" data-remove="${i}" aria-label="Remove">✕</button></div>`).join('')}</div></details>` : ''}`;
 }
 
+// §22.9. Bob calls this the encyclopedia and wants it to read as one, so a browse row carries the three things
+// that decide whether an entry is worth opening — how good the evidence is, whether anyone has measured BODY
+// COMPOSITION on it (as opposed to a hormone level), and whether side effects were ever counted — instead of
+// just a name and a summary.
 function browseRow(s, inStack) {
+  const md = s.model || {};
+  const bc = md.bodyComp;
+  const bcB = bc === 'measured' ? '<span class="badge good" title="Trials of this item measured body composition, not just a hormone level.">Body comp measured</span>'
+    : bc === 'extrapolated' ? '<span class="badge warn" title="Nobody has measured body composition on this. Any lean figure is Forge extrapolating through the testosterone→lean curve.">Body comp extrapolated</span>'
+      : bc === 'none' ? '<span class="badge bad" title="Body composition was measured on it and no effect was found.">No muscle effect</span>' : '';
+  const t = tolerabilityOf(s);
+  const tB = t ? `<span class="badge ${TOL_CLS[t.grade] || 'warn'}">${esc(TOLERABILITY[t.grade]?.short || '')}</span>` : '';
   return `<button class="list-item sp-brow" data-detail="${s.id}">
     <div class="grow"><div class="t">${esc(s.name)}</div>
-      <div class="sp-badges">${evBadge(s)}${stBadge(s)}${inStack ? '<span class="badge good">In stack</span>' : ''}</div>
+      <div class="sp-badges">${evBadge(s)}${stBadge(s)}${bcB}${tB}${inStack ? '<span class="badge good">In stack</span>' : ''}</div>
       <div class="s sp-sum">${esc(s.summary)}</div></div>
     <span class="chev">›</span></button>`;
 }
@@ -223,6 +234,10 @@ function impactCard(I, mods, off, activeIds) {
 //   modifiersAt() and project() the Projection screen uses, so adding a row here changes Projection by exactly
 //   what the row said it would. §20: the whole section is absent for a female profile.
 const PLAN_MAX = 8;
+// The band costs four extra sub-plans (each with its own 12-month reference projection), which would roughly
+// double this route's synchronous render. So planCard() ships this placeholder and bind() fills it from an idle
+// callback — the numbers still come from the same tPlan()/project() path, just not on the critical path.
+const BAND_PENDING = '<div class="sp-sub">Where you sit in the range decides everything below</div><p class="small muted sp-bandwait">Modeling the same therapies across the width of the normal range…</p>';
 const planUi = { showZero: false, showCost: false, open: null };
 const bcBadge = r => r.bodyComp === 'measured'
   ? '<span class="badge good" title="Trials of this item measured body composition in men like you.">Measured</span>'
@@ -230,6 +245,24 @@ const bcBadge = r => r.bodyComp === 'measured'
     ? '<span class="badge warn" title="Nobody has measured body composition on this item in a man like you. The lean number is Forge extrapolating through the testosterone→lean curve — and that curve was built by giving men testosterone from OUTSIDE with their own gonadotropins switched off, which is not what this does. Range starts at zero.">Extrapolated</span>'
     : '<span class="badge bad" title="Trials measured body composition on it and found none.">No muscle effect</span>';
 const rng = (lo, hi, dp = 1) => `${sgn(lo, dp)} to ${sgn(hi, dp)}`;
+// Inside a RANGE, an exact zero reads better as "0" than as "±0": "±0 to +10.4" looks like a typo, and the low
+// end of an unmeasured item's range is exactly zero by design, so this is the common case.
+const z = (n, dp = 1) => (Math.abs(Number(n) || 0) < 0.005 ? '0' : sgn(n, dp));
+const rngz = (lo, hi, dp = 1) => `${z(lo, dp)} to ${z(hi, dp)}`;
+
+// §22.9 THE NUMBER A ROW LEADS WITH.
+// It used to be `row.score`, which is a RANKING rule, not an estimate: for an item whose body-composition
+// effect has never been measured the score is pinned to the conservative END of the row's own range (zero).
+// The result was a row whose headline said "±0 lb net" directly above its own body saying "+4.4 lb lean" —
+// incoherent, and it is why the whole feature read as "barely adding anything".
+// The headline is now `row.net`: the modeled CENTRAL estimate of lean minus fat, with its range underneath.
+// The conservatism did not go anywhere — it is in the range (which still starts at zero when nothing was
+// measured), in the Extrapolated badge beside the name, in the notes, and in the ranking order.
+const netHead = r => `<div class="sp-pscore">
+    <b class="${r.net.lb > 0.05 ? 'good' : r.net.lb < -0.05 ? 'bad' : 'muted'}">${sgn(r.net.lb)}</b>
+    <span class="tiny muted">lb net</span>
+    ${r.net.hi !== r.net.lo ? `<span class="tiny muted sp-pscore-r">${rngz(r.net.lo, r.net.hi)}</span>` : ''}
+  </div>`;
 
 // §22.8. "Better tolerated" is a claim people repeat about these drugs constantly, so the planner shows it as a
 // badge with a cited number behind it rather than leaving it to the reader's memory of a forum post.
@@ -259,6 +292,113 @@ function tolBlock(t) {
   </details>`;
 }
 
+// ===================================================================== §22.9 the scenario band
+// Bob: "enclomiphene works for non hypogonadal males if there is some specific issue that is causing low T,
+// it's game changing for a lot of people. I want the game changing results to be the default with the caveats."
+// He is right, and the app already agreed with him — it was just hiding it behind a single assumed 548 ng/dL.
+// So the planner now OPENS with the gradient across the width of "normal" instead of one invented point.
+// Every column is labelled as a scenario; `yours` marks the one nearest his own level; the assumed baseline is
+// unchanged. The suppressed column is the prominent one because it is the only one where the muscle result was
+// actually measured — not because it is a prediction about the man reading it.
+const SC_CLS = { suppressed: 'sp-sc-key', lowNormal: 'sp-sc-near', average: '', highNormal: '' };
+function bandRow(r) {
+  const cls = r.net.lb > 0.05 ? 'good' : r.net.lb < -0.05 ? 'bad' : 'muted';
+  return `<li class="small sp-scrow">
+    <span class="sp-scrow-n">${esc(r.name)}${r.rx ? ' <span class="tiny muted">℞</span>' : ''}</span>
+    <b class="${cls}">${sgn(r.net.lb)} lb net</b>
+    <span class="tiny muted">${rngz(r.net.lo, r.net.hi)}</span>
+    <span class="badge ${r.bodyComp === 'measured' ? 'good' : 'warn'}">${r.bodyComp === 'measured' ? 'Measured' : 'Extrapolated'}</span>
+    <span class="tiny muted">${r.t.from} → ${r.t.to} ng/dL</span>
+  </li>`;
+}
+function bandCard(sc) {
+  return `<div class="sp-sc ${SC_CLS[sc.key] || ''}${sc.yours ? ' sp-sc-you' : ''}">
+    <div class="sp-sc-h">
+      <span class="sp-sc-t">${esc(sc.label)}</span>
+      <span class="sp-sc-v">${esc(sc.short)}</span>
+      <span class="tiny muted">${esc(sc.pctile)}</span>
+      ${sc.belowRange ? '<span class="badge bad">Below the reference range</span>' : sc.lowEnd ? '<span class="badge bad">Bottom of the range · the usual "low T" threshold</span>' : ''}
+      ${sc.yours ? '<span class="badge accent">Closest to what Forge assumes for you</span>' : '<span class="badge">Scenario</span>'}
+    </div>
+    <p class="small sp-sc-hl">${esc(sc.headline)}</p>
+    ${sc.rows.length ? `<ul class="sp-sclist">${sc.rows.map(bandRow).join('')}</ul>` : '<p class="tiny muted">Nothing modeled at this baseline.</p>'}
+    <details class="sp-sc-why"><summary class="tiny muted">Why this scenario, and what was measured in it</summary>
+      <p class="small muted">${esc(sc.body)}</p></details>
+  </div>`;
+}
+function bandHtml(scenarios) {
+  if (!Array.isArray(scenarios) || !scenarios.length) return '';
+  const pct = T_REFERENCE_PCTILE;
+  const med = pct.find(x => x[0] === 50)?.[1] ?? 531;
+  const [lo, hi] = T_REFERENCE_RANGE;
+  return `<div class="sp-sub">Where you sit in the range decides everything below</div>
+    <p class="small">These drugs are <b>not</b> modest for everyone. In a man whose own axis is being held down they produce
+      large, <b>measured</b> body-composition gains; in a man already in the middle of the range the same drug moves the
+      hormone and nobody has ever weighed the result. Both of those are below. Which one applies to you is a lab, not a guess.</p>
+    <p class="small"><b>And "normal" is very wide.</b> Harmonized across 9,054 men, the healthy non-obese 19–39 range runs
+      <b>${lo}–${hi} ng/dL</b> — the 5th percentile is ${pct.find(x => x[0] === 5)?.[1] ?? 303}, the median ${med} and the 95th
+      ${pct.find(x => x[0] === 95)?.[1] ?? 852}. End to end that is a <b>3.5-fold</b> spread. A man at 350 is "normal" on every
+      lab report ever printed, sits near the 10th percentile, can be a long way below his own set point and can be
+      thoroughly symptomatic. That is the gap these therapies are actually used in, and it is why one assumed number
+      was a bad way to open this page.
+      <span class="tiny muted">${esc(T_REFERENCE_SOURCE)}</span></p>
+    <p class="small"><b>And LH decides which of these you can do anything about.</b> LH is your pituitary’s
+      instruction to your testes, and it sorts low testosterone into three states rather than two.
+      <b>Secondary</b> (low T, normal or low LH): the instruction is not being sent — this is what clomiphene,
+      enclomiphene and hCG treat, and it covers every reversible cause in the list below.
+      <b>Compensated</b> (LH already raised, testosterone still normal): the pituitary has turned the signal up
+      and the testes are keeping pace. A real intermediate state, and the one a man in his late thirties is most
+      likely to drift into (Tajar 2010, EMAS). Forge does <i>not</i> zero these drugs out for it.
+      <b>Primary</b> (low T, high LH): the instruction is being shouted and not acted on, so pushing it louder is
+      the wrong lever. That last one is <b>not something you can tell by looking or feeling</b> — most of a testis
+      is sperm-producing tubules, and the Leydig cells that make testosterone are a small fraction of its volume,
+      so they can be underperforming at an entirely normal size (age-related Leydig decline, a past varicocele,
+      mumps orchitis, trauma, chemotherapy). One LH value on the same draw tells you which you are; nothing else does.</p>
+    ${scenarios[0] && scenarios[0].notApplicable ? `<p class="small sp-nopremise"><b>These columns are not about you.</b> ${esc(scenarios[0].whyNot || '')}</p>` : ''}
+    <div class="sp-band">${scenarios.map(bandCard).join('')}</div>
+    <p class="tiny muted">Each column is a <b>scenario</b>: what Forge models for a man your size and age <i>if</i> his
+      baseline were that, with a normal LH (which is what makes it the secondary/functional case these drugs treat).
+      None of them is a prediction about you, and none of them changed the baseline Forge assumes for you. Every caveat
+      on the rows below applies here unchanged: prescription-only and clinician-led, WADA-prohibited at all times,
+      enclomiphene has no safety data past 16 weeks, the range starts at zero wherever muscle was never measured, and
+      the testosterone→lean curve underneath all of it was built on testosterone given from <b>outside</b> with the
+      gonadotropins switched off.</p>`;
+}
+
+// ------------------------------------------------- §22.9 reversible causes and this man's own risk factors
+const CAUSE_BADGE = { yes: ['bad', 'Forge sees this in your data'], maybe: ['warn', 'Possible'], no: ['good', 'Ruled out by what you entered'], unknown: ['', 'Not known — no data entered'] };
+function causeRow(c) {
+  const [cls, lbl] = CAUSE_BADGE[c.status] || CAUSE_BADGE.unknown;
+  return `<li class="sp-cz ${c.status}">
+    <div class="row between"><b class="small">${esc(c.label)}</b><span class="badge ${cls}">${esc(lbl)}</span></div>
+    ${c.said ? `<p class="small">${esc(c.said)}</p>` : ''}
+    <p class="tiny muted">${esc(c.text)}</p>
+    ${c.fix ? `<button class="btn btn-sm btn-ghost" data-detail="${esc(c.fix)}">${esc(c.fixName || c.fix)} details</button>` : '<p class="tiny muted"><b>Not modeled by Forge.</b></p>'}
+  </li>`;
+}
+function causesHtml(plan) {
+  const causes = plan.causes || [];
+  if (!causes.length) return '';
+  const seen = causes.filter(c => c.status === 'yes' || c.status === 'maybe');
+  return `<div class="sp-sub">What may be holding your own level down</div>
+    <p class="small">A man can read mid-normal and still be below his own set point because something reversible is
+      pushing him down — that is <b>functional secondary hypogonadism</b>, and it is a recognised, potentially
+      reversible entity rather than a loophole (Grossmann &amp; Matsumoto 2017). It matters here because a SERM and
+      fixing the cause attack the <b>same</b> problem from opposite ends: the cause fix raises the set-point, the SERM
+      overrides the feedback the cause is acting through. Fixing the cause is free, it is first-line, and it is the
+      only one of the two that does not need a prescriber.</p>
+    ${seen.length ? `<p class="small"><b>Forge can see ${seen.length === 1 ? 'one of these' : `${seen.length} of these`} in what you have entered:</b> ${esc(seen.map(c => c.label.toLowerCase()).join(', '))}.</p>` : ''}
+    <ul class="sp-czlist">${causes.map(causeRow).join('')}</ul>`;
+}
+function flagsHtml(plan) {
+  const flags = plan.flags || [];
+  if (!flags.length) return '';
+  return `<div class="sp-flags">
+    <div class="t">Things in your own profile that make a below-average baseline plausible</div>
+    <ul class="sp-flaglist">${flags.map(f => `<li class="${f.verdict ? 'sp-flag-v' : ''}"><b class="small">${esc(f.label)}</b><p class="small">${esc(f.text)}</p></li>`).join('')}</ul>
+  </div>`;
+}
+
 function planRow(r) {
   const open = planUi.open === r.id;
   const tMoved = Math.abs(r.t.to - r.t.from) >= 2;
@@ -274,7 +414,7 @@ function planRow(r) {
       <div class="grow"><div class="t">${esc(r.name)}</div>
         <div class="sp-badges">${r.rx ? '<span class="badge accent">℞ prescriber</span>' : ''}${r.combo ? '<span class="badge">Combination</span>' : ''}<span class="badge ${EV_CLS[r.evidence] || ''}">${esc(EVIDENCE[r.evidence]?.short || r.evidence)}</span>${bcBadge(r)}${tolBadge(r.tolerability)}${r.inStack ? '<span class="badge good">In stack</span>' : ''}</div>
       </div>
-      <div class="sp-pscore"><b class="${r.score > 0.05 ? 'good' : r.score < -0.05 ? 'bad' : 'muted'}">${sgn(r.score)}</b><span class="tiny muted">lb net</span></div>
+      ${netHead(r)}
       <span class="chev">${open ? '⌄' : '›'}</span>
     </button>
     <div class="sp-pnums">${nums.join('')}</div>
@@ -303,23 +443,35 @@ function planCard(I) {
     projectFn: typeof PJ.project === 'function' ? PJ.project : null }), null);
   if (!plan || plan.hidden) return '';
   const act = (plan.actions || []).find(a => a.kind === 'labs');
-  const worth = plan.rows.filter(r => r.applies && !r.cost && (r.score > 0.05 || r.inStack));
-  // Applies, but scores ~0 because its effect on lean/fat has never been measured (only the T rise has).
-  const unmeasured = plan.rows.filter(r => r.applies && !r.cost && !r.inStack && r.score > -0.05 && r.score <= 0.05);
-  const negative = plan.rows.filter(r => r.applies && !r.cost && r.score <= -0.05 && !r.inStack);
-  const zero = plan.rows.filter(r => !r.applies && !r.cost);
+  // §22.9 BUCKETING, CORRECTED. These used to be split on the sign of `score`, the conservative ranking number.
+  // Because `score` for an unmeasured item is `leanLo - fatHi` and the projection can put a hair of fat on the
+  // high side, clomiphene's score came out at −0.1 and the row was filed under "not in your favour" — a drug
+  // the same page credits with +3.5 lb of lean. The split is now on the EVIDENCE CLASS (was body composition
+  // measured in a man like this one?) and on the sign of the CENTRAL estimate, which is what those headings
+  // actually claim. Ranking inside each bucket still leads with the conservative `score`, then the estimate.
+  const live = plan.rows.filter(r => r.applies && !r.cost);
+  const byNet = (a, b) => (b.score - a.score) || (b.net.lb - a.net.lb);
+  const worth = live.filter(r => (r.bodyComp === 'measured' && r.net.lb > 0.05) || r.inStack).sort(byNet);
+  // Moves testosterone and the model says it moves lean, but nobody has weighed a man like this one on it.
+  const unmeasured = live.filter(r => !r.inStack && r.bodyComp !== 'measured' && r.net.lb > 0.05).sort((a, b) => b.net.lb - a.net.lb);
+  const negative = live.filter(r => !r.inStack && r.net.lb <= -0.05).sort((a, b) => a.net.lb - b.net.lb);
+  const flat = live.filter(r => !r.inStack && r.net.lb > -0.05 && r.net.lb <= 0.05 && !worth.includes(r));
+  const zero = [...plan.rows.filter(r => !r.applies && !r.cost), ...flat];
   const cost = plan.rows.filter(r => r.cost);
   const shown = worth.slice(0, PLAN_MAX);
   return `<div class="card sp-plan">
     <p class="small">Every published way to raise your <b>own</b> testosterone, ranked by what Forge models it doing to your <b>lean and fat mass over 12 months</b> — not by how much it moves the number. Those are different lists.</p>
-    ${plan.tAssumed ? `<p class="small" style="color:var(--warn)"><b>Your starting testosterone is a guess.</b> You have not entered a lab, so Forge uses ${plan.tAssumedLevel} ng/dL, the population average for your age. Your real level could be half that or well above it, and <b>every number below is downstream of it</b>. Get the panel first.</p>` : ''}
+    ${plan.tAssumed ? `<p class="small" style="color:var(--warn)"><b>Your starting testosterone is a guess.</b> You have not entered a lab, so Forge uses ${plan.tAssumedLevel} ng/dL, the population average for your age — and the rows below are all computed from it. Your real level could be well under or well over that, which is the whole point of the band immediately below. Get the panel.</p>` : ''}
+    <div id="sp-band-wrap" data-band>${plan.scenarios ? bandHtml(plan.scenarios) : BAND_PENDING}</div>
+    ${flagsHtml(plan)}
+    ${causesHtml(plan)}
     ${act ? `<div class="sp-plabs"><div class="t">① ${esc(act.title)}</div><p class="small">${esc(act.body)}</p>
       <ul class="sp-plablist">${act.labs.map(l => `<li><b>${esc(l.label)}</b><span class="tiny muted">${esc(l.why)}</span></li>`).join('')}</ul></div>` : ''}
     ${plan.notes.map(n => `<p class="tiny muted">${esc(n)}</p>`).join('')}
     ${shown.length ? `<div class="sp-sub">Worth considering for you</div><div class="sp-plist">${shown.map(planRow).join('')}</div>`
-      : `<p class="small muted mt">On the values Forge has for you, <b>nothing here is modeled to add lean mass on evidence that was actually measured in a man like you</b>. That is the honest answer, not a gap. Several of these do raise your testosterone — clomiphene more than doubled it in healthy men with normal levels — but every trial that weighed anybody was run in men who were hypogonadal, obese, or both. Those rows are in the next group, with their numbers and a range that starts at zero.</p>`}
-    ${unmeasured.length ? `<details class="sp-pmore"><summary class="small">Raises testosterone, but nobody has measured what it does to muscle (${unmeasured.length})</summary>
-      <p class="tiny muted">These moved testosterone in a trial — in some cases, like clomiphene, measured directly in healthy men whose level was already normal (519 → 1,390 ng/dL in Tenover &amp; Bremner 1991). What nobody has measured is what that extra testosterone does to <b>muscle</b> when your own testes make it. The only two body-composition results in this whole class (Soares 2018 on clomiphene, Liu 2002 on hCG — which added 2 kg of lean and <b>no</b> strength, gait or balance) are both in hypogonadal men. The lean figure on each row is Forge extrapolating through the testosterone→lean curve, and that curve came from giving men testosterone from <b>outside</b> with their own gonadotropins switched off. Whether an endogenous rise of the same size builds the same muscle is an open question. That is why each range starts at zero and each row is ranked at zero.</p>
+      : `<p class="small muted mt">On the values Forge has for you, <b>nothing here is modeled to add lean mass on evidence that was measured in a man at your assumed level</b> — because every trial that weighed anybody enrolled men who were hypogonadal, obese, or both. That is a statement about the trials, <b>not</b> about the drugs doing nothing: the group below is modeled to add real lean mass and says so with a number. And the band at the top of this card shows the same therapies at a suppressed baseline, where the result <i>is</i> measured and is several times larger. Which of those men you are is one morning blood draw away.</p>`}
+    ${unmeasured.length ? `<details class="sp-pmore" open><summary class="small">Modeled to add lean mass, but nobody has weighed a man like you on it (${unmeasured.length})</summary>
+      <p class="tiny muted">Each row leads with Forge's <b>central estimate</b> of net lean minus fat over 12 months, with its range beside it. The range starts at zero because that is the honest low end here, not because the estimate is zero. These moved testosterone in a trial — in some cases, like clomiphene, measured directly in healthy men whose level was already normal (519 → 1,390 ng/dL in Tenover &amp; Bremner 1991). What nobody has measured is what that extra testosterone does to <b>muscle</b> when your own testes make it. The only two body-composition results in this whole class (Soares 2018 on clomiphene, Liu 2002 on hCG — which added 2 kg of lean and <b>no</b> strength, gait or balance) are both in hypogonadal men. The lean figure on each row is Forge extrapolating through the testosterone→lean curve, and that curve came from giving men testosterone from <b>outside</b> with their own gonadotropins switched off. Whether an endogenous rise of the same size builds the same muscle is an open question. That is why each range starts at zero, and why these rows are <b>ranked</b> at the conservative end even though they are <b>shown</b> at the estimate.</p>
       <div class="sp-plist">${unmeasured.map(planRow).join('')}</div></details>` : ''}
     ${negative.length ? `<details class="sp-pmore"><summary class="small">Changes something, but not in your favour (${negative.length})</summary><div class="sp-plist">${negative.map(planRow).join('')}</div></details>` : ''}
     ${zero.length ? `<details class="sp-pmore" ${planUi.showZero ? 'open' : ''} data-pzero><summary class="small">Modeled at ~0 for you, with the reason (${zero.length})</summary><div class="sp-plist">${zero.map(planRow).join('')}</div></details>` : ''}
@@ -423,7 +575,7 @@ const LABS = [
 // Optional panel: these don't change the projection on their own, but they decide whether the
 // endogenous-testosterone therapies apply to you at all (see docs/research/endogenous-testosterone.md).
 const PANEL = [
-  { k: 'lh', label: 'LH', unit: 'IU/L', step: '0.1', ref: 'Typical ≈1.7–8.6. Low T with normal/low LH = secondary (the kind clomiphene and hCG treat). Low T with high LH = testicular.',
+  { k: 'lh', label: 'LH', unit: 'IU/L', step: '0.1', ref: 'Typical ≈1.7–8.6. LH is your pituitary\u2019s instruction to your testes. Low T with normal/low LH = the instruction is not being sent ("secondary" — the kind clomiphene and hCG treat). Low T with HIGH LH = the instruction is being shouted and not obeyed ("primary"), which you cannot tell by looking: the cells that make testosterone are a small part of testis volume. Raised LH with still-normal T = "compensated", a real in-between state.',
     status: v => v > 9.4 ? ['High', 'warn'] : v < 1.5 ? ['Low', 'warn'] : ['Normal', 'good'] },
   { k: 'fsh', label: 'FSH', unit: 'IU/L', step: '0.1', ref: 'Typical ≈1.5–12.4. Drawn with LH; both are suppressed by testosterone therapy.',
     status: v => v > 12.4 ? ['High', 'warn'] : v < 1.5 ? ['Low', 'warn'] : ['Normal', 'good'] },
@@ -504,6 +656,59 @@ function metabolicForm(p, I) {
 }
 
 // ------------------------------------------------------------------ detail / edit sheet
+// §22.9 ENCYCLOPEDIA BLOCKS.
+// These fields were all already in js/data/supplements.js and none of them was rendered anywhere: an entry
+// showed mechanism, effects, risks, tolerability and sources, and then stopped. So the catalogue could not tell
+// you what the muscle evidence actually was, who the item suits, what to monitor, what it does to fertility,
+// what it interacts with, or — the one that matters most for this category — what has never been measured.
+const BC_LABEL = {
+  measured: ['good', 'Measured', 'A trial of this item measured body composition itself, not just a hormone level.'],
+  extrapolated: ['warn', 'Extrapolated', 'No trial of this item has measured body composition. Any lean figure Forge shows is its testosterone→lean curve applied to the hormone change, and that curve was built on testosterone given from OUTSIDE with the gonadotropins switched off.'],
+  none: ['bad', 'Measured, and there was none', 'Body composition was measured on this item and did not change.'],
+};
+const IX_KIND = { pharmacodynamic: 'Same lever / opposing lever', pharmacokinetic: 'Changes drug levels', additive: 'Adds up' };
+function mdBlocks(s, md) {
+  const out = [];
+  // What the muscle evidence actually is — the distinction the whole §22 model turns on.
+  if (md.bodyComp) {
+    const [cls, lbl, why] = BC_LABEL[md.bodyComp] || BC_LABEL.extrapolated;
+    out.push(`<h3 class="sp-h">Muscle and fat: what was actually measured</h3>
+      <p class="small"><span class="badge ${cls}">${esc(lbl)}</span>
+        ${md.bcMaxLevel != null && md.bodyComp !== 'none' ? ` <span class="muted">Credited up to ≈${Number(md.bcMaxLevel).toLocaleString()} ng/dL${md.bcExtrapMaxLevel ? `, extrapolated to ≈${Number(md.bcExtrapMaxLevel).toLocaleString()}` : ''}${md.bcMaxBaseline != null ? ` · trial enrolled men starting below ≈${Number(md.bcMaxBaseline).toLocaleString()}` : ''}.</span>` : ''}</p>
+      <p class="tiny muted">${esc(why)}</p>
+      ${md.bcNote ? `<p class="small">${esc(md.bcNote)}</p>` : ''}
+      ${md.leanNullNote ? `<p class="small">Forge credits no muscle for this: ${esc(md.leanNullNote)}.</p>` : ''}`);
+  }
+  // The other hormones, which are usually where the costs live.
+  if (md.e2Note || md.shbgNote || md.e2ActionNote) {
+    out.push(`<h3 class="sp-h">What it does to your other hormones</h3>
+      ${md.e2Note ? `<p class="small"><b>Estradiol:</b> ${esc(md.e2Note)}</p>` : ''}
+      ${md.e2ActionNote ? `<p class="small"><b>Estrogen action:</b> ${esc(md.e2ActionNote)}</p>` : ''}
+      ${md.shbgNote ? `<p class="small"><b>SHBG and free testosterone:</b> ${esc(md.shbgNote)}</p>` : ''}`);
+  }
+  if (md.suits || md.notSuits) {
+    out.push(`<h3 class="sp-h">Who it suits</h3>
+      ${md.suits ? `<p class="small">${esc(md.suits)}</p>` : ''}
+      ${md.notSuits ? `<p class="small"><b>Not for:</b> ${esc(md.notSuits)}</p>` : ''}`);
+  }
+  if (Array.isArray(md.interactions) && md.interactions.length) {
+    out.push(`<h3 class="sp-h">Interactions</h3><ul class="tip-list sp-ix">${md.interactions.map(i =>
+      `<li class="small"><b>${esc(i.with)}</b>${i.kind ? ` <span class="badge">${esc(IX_KIND[i.kind] || i.kind)}</span>` : ''}<br>${esc(i.text)}</li>`).join('')}</ul>`);
+  }
+  if (Array.isArray(md.unknowns) && md.unknowns.length) {
+    out.push(`<h3 class="sp-h">What is not known</h3>
+      <p class="tiny muted">An entry that lists only findings reads as more settled than the literature is. This is where it ends.</p>
+      <ul class="tip-list sp-unk">${md.unknowns.map(u => `<li class="small">${esc(u)}</li>`).join('')}</ul>`);
+  }
+  const prac = [];
+  if (md.timeCourse) prac.push(`<p class="small"><b>Time course:</b> ${esc(md.timeCourse)}</p>`);
+  if (md.fertility) prac.push(`<p class="small"><b>Fertility:</b> ${esc(md.fertility)}</p>`);
+  if (Array.isArray(md.monitor) && md.monitor.length) prac.push(`<p class="small"><b>Monitoring:</b> ${esc(md.monitor.join(' · '))}</p>`);
+  if (md.wada) prac.push(`<p class="small"><b>Anti-doping:</b> ${esc(md.wada)}</p>`);
+  if (prac.length) out.push(`<h3 class="sp-h">Practical</h3>${prac.join('')}`);
+  return out.join('');
+}
+
 function detailSheet(s, entry, today, sex = 'male') {
   s = itemFor(s, sex);
   const modeled = isModeled(s);
@@ -523,6 +728,7 @@ function detailSheet(s, entry, today, sex = 'male') {
     <h3 class="sp-h">How it works</h3><p class="small">${esc(s.mechanism)}</p>
     <h3 class="sp-h">What the evidence shows</h3><ul class="tip-list">${s.effects.map(x => `<li class="small">${esc(x)}</li>`).join('')}</ul>
     ${s.id === 'trt' ? `<div class="sp-chart mt" data-tchart='${esc(JSON.stringify({ natural: null, level: null, age: null, sex }))}'>${tChart({ natural: null, sex })}<div class="sp-readout small muted">Drag across the chart to read values.</div></div><p class="tiny muted">Lean change over ${sex === 'female' ? 24 : 20} weeks without training vs serum T, for an average 39-year-old ${sex === 'female' ? 'woman' : 'man'} (natural ≈${averageTotalT(39, sex)}). Your own curve is on the projection card once T is in your stack or labs.</p>` : ''}
+    ${mdBlocks(s, md)}
     ${s.risks.length ? `<h3 class="sp-h">Risks</h3><ul class="tip-list sp-risks">${s.risks.map(x => `<li class="small">${esc(x)}</li>`).join('')}${(md.levelRisks || []).map(r => `<li class="small"><span class="muted">At ≥${r.min.toLocaleString()} ${esc(s.id === 'trt' ? 'ng/dL' : md.dose?.unit || '')}:</span> ${esc(r.text)}</li>`).join('')}</ul>` : ''}
     ${md.tolerability ? `<h3 class="sp-h">Tolerability</h3>${tolBlock({ ...md.tolerability,
       label: TOLERABILITY[md.tolerability.grade]?.label || 'Tolerability not measured',
@@ -638,13 +844,40 @@ export function bind(root, ctx) {
     wrap.querySelectorAll('[data-pcost]').forEach(d => d.addEventListener('toggle', e => { planUi.showCost = e.target.open; }));
     wrap.querySelectorAll('[data-detail]').forEach(b => b.addEventListener('click', ev => { ev.stopPropagation(); openDetail(ctx, b.dataset.detail); }));
   }
+  // §22.9 The scenario band, computed after the first paint. Four sub-plans with their own 12-month reference
+  // projections is roughly another whole tPlan(), and this route has a 1.5 s render budget (e2e S3), so it is
+  // filled in here instead of inside planCard(). `bandSeq` drops a stale result if the plan re-rendered while
+  // the band was being computed.
+  let bandSeq = 0;
+  function fillBand() {
+    const host = root.querySelector('#sp-band-wrap');
+    if (!host || !host.hasAttribute('data-band')) return;
+    const seq = ++bandSeq;
+    const run = () => {
+      if (seq !== bandSeq) return;
+      const I = inputs(store);
+      const scenarios = safe(() => scenarioBand(I.profile, { now: I.now, age: I.b?.age,
+        bodyweightLb: I.b?.weightLb || I.profile.bodyweight, baseline: I.b, sessions: I.sessions,
+        bodyLog: I.bodyLog, foodLog: I.foodLog, weeks: 52,
+        projectFn: typeof PJ.project === 'function' ? PJ.project : null }), null);
+      const h = root.querySelector('#sp-band-wrap');
+      if (!h || seq !== bandSeq) return;
+      h.innerHTML = scenarios ? bandHtml(scenarios) : '';
+      h.removeAttribute('data-band');
+      h.querySelectorAll('[data-detail]').forEach(b => b.addEventListener('click', ev => { ev.stopPropagation(); openDetail(ctx, b.dataset.detail); }));
+    };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 1200 });
+    else setTimeout(run, 0);
+  }
   function refreshPlan() {
     const wrap = root.querySelector('#sp-plan-wrap');
     if (!wrap) return;
     wrap.innerHTML = planCard(inputs(store));
     bindPlan();
+    fillBand();
   }
   bindPlan();
+  fillBand();
 
   root.querySelectorAll('[data-cat]').forEach(b => b.addEventListener('click', () => { ui.cat = b.dataset.cat; ctx.rerender(); }));
   root.querySelectorAll('.list [data-detail], .sp-row [data-detail]').forEach(b => b.addEventListener('click', () => openDetail(ctx, b.dataset.detail)));

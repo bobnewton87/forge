@@ -2307,6 +2307,88 @@ def t_energy_model(t, ctx):
     t.sub('N2k', 'Nutrition tempers the cardio claim with compensation',
           bool(re.search(r'Careau', ntxt)) and bool(re.search(r'resting burn', ntxt, re.I)),
           'Nutrition page copy', 'cites Careau 2021 and the resting-burn deduction', short(ntxt[-400:], 200))
+@test('T3', 'Planner leads with the estimate, opens with the scenario band, names reversible causes (CONTRACT §22.9)')
+def t_tband(t, ctx):
+    """§22.9: the headline must be the modeled central estimate (it used to be the conservative ranking score,
+    so a row said "±0 lb net" directly above its own "+4.4 lb lean"), the planner must open with the scenario
+    band rather than one assumed baseline, and reversible causes must be named with a status."""
+    app = t.app
+    app.load(bobir(app), 'supplements')
+    # No labs: the case Bob was looking at, where every row used to read ~0.
+    app.store("(store.updateProfile({ cardioTargetMin: 225, metabolic: { ...(store.getProfile().metabolic || {}), totalT: null, lh: null, labDate: null } }), 1)")
+    ms = app.go('supplements', settle=600)
+    t.sub('T3a', 'Supplements route still renders inside the budget with the band', ms < 1500,
+          'render+bind', '< 1500 ms', f'{round(ms)} ms')
+    # The band is filled after first paint, from an idle callback.
+    try:
+        app.page.wait_for_function("() => { const h = document.querySelector('#sp-band-wrap'); return h && !h.hasAttribute('data-band'); }", timeout=12000)
+        filled = True
+    except PWTimeout:
+        filled = False
+    band = app.text('#sp-band-wrap') if app.has('#sp-band-wrap') else ''
+    t.sub('T3b', 'Scenario band renders four baselines across the reference range', filled and all(
+        k in band for k in ['Suppressed axis', 'Low-normal', 'Population average', 'High-normal']),
+          'band', 'four labelled scenarios', short(band, 200))
+    t.sub('T3c', 'Band shows the measured hypogonadal result and the width of "normal"',
+          '264' in band and '916' in band and 'Measured' in band and 'Scenario' in band,
+          'band', 'harmonized range 264-916, a Measured badge and Scenario labels', short(band, 200))
+    t.sub('T3d', 'Band marks exactly one column as closest to him, and it is the average',
+          app.count('#sp-band-wrap .sp-sc-you') == 1 and 'Closest to what Forge assumes for you' in band,
+          'band', 'one "closest to you" column', app.count('#sp-band-wrap .sp-sc-you'))
+    # THE BUG: the headline must be the estimate, not the score.
+    flat = 'els => els.map(e => e.innerText.split("\\n").join(" "))'
+    heads = app.page.eval_on_selector_all('#sp-plan-wrap .sp-prow .sp-pscore', flat)
+    rows = app.page.eval_on_selector_all('#sp-plan-wrap .sp-prow', flat)
+    pos = [r for r in rows if re.search(r'LEAN \+\d', r, re.I)]
+    bad = [r[:90] for r in pos if re.search(r'\u00b10\s*lb net', r)]
+    t.sub('T3e', 'No row headlines ±0 while its own body shows positive lean', not bad,
+          'row headline vs body', 'headline agrees with the lean tile', bad[:2] or f'{len(pos)} positive rows, none contradictory')
+    t.sub('T3f', 'Headlines carry a central estimate and a range', bool(heads) and any(
+        re.search(r'[+\u2212]\d', h) and ' to ' in h for h in heads),
+          'headlines', 'e.g. "+4.3 lb net  0 to +5.4"', heads[:3])
+    # Reversible causes and this man's own risk factors.
+    plan = app.text('#sp-plan-wrap')
+    low = plan.lower()   # section headings are uppercased by CSS and innerText reflects that
+    t.sub('T3g', 'Reversible causes are named with a status and a link to the fix',
+          'what may be holding your own level down' in low and app.count('#sp-plan-wrap .sp-cz') >= 6
+          and 'opioid medication' in low and 'not modeled by forge' in low,
+          'causes', '≥6 causes incl. opioids marked unmodeled', app.count('#sp-plan-wrap .sp-cz'))
+    t.sub('T3h', 'Risk factors say "plausible", not "low", and keep the assumed baseline',
+          'plausible' in low and 'do not make it a fact' in low
+          and 'population average for your age' in low,
+          'risk flags', 'plausible + not a fact + baseline unchanged', short(plan, 160))
+    # "Testicular" must not read as something you can see.
+    t.sub('T3i', 'LH is explained as an instruction, not as testis size',
+          'not something you can tell by looking' in low and 'leydig' in low and 'compensated' in low,
+          'LH wording', 'explains response vs appearance, and the compensated state', short(plan, 160))
+    # A primary profile must not get a column flagged as his.
+    app.store("(store.updateProfile({ metabolic: { ...(store.getProfile().metabolic || {}), totalT: 285, lh: 21.4, labDate: '2026-07-01' } }), 1)")
+    app.go('supplements', settle=700)
+    try:
+        app.page.wait_for_function("() => { const h = document.querySelector('#sp-band-wrap'); return h && !h.hasAttribute('data-band'); }", timeout=12000)
+    except PWTimeout:
+        pass
+    pb = app.text('#sp-band-wrap') if app.has('#sp-band-wrap') else ''
+    t.sub('T3j', 'A primary (high LH, low T) profile gets no column flagged as his',
+          app.count('#sp-band-wrap .sp-sc-you') == 0 and 'These columns are not about you' in pb,
+          'band for primary', 'no "yours" column + an explanation', short(pb, 200))
+    # Catalogue reads as an encyclopedia.
+    app.store("(store.updateProfile({ metabolic: { ...(store.getProfile().metabolic || {}), totalT: null, lh: null, labDate: null } }), 1)")
+    app.go('supplements', settle=500)
+    if app.has('[data-cat="prescription"]'):
+        app.click('[data-cat="prescription"]')
+        app.page.wait_for_timeout(300)
+    app.click('[data-detail]', text=r'clomiphene citrate \(off')
+    app.page.wait_for_timeout(500)
+    sheet = (app.text('.sp-sheet') if app.has('.sp-sheet') else '').lower()
+    t.sub('T3k', 'Catalogue entry carries mechanism, muscle evidence, interactions and what is unknown',
+          all(k in sheet for k in ['how it works', 'muscle and fat: what was actually measured',
+                                   'interactions', 'what is not known', 'monitoring', 'sources', 'who it suits']),
+          'catalogue sheet', 'all encyclopedia sections present', short(sheet, 200))
+    t.sub('T3l', 'And the honesty is still there: extrapolated, zero floor, exogenous-curve caveat',
+          'extrapolated' in sheet and 'gonadotropins switched off' in sheet and 'starts its range at zero' in sheet
+          and 'has never been tested' in sheet,
+          'catalogue sheet', 'extrapolation + Bhasin caveat + zero floor', short(sheet, 200))
 
 
 @test('E1', 'No console/page errors during flows')
