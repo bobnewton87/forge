@@ -419,6 +419,11 @@ Body, More. New routes: `plan`, `measure`, `projection` (all already wired in ma
 
 ## 11. New store APIs + profile fields (lead, already implemented in js/store.js)
 
+> **Note (2026-10-21):** work items that say "CONTRACT §11 body/projection" mean the body-projection model,
+> which lives in **§13** (`project()`), **§15** (`nutritionLab()`) and **§23** (the deficit partition), with
+> the 2026-10-21 growth-model amendment in **§25**. §11 itself is store APIs and profile fields.
+
+
 ```js
 profile.body = { sex:'male', heightIn:null, birthYear:null, trainingMonths:7, activity:'desk'|'light'|'active' }
 profile.schedule = { mon..sun: { kind:'lift'|'cardio'|'class'|'flex'|'rest', minutes, location } }
@@ -495,7 +500,9 @@ export function project({ baseline, profile, sessions /* done + planned */, week
    confidence: 'low'|'medium'|'high'   // based on how much real data (measurements, weigh-ins, logged sessions) exists
 }
 ```
-Model guidance (be evidence-honest and conservative, and state it all in `assumptions`):
+Model guidance (be evidence-honest and conservative, and state it all in `assumptions`).
+**Amended 2026-10-21 by §25** (per-muscle specificity, per-muscle ceiling, validated response curves,
+goal-aware nutrition lab) — read §25 and `docs/research/growth-model.md` alongside what follows:
 - Fat change from energy balance (≈3,500 kcal/lb as a first approximation), with the
   deficit shrinking as weight drops (recompute TDEE weekly) and some adaptive thermogenesis.
 - Lean gain capped by training age (e.g. Aragon-style: year 1 ≈ 1–1.5% BW/month for a male
@@ -564,7 +571,10 @@ and a new export:
 export function nutritionLab({ baseline, profile, sessions, weeks = 12, now,
    calorieRange = [-750, +1000], step = 125, proteinGPerLb, fatPct, cardioDeltaMin }) → {
    points:[{ surplus, calories, leanLb, fatLb, weightLb, bodyFatPct }],   // end-of-horizon outcome per calorie level
-   sweetSpot:{ from, to, note },     // surplus band that maximizes lean gain per lb of fat (≈ +200…+500 for Bob)
+   sweetSpot:{ from, to, frame, label, note },   // §25.5: GOAL-AWARE. 'surplus' frame (recomp/lean_bulk) = the
+                                     //   band that maximizes lean gain per lb of fat (≈ +200…+350 for Bob);
+                                     //   'deficit' frame (cut/weight_loss) = the band whose simulated rate of
+                                     //   loss is 0.5–1.0 %BW/week, labelled "Target rate", not a sweet spot
    explanation:[string] }
 ```
 Model requirements. Be evidence-honest, and list every assumption in `assumptions`:
@@ -1769,3 +1779,144 @@ always offers **"Log a class by name"** with chips from everything the schedule 
 `classify.CLASS_CATALOGUE` (known Crunch Allen classes + generic types), so a day we never cached — anything
 before this shipped — degrades to typing or tapping a name rather than dead-ending. Credit comes from
 `classify()` either way, so a typed class is credited exactly like a scraped one.
+
+---
+
+## 25. Growth model: per-muscle specificity and validated response curves (2026-10-21)
+
+Amends the model guidance in **§13** (`project()`) and **§15** (`nutritionLab()`); the §23 deficit partition
+is unchanged except where noted. Owner: LONG-HORIZON (`js/engine/projection.js`, `js/ui/projection.js`).
+Full audit with sources, DOIs and uncertainties: **`docs/research/growth-model.md`**.
+
+Bob: *"the whole idea is to make a workout plan, see if we keep duplicating that, where is that going to get
+us, and look at the results visually"* … *"if you do more arms or biceps, it's going to make the biceps
+specifically bigger. And if you neglect quads, it's going to not make those bigger, maintain, or whatever it
+is. It shouldn't just be a wholesale ballooning to perfection."* … *"academically sound so that we can
+project out."*
+
+### 25.1 Every constant is sourced or labelled
+
+Each response curve in `projection.js` carries, in a comment above it, either a **DOI** or the word
+**ASSUMPTION**. No constant may carry neither. The curves and their anchors:
+
+| curve | shape / value | anchor |
+|---|---|---|
+| `setResponse(sets)` | **√(sets)**, normalized so 10 fractional sets = 1.0, exact to 20 sets, C¹-smooth to an asymptote of 2.45 | Pelland 2025, doi:10.1007/s40279-025-02344-w (square root was the best-fit model; "diminishing returns but not an inverted-U") |
+| `maintenanceProtection(sets)` | `1 − e^(−sets/1.2)` — **NEW** | Bickel 2011, doi:10.1249/MSS.0b013e318207c15d; Spiering 2021, doi:10.1519/JSC.0000000000003964 |
+| `leanRatePctPerMonth(months)` | rate table, exponential tail | **ASSUMPTION / HEURISTIC** (Aragon, McDonald — grey literature). The weakest constant in the model. |
+| `ceilingFactor(gap)` | `1 − (1 − gap/4)²`, **per muscle group** | Kouri 1995, PMID 7496846 (ceiling value); shape is ASSUMPTION |
+| `energyFactor(balance)` | 0.70 at maintenance, saturating fast in a surplus | Garthe 2013, doi:10.1080/17461391.2011.643923 ("gain in LBM was not different between groups" at +620 kcal/day) |
+| `proteinFactor(g/lb)` | plateau at 1.0 g/lb | Morton 2018, doi:10.1136/bjsports-2017-097608 (break point 1.62 g/kg, upper CI 2.20) |
+| `proteinRetentionFactor(g/lb)` | **lower than `proteinFactor` at every intake**, plateau 1.1 g/lb | Mettler 2010, Longland 2016, Helms 2014 (§23) |
+| `carbFactor(g)` | **≤ 2 %**, labelled a training-quality proxy | Vargas-Molina 2022, doi:10.3390/ijerph191912629 (no FFM difference even on ketogenic diets) |
+| `interferenceFactor(min)` | free to **250** effective min/wk, then −2.5 %/100 min, cap **−12 %** | Schumann 2022, doi:10.1007/s40279-021-01587-7 (hypertrophy SMD −0.01, no modality effect); Wilson 2012, doi:10.1519/JSC.0b013e31823a3e2d |
+| `bfSurplusFactor(bf)` | ±1 %/body-fat point, clamp [0.88, 1.06] | **direction** Forbes 1987/2000, Hall 2007; slope/pivot ASSUMPTION |
+| `adaptation(bal)` | TEF 10 % + NEAT 42 % of a surplus; AT 10 % + 10 kcal/lb lost of a deficit | Levine 1999, doi:10.1126/science.283.5399.212 (≈531 of 1,000 kcal/day dissipated) |
+| `BMR_FROM_LEAN(lean)` | `370 + 21.6 × lean kg` | **Cunningham 1991, doi:10.1093/ajcn/54.6.963** — the formula was always right, the name on it was not (Katch-McArdle is a skinfold body-composition method, not an RMR equation). Corrected in the code and in the user-facing assumptions text. Reads `bodycomp.bmrFromLean` when exported. |
+| `EX_KEEP` = 0.72 | exercise energy compensation on the cardio **delta** | Careau 2021, doi:10.1016/j.cub.2021.08.016 (n = 1,754, ≈28 % compensation). Applied to the delta's NET cost (gross − the resting burn those minutes would have cost), symmetric for negative deltas, **never** to the baseline plan — those calories are already inside the formula TDEE and `adaptiveTdee`'s calibration. Minutes are not discounted. |
+
+`setResponse` consumes **fractional** sets — indirect work counted at the exercise's own muscle weight,
+which is what `recovery.sessionVolume` already produces and what Pelland found to be the best-supported
+quantification. The units of the published curve and of Forge's input are the same units.
+
+### 25.2 Specificity is a contract, not an emergent property
+
+The model MUST satisfy all of these (asserted in `test/muscle-specificity.test.js`):
+
+1. A group with **zero planned sets gains nothing**, under every goal (`setResponse(0) = 0`).
+2. In a deficit, a group with zero sets **loses roughly its anatomical share** of the lean loss, while a
+   trained group is spared. Lean loss is distributed by `share[g] × (1 − systemic × maintenanceProtection(sets[g]))`,
+   not by `share[g]` alone. This replaces §23's single whole-body `min(1, respW/0.7)` protection term; the
+   §23 partition itself (Forbes, `lossRateFactor`, `proteinRetentionFactor`, the 0.95 clamp) is unchanged,
+   and a uniformly trained body gets the identical answer.
+3. A group at **maintenance volume holds** rather than shrinks. Maintenance saturates at ~2-3 fractional
+   sets/week, where growth is still climbing past 20 — the Bickel/Spiering finding.
+4. **2× the sets diverges visibly** over 6-12 months, at roughly √2× the growth, and the gap widens with time.
+5. Emphasis reaches the **tape** (`series[].shape`) and the **3D body** (`series[].muscle`): a year of
+   arms-only raises arm girth and leaves thigh and calf flat; legs-only does the reverse.
+
+### 25.3 The ceiling binds per muscle, not wholesale
+
+`ceilingFactor` is evaluated at each group's **own** distance from the limit, using
+`ffmiEq[g] = ffmiOf(L0 + G[g]/share[g])` — the whole-body FFMI you would have if every muscle were as
+developed as that group is now, which is the same extrapolation `muscleAt()` shows the user. The hard guard
+is likewise per-group (`share[g] × L0 + G[g] ≤ share[g] × Lcap`); the old global rescale
+(`for (const g of GROUP_ORDER) gG[g] *= f`) is gone, because scaling every muscle by one factor is exactly
+the wholesale behaviour Bob rejected. Both are strict generalizations: with equal volume everywhere they
+reduce to the previous global formulas. Total lean still can never pass `Lcap`, and must approach it
+asymptotically (tested to the 8-year horizon).
+
+`mods.partitionShift` still rescales all groups proportionally. That is kept deliberately: it is a
+whole-body energy-partition effect with no per-muscle structure, and a proportional rescale preserves
+emphasis.
+
+### 25.4 `project()` output additions
+
+```js
+series[i].musclePct      // { chest, back, shoulders, biceps, triceps, forearms, core, glutes, quads, hamstrings, calves }
+                         //   percent growth of each group vs its own starting mass (negative = lost)
+result.muscleBaseLb      // same keys: each group's starting muscle mass in lb (the denominator)
+result.muscleGain        // [{ group, setsPerWeek, response, baseLb, gainLb, pct, roomLb, roomPct }]
+                         //   sorted most-grown first; roomLb/roomPct = distance to that group's OWN ceiling
+```
+`series[i].muscleLb` (absolute pounds) is retained unchanged. **Percent is the headline**, because absolute
+pounds hide emphasis — a hammered bicep is a small muscle — and because percent is what already drives the
+girth model and the 3D scores. `js/ui/projection.js` shows it as the **"Which muscles grow"** card
+(`#pjMuscle`), with a per-group sets/week, percent, bar and "room left".
+
+### 25.5 The nutrition lab is goal-aware
+
+Bob: *"there's a sweet spot graph there that I think doesn't change based on your goals. So that sweet spot,
+I don't know. That part maybe we just need to remove."*
+
+He was right: the band was always "where lean gain plateaus", a muscle-gain question that makes no sense
+under `cut` or `weight_loss`. `nutritionLab()` now returns `frame: 'surplus' | 'deficit'` and
+`sweetSpot: { from, to, frame, label, note }`:
+
+- **`surplus` frame** (`recomp`, `lean_bulk`, maintenance) — unchanged: `label: 'Sweet spot'`, the band runs
+  from 90 % to 97 % of the sweep's best lean gain, default sweep `[-750, +1000]`.
+- **`deficit` frame** (`cut`, `weight_loss`) — `label: 'Target rate'`, the band is the intakes whose
+  **simulated** rate of loss falls in `LOSS_BAND_PCT = [0.5, 1.0] %` of bodyweight per week (top anchored
+  on Garthe 2011: 0.7 %/wk kept lean, 1.0 %/wk lost it). The note states the rate AND the lean share of the
+  loss at each end, i.e. the rate-vs-retention trade-off. Default sweep `[-1000, +500]`, because a cutter is
+  not asking about +1000 kcal/day. An explicit `calorieRange` from the caller always wins.
+
+Every `points[]` row now also carries `lossRatePctPerWeek` and `leanShareOfLoss` so the chart and the UI can
+show the trade-off without re-simulating. `js/ui/projection.js` renames the band, the badge
+("faster/slower than the target rate") and the takeaway line accordingly, and `labData`'s cache key now
+includes the goal.
+
+### 25.6 Cardio what-if calories are compensated
+
+`cardioDeltaMin` used to pass 100 % of the added cardio's calories into energy balance. It now carries
+Careau 2021's exercise energy compensation: only ~72 % of the added exercise's **net** cost (gross minus the
+resting burn those minutes would have cost anyway — compensation is measured on ACTIVITY expenditure) reaches
+total expenditure. Three rules: **delta only** (the baseline plan's calories are already inside the formula
+TDEE and inside `adaptiveTdee`'s calibration, so discounting them would double-count), **symmetric** (removing
+cardio gives back ~72 % too), and **minutes stay real** (only calories are discounted; minutes still drive
+interference and the resting-burn offset). For Bob at a fixed intake, +240 min/week of easy cycling over 26
+weeks goes from −8.0 to −6.8 lb of fat.
+
+Separately: the resting-metabolic-rate formula `370 + 21.6 × lean kg` is **Cunningham 1991**
+(doi:10.1093/ajcn/54.6.963), not Katch-McArdle (a skinfold body-composition method). The formula is unchanged;
+the name was wrong in the code, the comments and the user-facing `assumptions` text, and is now right.
+
+### 25.7 Known gap: unit vs group granularity (not fixed here)
+
+The planner and `targets.js` plan and cap volume per **VOLUME_UNIT** (16 units, e.g. side delts separately
+from rear delts); the projection models growth per **GROUP** (11 groups), where a group's set count is the
+max over its regions rather than the sum of its units. Single-unit groups agree exactly; `chest`,
+`shoulders` and `back` read 10-33 % lower in the projection than the planner's unit totals. The projection
+therefore cannot resolve emphasis *within* a group. Fixing it means giving each VOLUME_UNIT an SMM share in
+`js/data/muscles.js` and moving the growth model to units, keeping the group rollup for display. Measured
+numbers and a second cohesion gap (`TYPICAL_SHARE` still derived from the legacy group minimums) are in
+`docs/research/growth-model.md` §14.
+
+### 25.8 Performance budgets
+
+The two projection performance tests (`test/long-horizon.test.js`, `test/nutri-model.test.js`) warm the exact
+code paths they time and assert on the **minimum of 3 samples**, not one cold reading. A single wall-clock
+sample inside `node --test test/` measures how many sibling files are competing for a core — the same work
+measured 85 ms alone and 340 ms in a full-suite run — which is what made the 260-week budget the suite's
+long-standing flake. `process.cpuUsage()` is not a substitute: it sums V8's background optimiser and GC
+threads and reads 5-8x the wall time.

@@ -153,6 +153,10 @@ input[type=range].bd-range::-moz-range-thumb { width: 28px; height: 28px; border
 .bd-presets .chip.active span { color: inherit; opacity: .85; }
 .bd-mbar { display: flex; gap: 2px; height: 12px; border-radius: 6px; overflow: hidden; }
 .bd-mbar i { display: block; height: 100%; min-width: 2px; }
+/* §11 per-muscle growth table (which muscles grow) */
+.bd-musc { padding: 6px 14px 14px; }
+.bd-musctab td, .bd-musctab th { padding-top: 3px; padding-bottom: 3px; }
+.bd-mbarc { display: block; height: 8px; border-radius: 4px; min-width: 2px; opacity: .75; }
 .bd-mleg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
 .bd-mleg > div { display: flex; flex-direction: column; min-width: 0; }
 .bd-mleg b { font-size: 18px; font-weight: 800; }

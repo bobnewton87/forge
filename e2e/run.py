@@ -2475,6 +2475,87 @@ def t_volume_cohesion(t, ctx):
           s_sets is not None and p_sets is not None and abs(s_sets - p_sets) < 0.051 and abs(s_target - want['target']) < 0.051,
           'Body > Triceps sheet > Weekly sets vs target', f"{p_sets} / {want['fmt']}", gsheet['num'])
     t.check('sets this week' in gsheet['head'], 'the sheet header quotes the same week', 'N/T sets this week', short(gsheet['head'], 140))
+@test('M1', 'Projection: per-muscle growth card + goal-aware nutrition lab (CONTRACT §11)')
+def t_muscle_specificity(t, ctx):
+    """§11: the projection must be SPECIFIC per muscle, and the lab's green band must change with the goal.
+
+    Bob: "if you do more arms or biceps, it's going to make the biceps specifically bigger. And if you
+    neglect quads, it's going to not make those bigger" / "there's a sweet spot graph there that I think
+    doesn't change based on your goals."
+    """
+    app = t.app
+    app.load(bobir(app), 'body')          # Bob's data in THIS (lite) context, like every other flow
+    e0 = len(app.errors)
+
+    # a) a muscle-gain plan, so there is growth to show
+    app.store("(store.updateProfile({ goal: 'lean_bulk' }), 1)")
+    app.go('projection', settle=900)
+    app.wait_text(r'Which muscles grow|Milestones', timeout=9000)
+    card = app.text('#pjMuscle') if app.has('#pjMuscle') else ''
+    t.sub('M1a', 'Projection shows a per-muscle growth card', bool(card) and bool(re.search(r'Sets/wk', card, re.I)),
+          'Projection → "Which muscles grow"', 'a row per muscle group with sets/week and growth', short(card, 200))
+    t.sub('M1b', 'Growth is shown as a PERCENT of each muscle, not absolute pounds',
+          bool(re.search(r'[+\u2212-]\s?\d+(\.\d+)?%', card)) and not re.search(r'\d+(\.\d+)?\s*lb', card or 'x'),
+          'the per-muscle card body', 'percentages (what shows in the mirror/on a tape), no lb column', short(card, 200))
+    t.sub('M1c', 'The card names the per-muscle ceiling ("room left")', bool(re.search(r'[Rr]oom left', card)) and bool(re.search(r'own share of your genetic ceiling', card)),
+          'the per-muscle card footnote', 'a per-group room-left column explained as that muscle\'s own ceiling', short(card, 200))
+
+    # b) the engine really is specific: arms-only must grow arms and not quads
+    spec = app.page.evaluate("""async () => { try {
+        const P = await import('/js/engine/projection.js'); const { store } = await import('/js/store.js');
+        const profile = { ...store.getProfile(), goal: 'lean_bulk', nutrition: { mode: 'off' } };
+        const base = { date: new Date().toISOString().slice(0, 10), weightLb: 164, heightIn: 69, age: 39, sex: 'male',
+          bodyFatPct: 23, measurements: { arm: 13.4, thigh: 22, waist: 33.5, chest: 39, calf: 14.5, neck: 15, shoulders: 47, hips: 37.5, forearm: 11 },
+          missing: [], missingInfo: [] };
+        const d0 = new Date(); const ds = n => { const d = new Date(d0); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+        const lift = (exId, n) => ({ kind: 'lift', exId, target: { sets: n, repMin: 8, repMax: 12, reps: 10 },
+          sets: Array.from({ length: n }, () => ({ w: 30, r: null, done: false })) });
+        const mk = ex => { const out = []; for (let w = 0; w < 4; w++) for (const off of [0, 2, 4])
+          out.push({ id: 'x' + w + off, date: ds(7 * w + off), status: 'planned', minutes: 45, plan: { auto: true, kind: 'lift' }, blocks: ex.map(([i, n]) => lift(i, n)) });
+          return out; };
+        const arms = P.project({ baseline: base, profile, sessions: mk([['db_curl', 5], ['tri_pushdown', 5]]), weeks: 52, adherence: 1, repeatPlan: true, intake: { surplus: 0, proteinGPerLb: 1 } });
+        const legs = P.project({ baseline: base, profile, sessions: mk([['leg_press', 5], ['db_rdl', 5]]), weeks: 52, adherence: 1, repeatPlan: true, intake: { surplus: 0, proteinGPerLb: 1 } });
+        const e = r => r.series[r.series.length - 1];
+        return { armsBi: e(arms).musclePct.biceps, armsQ: e(arms).musclePct.quads, armGirth: e(arms).shape.arm - arms.series[0].shape.arm,
+                 armThigh: e(arms).shape.thigh - arms.series[0].shape.thigh,
+                 legsQ: e(legs).musclePct.quads, legsBi: e(legs).musclePct.biceps, legThigh: e(legs).shape.thigh - legs.series[0].shape.thigh };
+      } catch (e) { return { err: e.message.slice(0, 120) }; } }""")
+    # A fixed intake drifts into a small deficit as weight is gained (maintenance rises with lean mass), so
+    # an untrained group gives up a sliver rather than sitting at exactly 0. "Untrained" here means within
+    # 2 %, against the trained group's 5 %+, and at least 8x smaller.
+    small = lambda v: abs(v if v is not None else 9) < 2
+    t.sub('M1d', 'Arms-only grows arms and leaves quads alone; legs-only the reverse',
+          (spec.get('armsBi') or 0) > 5 and small(spec.get('armsQ')) and (spec.get('legsQ') or 0) > 5 and small(spec.get('legsBi'))
+          and (spec.get('armsBi') or 0) > 8 * abs(spec.get('armsQ') or 0.01) and (spec.get('legsQ') or 0) > 8 * abs(spec.get('legsBi') or 0.01),
+          'project() with an arms-only vs a legs-only plan, 12 months', 'the trained group grows, the untrained one does not',
+          json.dumps(spec)[:200])
+    t.sub('M1e', 'And it reaches the projected tape measurements',
+          (spec.get('armGirth') or 0) > 0.3 and (spec.get('armThigh') or 9) < 0.15 and (spec.get('legThigh') or 0) > 0.5,
+          'series[].shape from the same two runs', 'arms-only → arm girth up, thigh flat; legs-only → thigh up',
+          json.dumps(spec)[:200])
+
+    # c) the lab band is a muscle-gain sweet spot under a bulk...
+    lab = app.text('#pjLab') if app.has('#pjLab') else ''
+    t.sub('M1f', 'Under a muscle-gain goal the lab band is the surplus sweet spot', bool(re.search(r'[Ss]weet spot', lab)),
+          'Projection → Nutrition Lab under lean_bulk', 'the band is labelled "sweet spot"', short(lab, 200))
+
+    # ...and a rate band under a fat-loss goal, which is the thing Bob flagged
+    app.store("(store.updateProfile({ goal: 'cut' }), 1)")
+    app.go('body', settle=400)
+    app.go('projection', settle=1100)
+    app.wait_text(r'Nutrition Lab', timeout=9000)
+    lab2 = app.text('#pjLab') if app.has('#pjLab') else ''
+    # The band must be LABELLED a rate band everywhere it is named (badge, chart, legend). The phrase
+    # "not a muscle-gain sweet spot" is allowed — that sentence is the explanation of the change.
+    t.sub('M1g', 'Under a fat-loss goal the band becomes a rate band, not a sweet spot',
+          bool(re.search(r'[Tt]arget rate', lab2)) and not re.search(r'in the sweet spot|past the sweet spot|below the sweet spot|Sweet spot [\u2212+-]', lab2 or 'in the sweet spot'),
+          'Projection → Nutrition Lab under cut', 'the band is labelled "target rate" and no sweet spot is offered', short(lab2, 240))
+    t.sub('M1h', 'And it shows the deficit trade-off: rate against lean retention',
+          bool(re.search(r'% of bodyweight a week', lab2)) and bool(re.search(r'lean', lab2, re.I)) and bool(re.search(r'Garthe 2011', lab2)),
+          'the rate band note', 'the %BW/week rate, the lean cost, and the evidence named', short(lab2, 240))
+
+    errs = [f'[{k}] {short(x, 90)}' for k, x, r in app.errors[e0:]]
+    t.sub('M1i', 'No page errors through the per-muscle / lab flow', not errs, 'the whole M1 flow', 'no console/page errors', '; '.join(errs[:3]))
 
 
 @test('E1', 'No console/page errors during flows')
