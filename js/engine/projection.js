@@ -108,16 +108,13 @@ const LB_PER_KG = 2.20462;
 const IN_PER_M = 39.3701;
 const KCAL_PER_LB_FAT = 3500;     // adipose tissue, first approximation
 // ---- two values this module shares with bodycomp.js -----------------------------------------------------
-// Both are read from bodycomp when it exports them and fall back to the literal otherwise, so there is one
-// source of truth without this (pre-merge) base hard-failing on a named import that does not exist yet.
-// TODO on merge: bodycomp.js now exports bmrFromLean / ENERGY_COMPENSATION on master, so these two lines
-// collapse to plain named imports and the fallbacks come out.
+// Both come from bodycomp.js, which owns them (CONTRACT §18) — no local copy.
 //
 // RESTING METABOLIC RATE from lean mass. The formula is right but Forge had the wrong name on it for months:
 // 370 + 21.6 × lean kg is CUNNINGHAM 1991 (Am J Clin Nutr 54:963, doi:10.1093/ajcn/54.6.963), a reanalysis
 // of 223 subjects regressing RMR on fat-free mass. Katch-McArdle is a body-composition (skinfold) method,
 // not an RMR equation. Fixed in the code, the comments and the user-facing assumptions text.
-const BMR_FROM_LEAN = typeof BC.bmrFromLean === 'function' ? BC.bmrFromLean : L => 370 + 21.6 * (L / LB_PER_KG);
+const BMR_FROM_LEAN = BC.bmrFromLean;
 // EXERCISE ENERGY COMPENSATION. Added exercise does not add its full energy cost to the daily burn: the body
 // claws part of it back (less spontaneous movement, lower resting expenditure). Careau et al. 2021 (Curr Biol
 // 31:4659, doi:10.1016/j.cub.2021.08.016) analysed doubly-labelled-water data on n = 1,754 adults and found
@@ -126,7 +123,7 @@ const BMR_FROM_LEAN = typeof BC.bmrFromLean === 'function' ? BC.bmrFromLean : L 
 // Applied ONLY to the cardio what-if DELTA, symmetrically for negative deltas, and never to the baseline plan
 // — the plan's calories are already inside the TDEE calibration (adaptiveTdee) and the formula estimate, so
 // discounting them here would double-count the compensation that the calibration has already absorbed.
-const EX_KEEP = Number.isFinite(Number(BC.ENERGY_COMPENSATION)) ? 1 - Number(BC.ENERGY_COMPENSATION) : 0.72;
+const EX_KEEP = 1 - BC.ENERGY_COMPENSATION;
 const KCAL_PER_LB_LEAN = 1250;    // energy stored in new lean tissue (~800) + cost of synthesising it
 const KCAL_LEAN_RELEASED = 800;   // energy released when lean tissue is lost
 const DAYS_PER_MONTH = 30.44;

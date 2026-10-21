@@ -40,7 +40,7 @@
 //   `capacity` ({ cardio, total, finishers, cardioDays, flex }) and `warnings`.
 // CONTRACT-NOTE: nutrition.phases entries: { label, start:'YYYY-MM-DD', end:'YYYY-MM-DD'|null,
 //   surplus:number|null, calories:number|null } sorted by start (max 12). Consumers may ignore them.
-import { CARDIO, cardioOptions, estimateCalories } from '../data/cardio.js';
+import { CARDIO, cardioOptions, estimateCalories, estimateNetCalories } from '../data/cardio.js';
 import { DEFAULT_LOCATIONS, expandEquipment } from '../data/equipment.js';
 import { sessionVolume } from './recovery.js';
 import { GROUPS, GROUP_ORDER, REGIONS, VOLUME_UNITS, UNIT_ORDER, MAX_WHY, COUNTED_UNITS, TARGETED_REGIONS, isCountedUnit } from '../data/muscles.js';
@@ -124,17 +124,16 @@ const rateTier = r => (r <= 0.4 ? 'gentle' : r <= 0.6 ? 'slow' : r <= 0.85 ? 'st
 // share is exactly (METs - 1) / METs within the same model that produced the gross number - no second
 // metabolic model, nothing to drift. The MET value is read back through the public API rather than
 // duplicated here, so a change in cardio.js flows straight through.
-// CONTRACT-NOTE: swap this for bodycomp.estimateNetCalories() once that export lands, and keep ONE
-// net-calorie function (CONTRACT §18). Careau 2021's ~0.72 exercise-compensation factor
-// (doi:10.1016/j.cub.2021.08.016) is deliberately NOT applied here: the projection applies it to the
-// cardio delta on its side, and applying it in both places would compound it.
+// ONE net-calorie function (CONTRACT §18): this delegates to cardio.estimateNetCalories, which is the
+// canonical implementation (it owns the MET table, so the resting MET it subtracts is the same one the
+// gross figure was built from). A second local copy here drifted from it by ~0.3% before this change.
+// Careau 2021's ~0.72 exercise-compensation factor (doi:10.1016/j.cub.2021.08.016) is deliberately NOT
+// applied here: projection.js applies it to the cardio what-if DELTA, and applying it in both places
+// would compound to ~0.52.
 export function netKcalPerMin(modality = 'bike', intensity = 'easy', weightLb = 165) {
   const W = Number(weightLb) > 0 ? Number(weightLb) : 165;
-  const gross = estimateCalories(modality, 60, intensity, W);
-  if (!(gross > 0)) return 0;
-  const mets = gross / (W / 2.20462);                 // kcal/hr / kg = METs
-  if (!(mets > 1)) return 0;                          // at or below resting: no net cost
-  return gross / 60 * (mets - 1) / mets;
+  const net = estimateNetCalories(modality, 60, intensity, W);
+  return net > 0 ? net / 60 : 0;
 }
 
 // ---- §23 lean protection ----------------------------------------------------------------------

@@ -1,6 +1,6 @@
 // Network-first for app code and schedule data (so updates land without cache-busting),
 // falling back to cache when offline.
-const CACHE = 'forge-v15';
+const CACHE = 'forge-v16';
 const CORE = ['./', './index.html', './manifest.json', './css/base.css', './css/train.css', './css/plan.css', './css/body2.css', './css/body3d.css', './css/supp.css', './css/accounts.css', './js/main.js', './icons/icon-192.png', './data/crunch-schedule.json', './assets/body/body.json', './assets/body/body.bin'];
 
 self.addEventListener('install', e => {
