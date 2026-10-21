@@ -65,6 +65,12 @@ const LEN_KEYS = { lenUpperArmL: 'upperArmL', lenUpperArmR: 'upperArmR', lenFore
 if (qs.has('asym')) Object.assign(state.shape, { lengths: { upperArmL: 13.2, upperArmR: 14.6, forearmL: 10.4, forearmR: 11.2, thighL: 16.4, thighR: 17.6, shankL: 16.2, shankR: 16.8 } });
 for (const [q, k] of Object.entries(LEN_KEYS)) if (qs.has(q)) (state.shape.lengths ||= {})[k] = +qs.get(q);
 if (qs.has('hideui')) document.documentElement.classList.add('hideui');
+// ?light=1 — a light-theme stage, to check that the studio rig and backdrop follow the theme (the app is dark today)
+if (qs.has('light')) {
+  const st = document.createElement('style');
+  st.textContent = ':root{--bg:#f4f4f7;--card:#ffffff;--card2:#ececeF;--line:#d8d8e0;--text:#15151a;--muted:#6b6b78}html{background:#f4f4f7;color-scheme:light}';
+  document.head.appendChild(st);
+}
 if (qs.has('w')) document.querySelector('.wrap').style.cssText = `width:${+qs.get('w')}px;max-width:${+qs.get('w')}px;margin:0`;   // headless shots: pin the stage width
 
 const ctl = document.getElementById('ctl');
