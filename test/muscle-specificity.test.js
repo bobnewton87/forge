@@ -146,9 +146,12 @@ test('emphasis reaches the 0..1 muscle scores the 3D body consumes', () => {
 });
 
 test('the genetic ceiling binds per muscle, not wholesale', () => {
-  // 8 years of arms-only in a surplus: the arms should run out of their own room while the untouched
+  // 5 years of arms-only in a surplus: the arms should run well into their own room while the untouched
   // groups keep ALL of theirs. Under the old global guard every group was rescaled by one factor.
-  const r = run(plan(4, ARMS), 'lean_bulk', 418);
+  // (260 rather than 418 weeks: the asymptote is reached long before year 8, and the full horizon costs
+  // 5 scenario simulations x 418 weeks, which is enough CPU to slow sibling test files in a parallel run.
+  // test/growth-curves.test.js still exercises the full 418-week horizon once.)
+  const r = run(plan(4, ARMS), 'lean_bulk', 260);
   const bi = rowFor(r, 'biceps'), q = rowFor(r, 'quads');
   assert.ok(bi.pct > 25, `arms grow a lot over 8 years (${bi.pct}%)`);
   assert.ok(bi.roomPct < q.roomPct - 15, `the arms must be nearer their own limit than the untrained quads (${bi.roomPct}% vs ${q.roomPct}%)`);

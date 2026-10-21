@@ -1682,6 +1682,8 @@ Each response curve in `projection.js` carries, in a comment above it, either a 
 | `interferenceFactor(min)` | free to **250** effective min/wk, then −2.5 %/100 min, cap **−12 %** | Schumann 2022, doi:10.1007/s40279-021-01587-7 (hypertrophy SMD −0.01, no modality effect); Wilson 2012, doi:10.1519/JSC.0b013e31823a3e2d |
 | `bfSurplusFactor(bf)` | ±1 %/body-fat point, clamp [0.88, 1.06] | **direction** Forbes 1987/2000, Hall 2007; slope/pivot ASSUMPTION |
 | `adaptation(bal)` | TEF 10 % + NEAT 42 % of a surplus; AT 10 % + 10 kcal/lb lost of a deficit | Levine 1999, doi:10.1126/science.283.5399.212 (≈531 of 1,000 kcal/day dissipated) |
+| `BMR_FROM_LEAN(lean)` | `370 + 21.6 × lean kg` | **Cunningham 1991, doi:10.1093/ajcn/54.6.963** — the formula was always right, the name on it was not (Katch-McArdle is a skinfold body-composition method, not an RMR equation). Corrected in the code and in the user-facing assumptions text. Reads `bodycomp.bmrFromLean` when exported. |
+| `EX_KEEP` = 0.72 | exercise energy compensation on the cardio **delta** | Careau 2021, doi:10.1016/j.cub.2021.08.016 (n = 1,754, ≈28 % compensation). Applied to the delta's NET cost (gross − the resting burn those minutes would have cost), symmetric for negative deltas, **never** to the baseline plan — those calories are already inside the formula TDEE and `adaptiveTdee`'s calibration. Minutes are not discounted. |
 
 `setResponse` consumes **fractional** sets — indirect work counted at the exercise's own muscle weight,
 which is what `recovery.sessionVolume` already produces and what Pelland found to be the best-supported
@@ -1754,7 +1756,22 @@ show the trade-off without re-simulating. `js/ui/projection.js` renames the band
 ("faster/slower than the target rate") and the takeaway line accordingly, and `labData`'s cache key now
 includes the goal.
 
-### 25.6 Known gap: unit vs group granularity (not fixed here)
+### 25.6 Cardio what-if calories are compensated
+
+`cardioDeltaMin` used to pass 100 % of the added cardio's calories into energy balance. It now carries
+Careau 2021's exercise energy compensation: only ~72 % of the added exercise's **net** cost (gross minus the
+resting burn those minutes would have cost anyway — compensation is measured on ACTIVITY expenditure) reaches
+total expenditure. Three rules: **delta only** (the baseline plan's calories are already inside the formula
+TDEE and inside `adaptiveTdee`'s calibration, so discounting them would double-count), **symmetric** (removing
+cardio gives back ~72 % too), and **minutes stay real** (only calories are discounted; minutes still drive
+interference and the resting-burn offset). For Bob at a fixed intake, +240 min/week of easy cycling over 26
+weeks goes from −8.0 to −6.8 lb of fat.
+
+Separately: the resting-metabolic-rate formula `370 + 21.6 × lean kg` is **Cunningham 1991**
+(doi:10.1093/ajcn/54.6.963), not Katch-McArdle (a skinfold body-composition method). The formula is unchanged;
+the name was wrong in the code, the comments and the user-facing `assumptions` text, and is now right.
+
+### 25.7 Known gap: unit vs group granularity (not fixed here)
 
 The planner and `targets.js` plan and cap volume per **VOLUME_UNIT** (16 units, e.g. side delts separately
 from rear delts); the projection models growth per **GROUP** (11 groups), where a group's set count is the
@@ -1764,3 +1781,12 @@ therefore cannot resolve emphasis *within* a group. Fixing it means giving each 
 `js/data/muscles.js` and moving the growth model to units, keeping the group rollup for display. Measured
 numbers and a second cohesion gap (`TYPICAL_SHARE` still derived from the legacy group minimums) are in
 `docs/research/growth-model.md` §14.
+
+### 25.8 Performance budgets
+
+The two projection performance tests (`test/long-horizon.test.js`, `test/nutri-model.test.js`) warm the exact
+code paths they time and assert on the **minimum of 3 samples**, not one cold reading. A single wall-clock
+sample inside `node --test test/` measures how many sibling files are competing for a core — the same work
+measured 85 ms alone and 340 ms in a full-suite run — which is what made the 260-week budget the suite's
+long-standing flake. `process.cpuUsage()` is not a substitute: it sums V8's background optimiser and GC
+threads and reads 5-8x the wall time.

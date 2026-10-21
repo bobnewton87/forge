@@ -3,7 +3,8 @@
 // (calories → lean vs fat), trend charts, projected measurements, milestones and the fine print.
 // CONTRACT-NOTE: exports lineChart / bindCharts / f1 / safe helpers reused by measure.js and body.js,
 //   plus mount3D / destroy3D (one live WebGL instance per key, auto-destroyed when its host leaves the
-//   DOM), macros() (macrosFor with a local fallback), whatIfDefaults(), labData() and estMuscle().
+//   DOM), macros() (a thin adapter over engine/nutrition.macrosFor; returns null when it cannot compute),
+//   whatIfDefaults(), labData() and estMuscle().
 // CONTRACT-NOTE: projection controls persist in store.kv('projection'). This screen sets
 //   autoRerender = false and updates its own result regions in place, so dragging a slider never
 //   tears down the 3D canvas.
@@ -37,6 +38,10 @@ import('./targets.js').then(m => { TGU = m; }).catch(() => {});
 const targetsOf = (profile, sessions) => (TG && typeof TG.resolveTargets === 'function' ? safe(() => TG.resolveTargets(profile, { sessions }), null) : null);
 
 export const safe = (fn, fb) => { try { const v = fn(); return v == null ? fb : v; } catch (e) { console.error(e); return fb; } };
+// safe() substitutes only on null or a throw, so a truthy NON-array (a corrupted localStorage blob, a
+// mid-migration shape) sails through and blows up later at the first .filter/.map. Everything this screen
+// reads as a list goes through arr() instead, which guarantees an array.
+const arr = fn => { const v = safe(fn, null); return Array.isArray(v) ? v : []; };
 export const f1 = n => { n = Number(n); if (!isFinite(n)) return '—'; return Math.abs(n - Math.round(n)) < 0.05 ? String(Math.round(n)) : n.toFixed(1); };
 const sgn = n => (n > 0.049 ? '+' : n < -0.049 ? '−' : '±') + f1(Math.abs(n));
 const sgnK = n => (n > 0 ? '+' : n < 0 ? '−' : '±') + Math.abs(Math.round(n)).toLocaleString();
@@ -113,23 +118,21 @@ export function opts3D(p, heightIn, extra = {}) {
   return { shape: shapeOf(p, heightIn), muscle: p?.muscle || estMuscle(p, heightIn, extra.sex), bodyFatPct: p?.bodyFatPct ?? null, ...extra };
 }
 
-// ---------------- macros (engine macrosFor with fallback) ----------------
+// ---------------- macros ----------------
+// Thin adapter over engine/nutrition.macrosFor. There used to be a local re-implementation of the macro
+// split here as a "fallback"; it was unreachable (macrosFor has existed since Phase 3) and its thresholds had
+// drifted away from the engine's (0.7/1.15 g/lb and 120 g of carbs against the engine's 1.3 and 100), so the
+// two could disagree about the same plate. Deleted: one source of truth for macros and their warnings.
+// If macrosFor ever throws or returns something unusable, this returns null and every caller must handle it.
 export function macros(profile, { calories, bodyweight, proteinGPerLb, fatPct }) {
   const prof = { ...profile, nutrition: { ...(profile?.nutrition || {}), proteinGPerLb, fatPct } };
-  if (typeof NU.macrosFor === 'function') {
-    const r = safe(() => NU.macrosFor(prof, { calories, bodyweight }), null);
-    if (r && isFinite(r.protein)) return { ...r, warnings: r.warnings || [] };
-  }
-  const bw = Number(bodyweight) || 165, cal = Number(calories) || 0;
-  const protein = Math.round(bw * proteinGPerLb), fat = Math.round(cal * fatPct / 100 / 9);
-  const carbs = Math.max(0, Math.round((cal - protein * 4 - fat * 9) / 4));
-  const tot = protein * 4 + carbs * 4 + fat * 9 || 1;
-  const warnings = [];
-  if (proteinGPerLb < 0.7) warnings.push('Protein under ~0.7 g/lb measurably slows muscle gain.');
-  if (proteinGPerLb > 1.15) warnings.push('Above ~1 g/lb there is no extra muscle benefit (Morton 2018). Fine if you like it, but those calories could be carbs.');
-  if (fatPct < 20) warnings.push('Fat under ~20% of calories can lower testosterone and feels rough. 20–35% is the sweet spot.');
-  if (carbs < 120) warnings.push('Carbs are very low. That makes hard lifting and cardio feel worse.');
-  return { calories: cal, protein, carbs, fat, proteinPct: Math.round(protein * 400 / tot), carbPct: Math.round(carbs * 400 / tot), fatPct: Math.round(fat * 900 / tot), warnings };
+  const r = typeof NU.macrosFor === 'function' ? safe(() => NU.macrosFor(prof, { calories, bodyweight }), null) : null;
+  return r && isFinite(r.protein) ? { ...r, warnings: Array.isArray(r.warnings) ? r.warnings : [] } : null;
+}
+// macros() returns null when the engine cannot compute a split (bad input, or mid-edit). Render nothing
+// rather than throwing on m.protein: the sliders above still work and the projection itself is unaffected.
+function macrosHTML(m) {
+  return m ? macroBar(m) + warnList(m.warnings) : '<p class="tiny muted">Macro split unavailable for these numbers.</p>';
 }
 export function macroBar(m) {
   const p = m.protein * 4, c = m.carbs * 4, f = m.fat * 9, t = p + c + f || 1;
@@ -228,7 +231,7 @@ const nearest = (svg, ev, pts) => {
 export function bindCharts(root) {
   root.querySelectorAll('svg.bd-chart:not(.mini):not([data-bound])').forEach(svg => {
     svg.dataset.bound = '1';
-    const pts = safe(() => JSON.parse(svg.dataset.pts || '[]'), []); const tip = svg.querySelector('.bd-tip-g'); if (!tip || !pts.length) return;
+    const pts = arr(() => JSON.parse(svg.dataset.pts || '[]')); const tip = svg.querySelector('.bd-tip-g'); if (!tip || !pts.length) return;
     const unit = svg.dataset.unit || '';
     const show = ev => {
       const best = nearest(svg, ev, pts);
@@ -306,10 +309,10 @@ const newEngine = () => typeof PJ.nutritionLab === 'function';
 
 function inputs(store) {
   const profile = store.getProfile();
-  const bodyLog = safe(() => store.getBodyLog(), []);
-  const measurements = safe(() => store.getMeasurements(), []);
-  const sessions = safe(() => store.getSessions(), []);
-  const foodLog = safe(() => store.getFoodLog(), []);
+  const bodyLog = arr(() => store.getBodyLog());
+  const measurements = arr(() => store.getMeasurements());
+  const sessions = arr(() => store.getSessions());
+  const foodLog = arr(() => store.getFoodLog());
   const now = new Date();
   const b = safe(() => BC.baseline({ profile, bodyLog, measurements, now, foodLog }), null);
   return { profile, bodyLog, measurements, sessions, foodLog, now, b, targets: targetsOf(profile, sessions) };
@@ -550,7 +553,7 @@ function controls(D, o) {
       <div class="row between"><div class="label">Fat</div><div class="num bold" id="pjFatV">${D.fatPct}% of kcal</div></div>
       <input type="range" class="bd-range" id="pjFat" min="15" max="40" step="1" value="${D.fatPct}" style="--pct:${pctOf(D.fatPct, 15, 40)}%" aria-label="Fat percent of calories">
       <div class="tiny muted" style="margin:-2px 0 8px">Carbs fill the rest.</div>
-      <div id="pjMacros">${macroBar(m)}${warnList(m.warnings)}</div>
+      <div id="pjMacros">${macrosHTML(m)}</div>
     </div>
 
     <div class="bd-grp">
@@ -1030,7 +1033,10 @@ function datedPhases(spec) {
 export function bind(root, ctx, params = {}) {
   const st = ctx.store;
   root.querySelectorAll('[data-nav]').forEach(b => b.onclick = () => ctx.nav(b.dataset.nav));
-  if (!cur) { destroy3D('proj'); return; }
+  // render() sets `cur` BEFORE it finishes building its template, so a throw halfway through leaves a
+  // perfectly valid `cur` next to a DOM that was never written — and then every $('#pj…') below is null.
+  // Require both: the state AND the scaffolding the rest of this function reaches for.
+  if (!cur || !cur.D?.b || !root.querySelector('#pjStage')) { destroy3D('proj'); return; }
   let o = cur.o;
   const D0 = cur.D;
   const H = D0.b.heightIn || 69;
@@ -1124,7 +1130,8 @@ export function bind(root, ctx, params = {}) {
   const liveMacros = () => {
     const D = cur.D;
     const m = macros(D.profile, { calories: o.kcal ?? D.kcal, bodyweight: D.b.weightLb, proteinGPerLb: o.pg ?? D.pg, fatPct: o.fatPct ?? D.fatPct });
-    $('#pjMacros').innerHTML = macroBar(m) + warnList(m.warnings);
+    const host = $('#pjMacros');
+    if (host) host.innerHTML = macrosHTML(m);
   };
 
   // horizon slider + chips
@@ -1276,7 +1283,7 @@ export function bind(root, ctx, params = {}) {
     bindCharts(out);
     const lab = out.querySelector('svg.bd-lab');
     if (lab) lab.addEventListener('click', ev => {
-      const pts = safe(() => JSON.parse(lab.dataset.pts || '[]'), []); if (!pts.length) return;
+      const pts = arr(() => JSON.parse(lab.dataset.pts || '[]')); if (!pts.length) return;
       const best = nearest(lab, ev, pts); if (best[3]) setKcal(best[3]);
     });
   };

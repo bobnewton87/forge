@@ -1,7 +1,7 @@
 // Body projection: a weekly energy-partitioning simulation of lean and fat mass. Pure, DOM-free
 // (CONTRACT §13, §15, §17).
 //
-// Model in one paragraph: each simulated week we recompute maintenance (Katch-McArdle BMR on the
+// Model in one paragraph: each simulated week we recompute maintenance (Cunningham BMR on the
 // current lean mass × activity, plus exercise calories), compare it with intake, and let the body
 // adapt (extra food partly burned off by digestion + fidgeting/NEAT, a deficit partly offset by
 // adaptive thermogenesis). Muscle growth has a CEILING, computed PER MUSCLE GROUP, set by training age ×
@@ -97,6 +97,7 @@ import { sessionVolume } from './recovery.js';
 import { dailyTargets, macrosFor, adaptiveTdee } from './nutrition.js';
 import { lossPlan, LOSS_RATES, DEFAULT_LOSS_RATE } from './targets.js';
 import { _sessionDetail, NEAT_FACTORS, tdee as formulaTdee } from './bodycomp.js';
+import * as BC from './bodycomp.js';
 import * as MET from './metabolic.js';
 import { GROUPS, GROUP_ORDER } from '../data/muscles.js';
 import { estimateCalories, CARDIO } from '../data/cardio.js';
@@ -106,6 +107,26 @@ import { ds, parseDs, addDays, daysBetween, clamp } from '../util.js';
 const LB_PER_KG = 2.20462;
 const IN_PER_M = 39.3701;
 const KCAL_PER_LB_FAT = 3500;     // adipose tissue, first approximation
+// ---- two values this module shares with bodycomp.js -----------------------------------------------------
+// Both are read from bodycomp when it exports them and fall back to the literal otherwise, so there is one
+// source of truth without this (pre-merge) base hard-failing on a named import that does not exist yet.
+// TODO on merge: bodycomp.js now exports bmrFromLean / ENERGY_COMPENSATION on master, so these two lines
+// collapse to plain named imports and the fallbacks come out.
+//
+// RESTING METABOLIC RATE from lean mass. The formula is right but Forge had the wrong name on it for months:
+// 370 + 21.6 × lean kg is CUNNINGHAM 1991 (Am J Clin Nutr 54:963, doi:10.1093/ajcn/54.6.963), a reanalysis
+// of 223 subjects regressing RMR on fat-free mass. Katch-McArdle is a body-composition (skinfold) method,
+// not an RMR equation. Fixed in the code, the comments and the user-facing assumptions text.
+const BMR_FROM_LEAN = typeof BC.bmrFromLean === 'function' ? BC.bmrFromLean : L => 370 + 21.6 * (L / LB_PER_KG);
+// EXERCISE ENERGY COMPENSATION. Added exercise does not add its full energy cost to the daily burn: the body
+// claws part of it back (less spontaneous movement, lower resting expenditure). Careau et al. 2021 (Curr Biol
+// 31:4659, doi:10.1016/j.cub.2021.08.016) analysed doubly-labelled-water data on n = 1,754 adults and found
+// activity energy expenditure is compensated by roughly 28 %, so only ~72 % of added exercise energy shows up
+// in total expenditure (compensation is stronger in people with more fat mass).
+// Applied ONLY to the cardio what-if DELTA, symmetrically for negative deltas, and never to the baseline plan
+// — the plan's calories are already inside the TDEE calibration (adaptiveTdee) and the formula estimate, so
+// discounting them here would double-count the compensation that the calibration has already absorbed.
+const EX_KEEP = Number.isFinite(Number(BC.ENERGY_COMPENSATION)) ? 1 - Number(BC.ENERGY_COMPENSATION) : 0.72;
 const KCAL_PER_LB_LEAN = 1250;    // energy stored in new lean tissue (~800) + cost of synthesising it
 const KCAL_LEAN_RELEASED = 800;   // energy released when lean tissue is lost
 const DAYS_PER_MONTH = 30.44;
@@ -737,6 +758,10 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   // Weekly drivers (+ the cardio delta).
   const cdKcalPerMin = estimateCalories(cdMod, 60, cdInt, W0) / 60;
   const cdEqPerMin = (IMPACT_W[CARDIO[cdMod]?.impact] ?? 1) * INTENSITY_W[cdInt];
+  // Resting burn per minute at the starting body, so the cardio delta can be compensated on its NET energy
+  // cost (what Careau 2021 actually measured) rather than its gross calories. exNetPerDay below subtracts
+  // the full resting burn over the added minutes, so discounting the gross alone would over-discount.
+  const restPerMin0 = BMR_FROM_LEAN(L0) * (1 + neatFactor) / 1440;
   let maxDaily = null;
   for (const d of daily.keys()) if (!maxDaily || d > maxDaily) maxDaily = d;
   const realism = progressionRealism === true ? 0.1 : clamp(numOr(progressionRealism, 0), 0, 0.5);
@@ -775,8 +800,18 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
       const delta = Math.max(cdMin, -wk.cardioMin);
       const perMin = delta < 0 && wk.cardioMin > 0 && wk.cardioKcal > 0 ? wk.cardioKcal / wk.cardioMin : cdKcalPerMin;
       const eqPerMin = delta < 0 && wk.cardioMin > 0 ? wk.eqMin / wk.cardioMin : cdEqPerMin;
+      // EX_KEEP (Careau 2021): only ~72 % of the energy of ADDED exercise reaches total expenditure, because
+      // the body compensates with less spontaneous movement and a lower resting burn. What Careau measured is
+      // ACTIVITY energy expenditure — total minus basal — so the discount belongs on the NET cost of the
+      // delta, not on its gross calories: subtract (1 − EX_KEEP) of (gross − the resting burn those minutes
+      // would have cost anyway). Symmetric, so removing cardio gives back only ~72 % too.
+      // NEVER applied to the baseline plan: those calories are already inside the formula TDEE and inside
+      // adaptiveTdee's calibration against the real weight trend, which has absorbed the compensation
+      // already. Minutes stay real (they drive interference and the resting-burn offset).
+      const netPerMin = Math.max(0, perMin - restPerMin0);
+      const kDelta = (perMin - (1 - EX_KEEP) * netPerMin) * delta;
       wk.cardioMin += delta; wk.minutes = Math.max(0, wk.minutes + delta);
-      wk.kcal = Math.max(0, wk.kcal + perMin * delta); wk.cardioKcal = Math.max(0, wk.cardioKcal + perMin * delta);
+      wk.kcal = Math.max(0, wk.kcal + kDelta); wk.cardioKcal = Math.max(0, wk.cardioKcal + kDelta);
       wk.eqMin = Math.max(0, wk.eqMin + eqPerMin * delta);
     }
     wk.liftDays = lD; wk.cardioDays = cD; wk.bothDays = bD;
@@ -791,7 +826,7 @@ function prepare({ baseline: b, profile = {}, sessions = [], weeks = 12, now = n
   const smm0 = L0 * smmFrac;    // starting skeletal muscle (lb), for relative per-group growth
 
   // ---------------- energy helpers
-  const bmrOf = L => 370 + 21.6 * (L / LB_PER_KG);                     // Katch-McArdle on current lean mass
+  const bmrOf = BMR_FROM_LEAN;                                         // Cunningham 1991 on current lean mass
   const restPerMinOf = L => bmrOf(L) * (1 + neatFactor) / 1440;
   const exNetPerDay = (wk, Wt, L) => Math.max(0, wk.kcal * (Wt / W0) - restPerMinOf(L) * wk.minutes) / 7;
   const avgEx = weekDrivers.slice(0, 12).reduce((a, wk) => a + exNetPerDay(wk, W0, L0), 0) / 12;
@@ -1040,7 +1075,7 @@ function simulate(ctx, opts = {}) {
     const Wt = L + F;
     const mods = ctx.modsWeek(k, prevBal < 0);
     const eShift = energyShift ? energyShift * (ENERGY_ERR_RESID + (1 - ENERGY_ERR_RESID) * Math.exp(-k / ENERGY_ERR_TAU)) : 0;
-    // Maintenance at today's body: Katch-McArdle on lean + fat tissue's own cost + daily movement scaled by weight
+    // Maintenance at today's body: Cunningham on lean + fat tissue's own cost + daily movement scaled by weight
     // + exercise (scaled by weight) + calibration + stack − age drift. Equals the old BMR × (1 + NEAT) at week 0.
     const M = bmrOf(L) + gammaFatLb * (F - F0) + PA0 * (Wt / W0) + exNetPerDay(wk, Wt, L) * sAdh + calib.offset + mods.tdeeDelta - ctx.rmrAge[k];
     const bfNow = 100 * F / Wt;
@@ -1532,7 +1567,7 @@ export function project(args = {}) {
   const spreadText = sb.spread != null && sb.spread > 3 ? ` Your different body-fat estimates disagree by ${sb.spread} points, so the true start could be anywhere in ${sb.range.low}-${sb.range.high}%.` : '';
   assumptions.push(`These are estimates, not predictions. People respond very differently (genetics, sleep, stress, how accurately food is tracked), so treat the shaded low-high band as the realistic range and re-check against real weigh-ins and tape measurements every 2-4 weeks.`);
   assumptions.push(`Start: ${r1(W0)} lb${b.weightDate ? ` (weigh-in ${b.weightDate})` : ' (profile weight)'}. ${bfSrcText}${spreadText} That makes ${r1(L0)} lb lean and ${r1(F0)} lb fat. Fat and lean are tracked separately every week; body fat % is simply fat ÷ (fat + lean).`);
-  assumptions.push(`Calorie burn: BMR by Katch-McArdle (370 + 21.6 × lean kg) ≈ ${Math.round(ctx.bmrOf(L0))} kcal/day, × ${r2(1 + neatFactor)} for daily movement and digestion ("${body.activity || 'desk'}" activity), plus exercise ≈ ${Math.round(ctx.avgEx)} kcal/day (lifting ≈ 4-6 kcal/min, cardio and classes from MET values, resting burn subtracted so nothing is counted twice). Recomputed every week as your weight and lean mass change.`);
+  assumptions.push(`Calorie burn: BMR by Cunningham (370 + 21.6 × lean kg) ≈ ${Math.round(ctx.bmrOf(L0))} kcal/day, × ${r2(1 + neatFactor)} for daily movement and digestion ("${body.activity || 'desk'}" activity), plus exercise ≈ ${Math.round(ctx.avgEx)} kcal/day (lifting ≈ 4-6 kcal/min, cardio and classes from MET values, resting burn subtracted so nothing is counted twice). Recomputed every week as your weight and lean mass change.`);
   assumptions.push(calib.applied ? `Maintenance is calibrated with your own data: ${calib.note}` : `Maintenance comes from the formula alone (≈ ${Math.round(tdeeStart)} kcal/day). Log food and weigh in for 10+ days and the app will calibrate it from your real weight trend (formulas are often off by 10-15%).`);
   const intakeText = intakeMode === 'calories' ? `You set intake to ${Math.round(ctx.fixedIntake)} kcal/day.`
     : intakeMode === 'surplus' ? `You set intake to maintenance ${sgn(ctx.specSurplus)}${Math.round(ctx.specSurplus)} kcal = ${Math.round(ctx.fixedIntake)} kcal/day, held constant.`

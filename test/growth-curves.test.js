@@ -252,3 +252,50 @@ test('8 years stays sane: no blow-ups, no asymptote violations, bounded output',
     for (const p of r.series) for (const v of Object.values(p.musclePct)) assert.ok(Number.isFinite(v) && v > -60 && v < 300, `${goal}: musclePct ${v}`);
   }
 });
+
+test('exercise energy compensation applies to the cardio DELTA only (Careau 2021)', () => {
+  // Careau et al. 2021 (Curr Biol 31:4659, doi:10.1016/j.cub.2021.08.016, doubly-labelled water, n = 1,754)
+  // found activity energy expenditure is compensated by ~28 %, so only ~72 % of ADDED exercise energy shows
+  // up in total expenditure. Forge applies that to the cardio what-if delta's NET cost (gross minus the
+  // resting burn those minutes would have cost anyway — compensation is measured on ACTIVITY expenditure),
+  // symmetrically, and never to the baseline plan, whose calories the TDEE calibration has already absorbed.
+  const prof = bobProfile({ goal: 'lean_bulk' });
+  const sess = bobPlan(TODAY, 4);
+  const at = cd => project({ baseline: bobBase(), profile: prof, sessions: sess, weeks: 26, now: NOW, repeatPlan: true,
+    adherence: 1, cardioDeltaMin: cd, cardioModality: 'bike', cardioIntensity: 'easy', intake: { calories: 2300, proteinGPerLb: 1 } });
+  const z = at(0), up = at(240), down = at(-60);
+  // The baseline plan is untouched: no delta, no discount.
+  assert.equal(z.energy.cardioDeltaMin, 0);
+  // Added cardio raises the burn, but by ~72 % of what its gross calories would suggest.
+  const dUp = up.energy.exerciseKcal - z.energy.exerciseKcal;
+  assert.ok(dUp > 0, `adding cardio must raise the exercise burn (${dUp})`);
+  // Symmetric: removing cardio gives back the same fraction.
+  const dDown = z.energy.exerciseKcal - down.energy.exerciseKcal;
+  assert.ok(dDown > 0, `removing cardio must lower it (${dDown})`);
+  // 240 min added vs 60 min removed is a 4x ratio of minutes at the same modality/intensity, so the kcal
+  // deltas must sit near 4x too — i.e. one constant factor is being applied, not an ad-hoc fudge.
+  assert.ok(Math.abs(dUp / dDown - 4) < 0.6, `${dUp} vs ${dDown} (ratio ${(dUp / dDown).toFixed(2)})`);
+  // And the compensation has a real, honest effect on the outcome: more cardio still means more fat loss,
+  // but less than the uncompensated arithmetic would promise.
+  assert.ok(up.summary.fatLb < z.summary.fatLb, `more cardio → more fat off (${up.summary.fatLb} vs ${z.summary.fatLb})`);
+  assert.ok(down.summary.fatLb > z.summary.fatLb);
+  // The MINUTES are not discounted — they are real training time and drive interference on their own.
+  assert.ok(Math.abs(up.weekly.cardioMinPerWeek - (z.weekly.cardioMinPerWeek + 240)) < 1,
+    `${z.weekly.cardioMinPerWeek} + 240 vs ${up.weekly.cardioMinPerWeek}`);
+});
+
+test('resting metabolic rate is attributed to Cunningham 1991, not Katch-McArdle', () => {
+  // 370 + 21.6 x lean kg is Cunningham 1991 (Am J Clin Nutr 54:963, doi:10.1093/ajcn/54.6.963), a
+  // reanalysis of 223 subjects regressing RMR on fat-free mass. Katch-McArdle is a skinfold
+  // body-composition method, not an RMR equation. Forge carried the wrong name for months; the formula
+  // itself never changed, so this test guards the citation the user actually reads.
+  const prof = bobProfile({ goal: 'recomp' });
+  const r = project({ baseline: bobBase(), profile: prof, sessions: bobPlan(TODAY, 4), weeks: 12, now: NOW });
+  const text = (r.assumptions || []).join(' \n ');
+  assert.match(text, /BMR by Cunningham \(370 \+ 21\.6/);
+  assert.doesNotMatch(text, /Katch/i);
+  // and the number is still the Cunningham number for Bob's lean mass
+  const lean = r.series[0].leanLb;
+  const expect = Math.round(370 + 21.6 * (lean / 2.20462));
+  assert.match(text, new RegExp(`≈ ${expect} kcal/day`));
+});

@@ -334,6 +334,8 @@ why the projection band is wide and why the lab's explanation says so in plain E
 | Constant | Value | Status |
 |---|---|---|
 | `KCAL_PER_LB_FAT` | 3500 | Standard first approximation (Wishnofsky). Known to be wrong at long horizons, which is why `GAMMA_FAT_KG` and weight-scaled movement are modelled (Hall 2011). |
+| `BMR_FROM_LEAN` | `370 + 21.6 × lean kg` | **Cunningham 1991**, *Am J Clin Nutr* 54:963, [doi:10.1093/ajcn/54.6.963](https://doi.org/10.1093/ajcn/54.6.963) — a reanalysis of 223 subjects regressing RMR on fat-free mass. The formula was right but Forge **had the wrong name on it**: Katch-McArdle is a skinfold *body-composition* method, not an RMR equation. Corrected in the code, the comments and the user-facing assumptions text (2026-10-21). Reads `bodycomp.bmrFromLean` when that export exists. |
+| `EX_KEEP` = 0.72 | exercise energy compensation | **Careau et al. 2021**, *Curr Biol* 31:4659, [doi:10.1016/j.cub.2021.08.016](https://doi.org/10.1016/j.cub.2021.08.016) — doubly-labelled-water data on n = 1,754 adults: activity energy expenditure is compensated by ≈28 %, so only ≈72 % of added exercise energy reaches total expenditure. See §15 below. |
 | `KCAL_PER_LB_LEAN` / `KCAL_LEAN_RELEASED` | 1250 / 800 | Energy stored in new lean tissue (~800 kcal/lb, mostly water + protein) plus the cost of synthesising it. ASSUMPTION on the synthesis overhead. |
 | `SMM_FRAC_OF_LEAN` | 0.55 | Skeletal muscle as a fraction of lean mass in men; Janssen-style. ASSUMPTION at this precision. |
 | `MUSCLE_SHARE` | normalized from `SMM_SHARE_RAW_MALE` (legs/glutes ≈ 45 %, back ≈ 17 %) | After Janssen 2000-style SMM distributions. **Fixed anatomical shares** — see §13 for what that does and does not wash out. |
@@ -382,6 +384,31 @@ group (§4). Both are consequences of one anatomical share table, and both are s
 
 ---
 
+## 13b. Exercise energy compensation on the cardio delta (added 2026-10-21)
+
+Careau 2021 measured compensation on **activity** energy expenditure (total minus basal), so the discount
+belongs on the **net** cost of added exercise, not its gross calories. Forge subtracts
+`(1 − EX_KEEP) × (gross − the resting burn those minutes would have cost anyway)` from the cardio what-if
+delta. Three rules, all of which the tests pin:
+
+1. **Delta only.** The baseline plan's calories are already inside the formula TDEE *and* inside
+   `adaptiveTdee`'s calibration against the real weight trend, which has absorbed whatever compensation the
+   user actually shows. Discounting them here would count it twice.
+2. **Symmetric.** Removing cardio gives back ~72 % too, so the slider is reversible.
+3. **Minutes stay real.** Only the calories are discounted; the minutes still drive interference, session
+   counts and the resting-burn offset, because they are real training time.
+
+Effect on Bob at a fixed 2,255 kcal/day over 26 weeks, bike/easy:
+
+| cardio what-if | exercise kcal/day | fat change | weight rate |
+|---|---|---|---|
+| +0 | 166 | −2.9 lb | +0.33 lb/mo |
+| +240 min/wk, uncompensated | 350 | −8.0 lb | −0.70 lb/mo |
+| +240 min/wk, **compensated** | 298 | **−6.8 lb** | **−0.43 lb/mo** |
+
+The net delta scales by 0.717, i.e. `EX_KEEP` to three figures, and the same factor applies to a negative
+delta.
+
 ## 14. Open issues this audit found but did not fix
 
 1. **Unit vs group granularity (planner handoff).** The planner and `targets.js` plan and cap volume per
@@ -421,3 +448,17 @@ group (§4). Both are consequences of one anatomical share table, and both are s
    39. `ageCeil()` applies a gentle −0.4 %/year past 35 to the growth ceiling, but the *maintenance* curve uses
    the young figure. That is the optimistic end; a 40+ adjustment would need data Bickel's two-age-group design
    cannot supply.
+
+5. **`BMR_FROM_LEAN` / `EX_KEEP` are local shims.** Both are read from `bodycomp.js` when it exports
+   `bmrFromLean` / `ENERGY_COMPENSATION` and fall back to the literal otherwise, because this branch's base
+   predates those exports and a named ESM import of a missing symbol is a hard failure. **On merge** (master
+   has them) the two lines collapse to plain named imports and the fallbacks come out; there is a `TODO on
+   merge` marker on them in `projection.js`.
+
+6. **Wall-clock performance budgets in a parallel test runner.** `test/plan-planner.test.js`'s "28-day plan
+   runs fast, even with months of history" takes a single cold wall-clock sample against 1,500 ms and measures
+   729–1,068 ms *in isolation* on a loaded machine, so it fails whenever the suite is busy. `planner.js` is
+   another agent's file, so it was left alone; the fix is the same treatment the two projection budgets got
+   (warm the path, take the minimum of 3 samples, set the budget from the measured cost). Note that
+   `process.cpuUsage()` is not a usable substitute: it sums V8's background optimiser and GC threads and
+   reads 5–8× the wall time of the work.
