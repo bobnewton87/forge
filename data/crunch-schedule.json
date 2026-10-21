@@ -5,7 +5,7 @@
   "phone": "469.824.3022",
   "locationUrl": "https://www.crunch.com/locations/allen",
   "source": "occurrences",
-  "fetchedAt": "2026-10-21T13:28:54.238Z",
+  "fetchedAt": "2026-10-21T14:57:52.023Z",
   "keepBackDays": 90,
   "days": [
     {
@@ -1272,6 +1272,112 @@
             },
             "label": "Indoor cycling",
             "blurb": "Climbs and sprints on the bike: excellent low-impact cardio for staying lean without beating up your legs like running does. Essentially no upper-body work."
+          }
+        },
+        {
+          "name": "Yoga Body Sculpt",
+          "time": "8:30 am",
+          "start": "08:30",
+          "duration": 60,
+          "instructor": "Dimple P",
+          "category": "Mind Body",
+          "room": "Group Fitness",
+          "description": "A strength-building Vinyasa flow class that focuses on sculpting your buns and thighs while flattening your belly and strengthening your core.",
+          "id": 7657140,
+          "classify": {
+            "type": "yoga",
+            "cardioMinutes": 12,
+            "intensity": "moderate",
+            "muscles": {
+              "delt_front": 0.75,
+              "delt_side": 0.5,
+              "triceps_lateral": 0.5,
+              "chest_mid": 0.5,
+              "quads": 1,
+              "glutes": 1.5,
+              "glute_med": 0.5,
+              "abs": 1.5,
+              "obliques": 0.75
+            },
+            "label": "Yoga + light weights",
+            "blurb": "Vinyasa flow with light weights, heavy on glutes, thighs and core. Good mobility plus a little core volume; too light to grow upper body."
+          }
+        },
+        {
+          "name": "The Ride",
+          "time": "9:00 am",
+          "start": "09:00",
+          "duration": 45,
+          "instructor": "Serena G",
+          "category": "Ride",
+          "room": "Ride",
+          "description": "Put the pedals to the metal in this fast-paced workout taught on a stationary bike. You'll climb, sprint, and train to incredible music and extraordinary instruction.",
+          "id": 7657146,
+          "classify": {
+            "type": "cycle",
+            "cardioMinutes": 41,
+            "intensity": "intervals",
+            "muscles": {
+              "quads": 1,
+              "glutes": 0.5,
+              "hamstrings": 0.25,
+              "calves": 0.5
+            },
+            "label": "Indoor cycling",
+            "blurb": "Climbs and sprints on the bike: excellent low-impact cardio for staying lean without beating up your legs like running does. Essentially no upper-body work."
+          }
+        },
+        {
+          "name": "CircHIIT (HIITZone)",
+          "time": "9:30 am",
+          "start": "09:30",
+          "duration": 45,
+          "instructor": "Deborah Y",
+          "category": "HIITZone",
+          "room": "HIITZone",
+          "description": "Get electrified in this turf-based, circuit training spectacular! Charge the circuit, amplify, then supercharge your efforts with circuit-breaker athletic and reaction drills in between each round for high performance cross-training benefits.",
+          "id": 7657142,
+          "classify": {
+            "type": "hiit",
+            "cardioMinutes": 36,
+            "intensity": "intervals",
+            "muscles": {
+              "chest_mid": 1,
+              "delt_front": 0.5,
+              "triceps_lateral": 0.5,
+              "quads": 1.5,
+              "glutes": 1.5,
+              "hamstrings": 0.5,
+              "calves": 1,
+              "abs": 1.5,
+              "obliques": 0.5
+            },
+            "label": "HIIT",
+            "blurb": "Hard intervals plus bodyweight and turf drills. Great fat-loss and VO2 work for getting ripped; modest muscle stimulus, heavy leg fatigue."
+          }
+        },
+        {
+          "name": "ZUMBA",
+          "time": "9:30 am",
+          "start": "09:30",
+          "duration": 60,
+          "instructor": "Rachael C.",
+          "category": "Dance",
+          "room": "Group Fitness",
+          "description": "Fuse hypnotic Latin rhythms and easy-to-follow moves to create a high energy, calorie blasting, total body dance based workout designed to tone your body from head to toe.",
+          "id": 7657149,
+          "classify": {
+            "type": "cardio_dance",
+            "cardioMinutes": 45,
+            "intensity": "moderate",
+            "muscles": {
+              "calves": 0.5,
+              "glutes": 0.5,
+              "quads": 0.5,
+              "obliques": 0.5
+            },
+            "label": "Dance cardio",
+            "blurb": "Fun, steady cardio that keeps you moving: a good low-stress calorie burn for staying lean, with no real muscle-building stimulus."
           }
         }
       ]
