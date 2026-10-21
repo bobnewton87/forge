@@ -285,8 +285,9 @@ export const LH_PRIMARY = 9.4;
 // odds ratio has compounded to 0.82^8.6 ≈ 0.18, i.e. about a fifth of the baseline odds of responding. No trial
 // reports an LH at which the response is measured to be zero.
 export const LH_PRIMARY_HARD = 18.8;
-// Below this total T, a raised LH means primary testicular failure (EMAS). At or above it, a raised LH is EMAS
-// "compensated hypogonadism": the testis is keeping up, and a SERM still has somewhere to push.
+// Below this total T, a raised LH means the signal is maximal and not being acted on — EMAS "primary". At or
+// above it, a raised LH is EMAS "compensated": the pituitary has turned the signal up and the testes are still
+// keeping up, so a SERM still has somewhere to push. Neither is visible from outside; only LH distinguishes them.
 export const LOW_T = 350;
 export const PROLACTIN_HIGH = 20;     // ng/mL, ~upper male reference (assay-dependent)
 export const ZINC_LOW = 70;           // µg/dL, morning fasting serum zinc cutoff for men (IZiNCG)
@@ -651,10 +652,10 @@ export function tShiftPct(model, ctx = {}) {
     if (lowT) {
       primaryFade = clamp((LH_PRIMARY_HARD - ctx.lh) / (LH_PRIMARY_HARD - LH_PRIMARY), 0, 1);
       primaryNote = primaryFade <= 0
-        ? `Your LH (${ctx.lh} IU/L) is well above the range with a low testosterone: that is primary (testicular) failure, and the testes are already getting a maximal signal. These therapies work by pushing LH higher, so Forge models no rise.`
+        ? `Your LH (${ctx.lh} IU/L) is well above the range with a low testosterone. LH is the pituitary\u2019s instruction to your testes, so that pattern means the instruction is already being shouted and is not being acted on — "primary". These therapies work by pushing LH higher, so Forge models no rise. This is about how your testes RESPOND, not how they look: the testosterone-making Leydig cells are a small fraction of testis volume and can underperform at a normal size (age-related Leydig decline, a past varicocele, mumps orchitis, trauma, chemotherapy). Worth a urologist rather than a SERM.`
         : `Your LH (${ctx.lh} IU/L) is above the EMAS cut-off (9.4) with a low testosterone, which points partly at the testes. Keihani 2020 found a normal or slightly raised LH still responds, and Kim 2026 found the odds fall gradually rather than stopping, so Forge keeps ${Math.round(primaryFade * 100)}% of the modeled rise instead of zeroing it.`;
     } else {
-      primaryNote = `Your LH (${ctx.lh} IU/L) is above the EMAS cut-off with a normal testosterone — "compensated", not primary failure. Keihani 2020 (332 men) found baseline LH did not predict the response, so Forge does not zero this out.`;
+      primaryNote = `Your LH (${ctx.lh} IU/L) is above the EMAS cut-off while your testosterone is still normal. That is "compensated" (Tajar 2010): your pituitary has turned the signal up and your testes are still keeping up with it — a real intermediate state, and the one a man in his late thirties is most likely to drift into, not a failure. Keihani 2020 (332 men) found baseline LH did not predict the response, so Forge does not zero this out.`;
     }
     if (primaryFade <= 0) return { pct: 0, note: primaryNote, warn: null };
   }
@@ -865,6 +866,31 @@ export function combineEndogenous(parts, ctx = {}) {
   };
 }
 
+// §22.9 EFFECTIVE EXPOSURE, and why the raw week count was wrong.
+//
+// The muscle-accrual curve is saturating: cumulative(w) = A(1 - e^(-w/tau)), so almost all of the gain is
+// earned in the first few weeks and the rate decays as e^(-w/tau). The endogenous items ALSO ramp their serum
+// level in over `rampWeeks` (2-6 weeks to plateau, which is measured and right). Evaluating a decaying rate at
+// RAW elapsed weeks while the amplitude A is still ramping means the highest-rate weeks are spent at a reduced
+// amplitude, and the clock has already run past them by the time the level arrives. The amplitude recovers; the
+// decay does not. Net effect: a 6-week titration permanently removed about 20% of the ASYMPTOTE.
+//
+// Measured before this fix, for Bob (548 -> 823 ng/dL on clomiphene): stackTimeline settled at 3.05 lb and
+// stayed there for ever, against the Bhasin asymptote of 3.83 lb — a 0.77 lb standing discount that no trial
+// supports. Nothing in Bhasin 1996/2001 says a slower titration costs you muscle you would otherwise have
+// built; the ramp should DELAY the trajectory, not dock its end point. The exogenous-testosterone branch in
+// this same file never had the bug, because it feeds the full level from week 0 and lets tau do the timing.
+//
+// Fix: the accrual clock counts EFFECTIVE exposure — elapsed time minus the exposure lost while the level was
+// still climbing, which is the integral of (1 - ramp). For a linear ramp over R weeks that is w - w^2/(2R)
+// while w <= R, and a constant R/2 afterwards. So a 6-week ramp now delays the curve by 3 weeks and converges
+// on the same asymptote, which is what "it takes a month to get to the plateau" should mean.
+export function rampExposureLoss(weeks, rampWeeks) {
+  const w = num(weeks, 0, 1e5) ?? 0, R = num(rampWeeks, 0, 1e5) ?? 0;
+  if (!(R > 0) || w <= 0) return 0;
+  return w <= R ? w - (w * w) / (2 * R) : R / 2;
+}
+
 function taperFrac(model, weeks) {
   const after = num(model.taperAfterWeeks, 0, 1e4);
   if (after == null || weeks <= after) return 1;
@@ -915,6 +941,7 @@ export function modifiersAt(profile, date, opts = {}) {
           shbg: tInfo.shbg != null ? r1(tInfo.shbg) : null, freeT: tInfo.freeT != null ? r1(tInfo.freeT) : null,
           freeTBase: tInfo.freeTBase != null ? r1(tInfo.freeTBase) : null,
           extrapolated: !!tInfo.extrapolated, creditSource: C ? C.creditSource : null, exogenous: !!tInfo.exogenous,
+          weeksOn: tInfo.weeksOn ?? null, weeksEff: tInfo.weeksEff ?? null,
           freeAdj: C && C.freeAdj != null ? r2(C.freeAdj) : 1,
           leanCeilingMult: r2(applied.leanCeilingMult), leanDirectLbPerWeek: r2(applied.leanDirectLbPerWeek), beyondStudied: tInfo.effect.beyondStudied,
           note: capped ? `Serum total T ≈${Math.round(tInfo.level)} vs your natural ${Math.round(tInfo.natural)} ng/dL. Forge credits muscle only up to ≈${Math.round(tInfo.leanLevel)} ng/dL: ${fmtSign(applied.leanDirectLbPerWeek)} lb/week lean without training, training ceiling ×${r2(applied.leanCeilingMult)}.` : tInfo.effect.note };
@@ -1040,14 +1067,22 @@ export function modifiersAt(profile, date, opts = {}) {
         notes.push(e2Fat.note);
       }
       if (Math.abs(level - T0) > 1 || Math.abs(creditLevel - T0) > 1) {
-        const te = testosteroneEffect(level, { baselineT: T0, weeksOn: weeks, age });
-        const teLean = Math.abs(creditLevel - level) < 1 ? te : testosteroneEffect(creditLevel, { baselineT: T0, weeksOn: weeks, age });
+        // The accrual clock runs on EFFECTIVE exposure, not raw elapsed weeks, so the serum ramp delays the
+        // trajectory instead of permanently docking its asymptote. See rampExposureLoss() above for the
+        // measurement that justified this (it was costing ~20% of the 12-month figure).
+        const rampW = Math.max(0, ...cParts.filter(c => c.model && c.resp * c.ramp > 0).map(c => num(c.model.rampWeeks, 0, 1e4) ?? 0));
+        const wEff = Math.max(0, weeks - rampExposureLoss(weeks, rampW));
+        const te = testosteroneEffect(level, { baselineT: T0, weeksOn: wEff, age });
+        const teLean = Math.abs(creditLevel - level) < 1 ? te : testosteroneEffect(creditLevel, { baselineT: T0, weeksOn: wEff, age });
         ceil = ceil / te0.leanCeilingMult * teLean.leanCeilingMult;
         leanD = leanD - te0.leanDirectLbPerWeek + teLean.leanDirectLbPerWeek;
         fatD = fatD - te0.fatDirectLbPerWeek + teLean.fatDirectLbPerWeek;
         tInfo = { natural: T0, naturalSource: base.levels.totalTSource, level, source: measuredUsable ? 'measured' : 'endogenous',
           effect: te, leanLevel: creditLevel, leanEffect: teLean, combined: comb, e2: comb.e2, e2Base: comb.e2Base,
-          shbg: comb.shbg, freeT: comb.freeT, freeTBase: comb.freeTBase, extrapolated: comb.extrapolated };
+          shbg: comb.shbg, freeT: comb.freeT, freeTBase: comb.freeTBase, extrapolated: comb.extrapolated,
+          // Raw weeks on the stack, and the effective exposure the accrual curve is evaluated at (see
+          // rampExposureLoss): the serum ramp delays the curve rather than docking its asymptote.
+          weeksOn: weeks, weeksEff: wEff, rampWeeks: rampW };
       } else {
         tInfo = { ...tInfo, combined: comb, e2: comb.e2, e2Base: comb.e2Base, shbg: comb.shbg, freeT: comb.freeT, freeTBase: comb.freeTBase };
       }

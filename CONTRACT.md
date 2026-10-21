@@ -1287,6 +1287,76 @@ eugonadal man, none has ever measured body composition at any baseline, and ther
 trial of enclomiphene against clomiphene. The Bhasin T→lean curve every extrapolated row runs through is still
 exogenous testosterone with the gonadotropins suppressed (A11). Lean ranges start at zero and rows rank at zero.
 
+### 22.9 Presentation, the scenario band and reversible causes (2026-10-21, fourth pass)
+
+Bob: *"Right now it's barely adding anything, and I just don't think that's accurate. It helps a lot of people
+a lot."* And: *"enclomiphene works for non hypogonadal males if there is some specific issue that is causing
+low T ... I want the game changing results to be the default with the caveats mentioned."*
+
+Full working in `docs/research/endogenous-testosterone.md` §14. The rules this section adds:
+
+**A row leads with the estimate, never with the ranking score.** Every row carries
+`net = { lb, lo, hi }` = the modeled central lean-minus-fat change with its range, and that is what the UI
+displays. `score` remains and remains conservative (for an item whose body composition was never measured it is
+pinned to the zero end of the row's own range) and is used for **ordering only**. A row must never display a
+headline that contradicts its own body. Bob's clomiphene row went from `±0 lb net` (above `LEAN +4.4 lb`) to
+`+4.3 lb net · 0 to +5.4`.
+
+**Buckets are chosen by evidence class and the sign of the central estimate**, not by the sign of `score`.
+`score` can be slightly negative for a row the model credits with several pounds of lean, which previously
+filed clomiphene under "not in your favour".
+
+**The accrual clock runs on effective exposure, not elapsed weeks** (`rampExposureLoss`, `js/engine/metabolic.js`).
+A serum ramp may delay the muscle trajectory; it may not reduce its asymptote. Before this a 6-week titration
+permanently removed ~20% of the 12-month figure (3.05 lb instead of 3.83 lb, for ever). The
+exogenous-testosterone branch always behaved correctly; the endogenous branch now matches it.
+
+**Audited and deliberately kept** (§14.2–14.6): `freeAdj` capped at 1 — measured at exactly 1.000 for every
+catalogue item at every baseline, so it is inert, not a discount; the `bcMaxLevel` credit clips on enclomiphene
+(604) and hCG (870), which correct admitted generosity in those items' *level* models rather than penalising
+muscle twice; the zero floor on an extrapolated range; `tAgeResponse`; the above-550 `tPctByBaseline` taper.
+
+**The planner opens with a scenario band, not one assumed number** (`scenarioBand()`, `js/engine/tplan.js`).
+Four baselines across the harmonized reference range — 300 / 400 / 550 / 750, each with a normal LH, because
+only the secondary/functional case is what these drugs treat — each re-running the **same** row builder against
+a synthetic profile so its numbers come through `project()` like any other row. Hard rules:
+- the assumed default baseline does **not** change (`averageTotalT`);
+- every column is labelled a scenario, and exactly one is marked `yours` (nearest his own level);
+- a man whose own LH indicates **primary** gets `notApplicable` on every column, no `yours`, and a note, because
+  his own rows are correctly modeled at zero and the band must not be the one place that contradicts them;
+- the band costs roughly another whole `tPlan()`, so the UI computes it from an idle callback after the first
+  paint and patches `#sp-band-wrap` in place. The route must stay inside the 1.5 s budget (e2e S3).
+
+`T_REFERENCE_RANGE` = [264, 916] and `T_REFERENCE_PCTILE` = 2.5/5/50/95/97.5 → 264/303/531/852/916
+(Travison 2017, doi:10.1210/jc.2016-2935, 9,054 men, healthy non-obese 19–39). The width of "normal" is shown,
+because a man at 350 is inside it and may still be well below his own set point.
+
+**Reversible causes are first-class** (`plan.causes`): obesity, sleep debt, low energy availability, endurance
+load, alcohol, raised prolactin, high SHBG masking a low free T, and opioids. Each carries a status against
+what this man actually entered (`yes` / `maybe` / `no` / `unknown`) and a link to the catalogue item that
+models it. Opioids are listed with `modeled: false` — a documented cause (Kafel 2025, doi:10.1111/andr.70013)
+that Forge does not model and says so.
+
+**`plan.flags`** names what in *this* profile makes a below-average baseline plausible (endurance background,
+appetite-suppressing stimulant, unquantified low energy availability). It must say **plausible**, must say it
+is not a fact, and must not move any number.
+
+**"Primary"/"testicular" is never a bare term.** LH is the pituitary's instruction; a high LH with a low T
+means it is being sent loudly and not obeyed; and this is not visible from outside, because the Leydig cells
+are a small fraction of testis volume. The **compensated** state (raised LH, still-normal T; Tajar 2010) is
+named as the real intermediate it is.
+
+**The catalogue renders everything it stores.** `detailSheet` shows the body-composition evidence class and its
+bounds, estradiol/SHBG effects, suits/not-for, `interactions` (new, tagged pharmacodynamic / pharmacokinetic /
+additive), `unknowns` (new), time course, fertility, monitoring and anti-doping. Browse rows carry the evidence
+grade, body-composition class and tolerability grade.
+
+**Unchanged and non-negotiable:** zero-floored ranges wherever muscle was never measured; the note that the
+Bhasin curve was built on exogenous testosterone with gonadotropins suppressed and that an endogenous rise of
+the same size has never been tested; the assumptions list; the "start assumed" marker; the WADA note;
+per-person `measured`/`extrapolated` labelling; prescription items marked as needing a clinician.
+
+
 ## 23. Weight-loss goal and intentional lean loss (2026-10-20)
 
 Bob: *"the app doesn't really allow someone to lose muscle mass if they want to or if their primary goal is
