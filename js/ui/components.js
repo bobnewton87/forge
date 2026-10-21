@@ -31,6 +31,8 @@ export function readinessColor(readiness = 1, need = 0) {
 }
 
 export function readinessLabel(readiness = 1, need = 0) {
+  if (readiness == null) readiness = 1;   // same null handling as readinessColor (null read as 'fully recovered')
+  if (need == null) need = 0;
   if (readiness < 0.5) return 'Recovering';
   if (readiness < 0.8) return 'Almost ready';
   if (need >= 0.5) return 'Needs work';
@@ -174,6 +176,22 @@ export function exerciseInfoHtml(ex) {
       <button type="button" class="btn btn-ghost" data-info-lib="${esc(ex.id)}">Open in library</button>
     </div>
   </div>`;
+}
+
+// A new session is about to become the active one. If a workout is genuinely in progress, ask first
+// and park it as 'planned' (so it shows up under "Saved for later" on the Workout screen) instead of
+// silently orphaning it: an 'active' session that nothing points at is invisible everywhere but
+// History. Returns false when the user says no — the caller must then do nothing.
+// `what` names the thing being started, for the prompt.
+export function parkActiveSession(store, what = 'this') {
+  const active = safe(() => store.getActiveSession(), null);
+  if (!active || active.status !== 'active') return true;
+  const q = `"${active.title || 'Workout'}" is in progress. Save it for later and start ${what} instead?`;
+  if (typeof confirm === 'function' && !confirm(q)) return false;
+  active.status = 'planned';
+  store.saveSession(active);
+  store.setActiveSessionId(null);
+  return true;
 }
 
 // Run an engine call defensively — engines are rewritten concurrently.

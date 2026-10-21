@@ -77,7 +77,7 @@ export function render(ctx, params = {}) {
       <button class="chip ${F.here ? 'active' : ''}" data-here>${esc(loc.icon || '📍')} Only what I have here</button>
       <button class="chip ${F.fav ? 'active' : ''}" data-fav>★ Favourites</button>
     </div>
-    <select id="libgoal" class="mt"><option value="">Any sculpt goal</option>${goals.map(g => `<option value="${esc(g.id)}" ${F.goal === g.id ? 'selected' : ''}>${myGoals.has(g.id) ? '★ ' : ''}${esc(g.name)}</option>`).join('')}</select>
+    <select id="libgoal" class="mt" aria-label="Filter by sculpt goal"><option value="">Any sculpt goal</option>${goals.map(g => `<option value="${esc(g.id)}" ${F.goal === g.id ? 'selected' : ''}>${myGoals.has(g.id) ? '★ ' : ''}${esc(g.name)}</option>`).join('')}</select>
     <div id="libres" class="mt">${resultsHtml(ctx)}</div>`;
 }
 

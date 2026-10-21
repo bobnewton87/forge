@@ -2109,6 +2109,135 @@ def t_retro_past_day(t, ctx):
     t.check(not errs, 'no page errors while logging a past day', 'no console/page errors', '; '.join(errs[:3]))
 
 
+@test('B1', 'Bug hunt: picking a class parks the workout in progress instead of orphaning it (CONTRACT §6)')
+def t_park_active(t, ctx):
+    """Starting a class took over the active-session pointer and left the workout in progress with
+    status 'active' and nothing pointing at it: it vanished from the Workout tab for good."""
+    app = t.app
+    app.load(bobir(app), 'today')
+    discard_draft(app)
+    pick_location_today(app, 'home')
+    app.click('[data-t="build"]')
+    t.check(app.has('.tr-preview [data-t="start"]', timeout=5000), 'builder preview', 'preview with Start', short(app.text(), 120))
+    app.click('.tr-preview [data-t="start"]')
+    app.wait_route('session')
+    row = app.page.locator('.tr-set:not(.done)').first
+    i, k = row.get_attribute('data-i'), row.get_attribute('data-k')
+    row.locator('[data-f="r"]').fill('10')
+    app.click(f'.tr-set[data-i="{i}"][data-k="{k}"] [data-s="check"]')
+    app.page.wait_for_selector(f'.tr-set.done[data-i="{i}"][data-k="{k}"]', timeout=3000)
+    live = app.store('store.getActiveSession() && store.getActiveSession().id')
+    t.check(live, 'a workout is in progress', 'an active session', live)
+
+    # Today → Crunch Allen classes → log one by name (the dialog is auto-accepted by the driver).
+    app.tab('today')
+    pick_location_today(app, 'crunch')
+    t.check(app.has('[data-t="class"]'), 'classes entry point on Today', '"Do a class instead" button', short(app.text(), 200))
+    app.click('[data-t="class"]')
+    sheet = '#sheet-root > .sheet:last-child'
+    t.check(app.wait_sheet('.cls-picker'), 'class picker', '.cls-picker', short(app.text(app.sheet()), 160))
+    app.page.wait_for_function("() => !/Loading Crunch/.test(document.querySelector('#sheet-root > .sheet:last-child')?.innerText || '')", timeout=6000, polling=100)
+    app.page.evaluate(f"() => document.querySelector('{sheet} .cls-form')?.setAttribute('open', '')")
+    app.fill(f'{sheet} .cls-other [name="name"]', 'Circuit HIIT')
+    m = app.toast_mark()
+    app.click(f'{sheet} .cls-other button[type="submit"]')
+    t.check(app.wait_toast(r'Started: Circuit HIIT', since=m), 'class started', 'toast "Started: Circuit HIIT"', app.toasts(m))
+
+    parked = app.store(f"(store.getSession({live!r}) || {{}}).status")
+    t.check(parked == 'planned', 'the old workout is parked, not orphaned', "status 'planned'", parked)
+    now_active = app.store('store.getActiveSession() && store.getActiveSession().title')
+    t.check(now_active == 'Circuit HIIT', 'the class is the active workout now', 'Circuit HIIT', now_active)
+    orphans = app.store(f"store.getSessions().filter(s => s.status === 'active' && s.id !== (store.getActiveSession()||{{}}).id).map(s => s.id)")
+    t.check(not orphans, 'no session is left active with nothing pointing at it', '[]', orphans)
+    app.store(f"(store.deleteSession({live!r}), store.getActiveSession() && store.deleteSession(store.getActiveSession().id), store.setActiveSessionId(null), 1)")
+
+
+@test('B2', 'Bug hunt: the prescription line follows + Set / − Set')
+def t_rx_setcount(t, ctx):
+    """The "3 × 8-12" line read target.sets, which "+ Set" never updates, so it disagreed with the
+    rows right under it."""
+    app = t.app
+    app.load(bobir(app), 'today')
+    discard_draft(app)
+    pick_location_today(app, 'home')
+    app.click('[data-t="build"]')
+    t.check(app.has('.tr-preview [data-t="start"]', timeout=5000), 'builder preview', 'preview with Start', short(app.text(), 120))
+    app.click('.tr-preview [data-t="start"]')
+    app.wait_route('session')
+    rx = lambda: app.page.evaluate("""() => { const b = document.querySelector('[data-blk="0"]');
+      const m = (b?.querySelector('.tr-rx b')?.textContent || '').match(/^(\\d+)/);
+      return [m ? +m[1] : null, b ? b.querySelectorAll('.tr-set').length : null]; }""")
+    shown, rows = rx()
+    t.check(shown == rows, 'prescription matches the rows as built', f'{rows} × …', f'{shown} × …')
+    app.click('[data-blk="0"] [data-s="add-set"]')
+    app.page.wait_for_timeout(250)
+    shown, rows = rx()
+    t.check(shown == rows, 'prescription follows + Set', f'{rows} × …', f'{shown} × …')
+    app.click('[data-blk="0"] [data-s="rm-set"]')
+    app.page.wait_for_timeout(250)
+    shown, rows = rx()
+    t.check(shown == rows, 'prescription follows − Set', f'{rows} × …', f'{shown} × …')
+    app.click('[data-s="discard"]')
+    app.page.wait_for_timeout(300)
+
+
+@test('B3', 'Bug hunt: a corrupt stored value degrades instead of taking a screen down')
+def t_corrupt_keys(t, ctx):
+    """A hand-edited key, a truncated restore or an odd cloud row left `fg_sessions` as `null` and
+    every screen that reads sessions threw on sortSessions()."""
+    app = t.app
+    base = bobir(app)
+    for key, bad in [('fg_sessions', 'null'), ('fg_sessions', '"x"'), ('fg_body', '"a string"'),
+                     ('fg_meas', '{"d":1}'), ('fg_food', '[1,2,3]'), ('fg_profile', '"Bob"'), ('fg_active', '42')]:
+        state = dict(base); state[key] = bad
+        app.load(state, 'today')
+        e0 = len(app.errors)
+        bad_routes = []
+        for r in ROUTES:
+            try:
+                app.go(r, settle=120)
+            except PWTimeout:
+                bad_routes.append(f'{r}: never rendered')
+                continue
+            if len(app.text()) < 15: bad_routes.append(f'{r}: blank')
+        errs = [f'{r}: {short(x, 70)}' for k, x, r in app.errors[e0:]]
+        t.sub(f'B3-{key[3:]}-{"null" if bad == "null" else "junk"}', f'{key} = {bad}: every route still renders',
+              not bad_routes and not errs, 'load every route', 'no errors, nothing blank',
+              '; '.join((bad_routes + errs)[:3]))
+    app.load(base, 'today')
+
+
+@test('B4', 'Bug hunt: a session planned for a later day, finished now, lands today (CONTRACT §24)')
+def t_future_finish(t, ctx):
+    """Opening a future planned workout showed a date field holding a date past its own max, and
+    Finish recorded it done on that future day — training that had not happened yet."""
+    app = t.app
+    d = (today() + dt.timedelta(days=3)).isoformat()
+    app.load(bobir(app), 'today')
+    app.store(f"""store.saveSession({{ id:'s_fut', date:{d!r}, status:'planned', startedAt:null, endedAt:null, location:'home',
+      minutes:45, title:'Future lift', targets:['chest'], source:'generated',
+      blocks:[{{kind:'lift',exId:'db_bench',group:null,target:{{sets:2,repMin:8,repMax:12,rest:90,weight:40}},
+        sets:[{{w:null,r:null,done:false}},{{w:null,r:null,done:false}}]}}], rationale:[], notes:'' }})""")
+    app.go('session?id=s_fut')
+    box = app.page.evaluate("() => { const i = document.querySelector('[data-f=\"date\"]'); return i ? [i.value, i.min, i.max] : null; }")
+    t.check(box and box[1] <= box[0] <= box[2], 'date field is inside its own range',
+            'min <= value <= max', box)
+    app.page.evaluate("""() => { document.querySelectorAll('.tr-set').forEach(r => { const rp = r.querySelector('[data-f=r]');
+      rp.value = '10'; rp.dispatchEvent(new Event('input', { bubbles: true })); });
+      document.querySelectorAll('[data-s=check]').forEach(b => b.click()); }""")
+    app.page.wait_for_timeout(300)
+    app.click('[data-s="finish"]')
+    app.page.wait_for_timeout(600)
+    got = app.store("""(() => { const s = store.getSession('s_fut'); const f = iso => { const x = new Date(iso);
+      return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
+      return [s.status, s.date, f(s.startedAt), f(s.endedAt)]; })()""")
+    t.check(got == ['done', today_str(), today_str(), today_str()], 'recorded as done today, not on the future day',
+            ['done', today_str(), today_str(), today_str()], got)
+    if app.has('#sheet-root .sheet'):
+        app.close_sheet()
+    app.store("(store.deleteSession('s_fut'), store.setActiveSessionId(null), 1)")
+
+
 @test('E1', 'No console/page errors during flows')
 def t_errors(t, ctx):
     app = t.app

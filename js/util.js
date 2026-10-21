@@ -18,8 +18,14 @@ export function daysBetween(a, b) {
 export function weekStart(d = new Date()) { const day = d.getDay(); return norm(addDays(d, day === 0 ? -6 : 1 - day)); }
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-export function fmtShort(d) { if (typeof d === 'string') d = parseDs(d); return MONTHS[d.getMonth()] + ' ' + d.getDate(); }
-export function fmtDay(d) { if (typeof d === 'string') d = parseDs(d); return DAYS[d.getDay()] + ', ' + MONTHS[d.getMonth()] + ' ' + d.getDate(); }
+// Display helpers: they are called with whatever is in the store, so junk degrades to '—' rather
+// than throwing inside a render (a `food` row with no `d` used to take down the whole screen).
+function asDate(d) {
+  if (typeof d === 'string') { if (!/^\d{4}-\d{2}-\d{2}/.test(d)) return null; d = parseDs(d.slice(0, 10)); }
+  return d instanceof Date && !isNaN(d) ? d : null;
+}
+export function fmtShort(d) { const x = asDate(d); return x ? MONTHS[x.getMonth()] + ' ' + x.getDate() : '—'; }
+export function fmtDay(d) { const x = asDate(d); return x ? DAYS[x.getDay()] + ', ' + MONTHS[x.getMonth()] + ' ' + x.getDate() : '—'; }
 export function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
 export function round(x, step = 1) { return Math.round(x / step) * step; }
 export function sum(arr, f = x => x) { return arr.reduce((s, x) => s + f(x), 0); }

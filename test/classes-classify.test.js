@@ -151,13 +151,26 @@ test('data/crunch-schedule.json has the contract shape', () => {
   const j = JSON.parse(fs.readFileSync(new URL('../data/crunch-schedule.json', import.meta.url), 'utf8'));
   assert.equal(typeof j.club, 'string');
   assert.ok(Array.isArray(j.days));
-  for (const d of j.days) {
+  // §24: the file accumulates history, and a day that has already happened is COMPACTED by
+  // scripts/scrape-crunch.mjs down to name/time/start/duration/instructor — `classify` is dropped on
+  // purpose and recomputed by normalizeSchedule() on load. So the shape is asserted after
+  // normalization (which is what the app actually reads), not on the raw rows.
+  const sched = normalizeSchedule(j, new Date());
+  assert.ok(sched.days.length);
+  for (const d of sched.days) {
     assert.match(d.date, /^\d{4}-\d{2}-\d{2}$/);
     for (const c of d.classes) {
       assert.equal(typeof c.name, 'string');
-      assert.ok(c.classify && TYPES.includes(c.classify.type));
+      assert.ok(c.classify && TYPES.includes(c.classify.type), `${d.date} ${c.name}: ${JSON.stringify(c.classify)}`);
       for (const r of Object.keys(c.classify.muscles)) assert.ok(REGION_IDS.includes(r));
     }
+  }
+  // Every day at or after today still carries its own classify in the file (only past days are
+  // compacted). `today` is the LOCAL calendar day, the same one the scraper and the app use.
+  const n = new Date();
+  const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  for (const d of j.days.filter(x => x.date >= today)) {
+    for (const c of d.classes) assert.ok(c.classify && TYPES.includes(c.classify.type), `${d.date} ${c.name} lost its classify`);
   }
 });
 
