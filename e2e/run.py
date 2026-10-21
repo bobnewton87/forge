@@ -2109,6 +2109,79 @@ def t_retro_past_day(t, ctx):
     t.check(not errs, 'no page errors while logging a past day', 'no console/page errors', '; '.join(errs[:3]))
 
 
+@test('N2', 'Energy model (docs/research/energy-model.md): net cardio kcal, cited METs, honest fat claim, zero-sum cycling')
+def t_energy_model(t, ctx):
+    """The nutrition/energy audit, end to end in the real app: exercise calories are net of the
+    resting burn (no double-counting), METs cite the 2024 Compendium, the Nutrition screen states the
+    dietary-fat evidence without implying fat makes you fat, and carb-cycling days average to the
+    stated intake."""
+    app = t.app
+    app.load(bobir(app), 'nutrition')
+
+    eng = app.page.evaluate("""async () => {
+      const C = await import('/js/data/cardio.js');
+      const B = await import('/js/engine/bodycomp.js');
+      const N = await import('/js/engine/nutrition.js');
+      const comp = B.bodyComp({ weightLb: 164, heightIn: 69, bodyFatPct: 23, age: 39, sex: 'male' });
+      const run = { date: '2026-10-05', status: 'done', blocks: [{ kind: 'cardio', modality: 'run', minutes: 60, intensity: 'easy', done: true }] };
+      const T = B.tdee({ comp, activity: 'desk', sessions: [run], from: '2026-10-01', to: '2026-10-07', now: new Date('2026-10-07T12:00:00Z') });
+      const gross = B.sessionCalories(run, { weightLb: 164 });
+      const net = T.exercise * 7;
+      // cycling: do the reference week average to the simple-mode target?
+      const P = m => ({ bodyweight: 164, goal: 'recomp', nutrition: { mode: m, calories: null, surplus: null } });
+      const flat = N.dailyTargets(P('simple'), { tdee: 2800 }).calories;
+      let days = 0, sum = 0;
+      for (const [dt_, n] of Object.entries(N.REFERENCE_WEEK)) { days += n; sum += n * N.dailyTargets(P('cycling'), { dayType: dt_, tdee: 2800 }).calories; }
+      const uncited = Object.values(C.CARDIO).filter(c => !c.mets.easyCode && !c.mets.hardCode && !c.mets.midCode).length;
+      return { gross, net, bmrEquation: comp.bmrEquation, bmrRange: comp.bmrRange, bmr: comp.bmr,
+               flat, cycled: Math.round(sum / days), comp: B.ENERGY_COMPENSATION, uncited,
+               incline: C.CARDIO.walk_incline.metsHard, hiit: C.CARDIO.hiit_bodyweight.metsHard,
+               grossMin: C.estimateCalories('run', 45, 'easy', 164), netMin: C.estimateNetCalories('run', 45, 'easy', 164) };
+    }""")
+
+    t.sub('N2a', 'Exercise kcal are net: the resting burn during the session is subtracted',
+          eng['net'] > 0 and eng['net'] < eng['gross'] - 60,
+          'bodycomp.tdee() vs sessionCalories()', 'net at least 60 kcal below gross for a 1 h run',
+          f"gross {eng['gross']}, net {round(eng['net'])}")
+    t.sub('N2b', 'estimateNetCalories removes exactly the one resting MET',
+          eng['grossMin'] > eng['netMin'] and abs((eng['grossMin'] - eng['netMin']) - 164 / 2.20462 * 0.75) < 2,
+          'data/cardio.js', 'gross − net = 1 MET × kg × h', f"{eng['grossMin']} − {eng['netMin']}")
+    t.sub('N2c', 'Every cardio modality but the air bike cites a 2024 Compendium code',
+          eng['uncited'] <= 1, 'CARDIO[*].mets', 'at most 1 uncited modality', f"{eng['uncited']} uncited")
+    t.sub('N2d', '2024 Compendium corrections are in place (incline walk 8.8, bodyweight HIIT 11.0)',
+          eng['incline'] == 8.8 and eng['hiit'] == 11.0, 'METs', 'walk_incline 8.8, hiit 11.0',
+          f"{eng['incline']} / {eng['hiit']}")
+    t.sub('N2e', 'BMR is attributed to Cunningham 1991 and reports its uncertainty range',
+          eng['bmrEquation'] == 'Cunningham 1991' and eng['bmrRange'] and eng['bmrRange']['high'] > eng['bmr'],
+          'bodyComp()', "bmrEquation 'Cunningham 1991' (not Katch-McArdle) + bmrRange",
+          f"{eng['bmrEquation']}, {json.dumps(eng['bmrRange'])}")
+    t.sub('N2f', 'Carb cycling is zero-sum: the week averages to the simple-mode target',
+          abs(eng['cycled'] - eng['flat']) <= 10, 'nutrition.dailyTargets cycling vs simple',
+          'cycled weekly average == flat target (±10)', f"cycled {eng['cycled']} vs flat {eng['flat']}")
+    t.sub('N2g', 'Energy compensation is modelled at Careau 2021\'s 28 %',
+          abs(eng['comp'] - 0.28) < 1e-9, 'bodycomp.ENERGY_COMPENSATION', '0.28', str(eng['comp']))
+
+    ntxt = app.text()
+    t.sub('N2h', 'Nutrition answers the dietary-fat question honestly',
+          bool(re.search(r'does not make you (fat|gain fat)', ntxt, re.I)) and bool(re.search(r'Whittaker', ntxt, re.I)),
+          'Nutrition → What the research actually says',
+          'says fat does not make you fat, cites Whittaker', short(ntxt[-400:], 200))
+    # The card quotes Bob's framing in order to answer it, so the rule is: wherever that phrasing
+    # appears, the rebuttal must follow within a sentence or two. An unrebutted claim fails.
+    frames = [m.end() for m in re.finditer(r'makes? you (more )?fat(ter)?', ntxt, re.I)]
+    rebutted = all(re.search(r'Not as stated|does not make you (fat|gain fat)|only a calorie surplus', ntxt[max(0, k - 90):k + 200], re.I) for k in frames)
+    t.sub('N2i', 'Any "fat makes you fat" phrasing is immediately rebutted, never asserted',
+          rebutted and bool(re.search(r'Not as stated', ntxt, re.I)),
+          'Nutrition page copy', 'every fat-makes-you-fat phrasing answered on the spot',
+          '%d occurrence(s), all rebutted: %s' % (len(frames), rebutted))
+    t.sub('N2j', 'Nutrition states the protein plateau with its real number',
+          bool(re.search(r'1\.62\s*g/kg', ntxt)) and bool(re.search(r'Morton 2018', ntxt)),
+          'Nutrition page copy', "Morton 2018's 1.62 g/kg plateau", short(ntxt[-400:], 200))
+    t.sub('N2k', 'Nutrition tempers the cardio claim with compensation',
+          bool(re.search(r'Careau', ntxt)) and bool(re.search(r'resting burn', ntxt, re.I)),
+          'Nutrition page copy', 'cites Careau 2021 and the resting-burn deduction', short(ntxt[-400:], 200))
+
+
 @test('E1', 'No console/page errors during flows')
 def t_errors(t, ctx):
     app = t.app

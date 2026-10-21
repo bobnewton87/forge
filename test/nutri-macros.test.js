@@ -32,7 +32,14 @@ test('macrosFor warnings: fat < 20 %, carbs < 100 g, protein too low or pointles
   const lowP = macrosFor(P({ proteinGPerLb: 0.5 }), { calories: 2800, bodyweight: 164 });
   assert.ok(lowP.warnings.some(w => /Morton 2018/.test(w)));
   const highP = macrosFor(P({ proteinGPerLb: 1.6 }), { calories: 2800, bodyweight: 164 });
-  assert.ok(highP.warnings.some(w => /no extra muscle benefit/.test(w)));
+  // Reworded 2026-10-21: "no extra muscle benefit" was true for a surplus but false in a deficit
+  // (Longland 2016), so the warning is now goal-aware. Growth goals keep the "did not add lean mass"
+  // wording with Morton's actual ceiling; cut/weight_loss get the deficit version.
+  assert.ok(highP.warnings.some(w => /did not add lean mass/.test(w)), highP.warnings.join(' | '));
+  assert.ok(highP.warnings.some(w => /2\.2 g\/kg/.test(w)));
+  const highPcut = macrosFor({ goal: 'cut', nutrition: { proteinGPerLb: 1.6 } }, { calories: 2800, bodyweight: 164 });
+  assert.ok(highPcut.warnings.some(w => /Longland 2016/.test(w)), highPcut.warnings.join(' | '));
+  assert.ok(!highPcut.warnings.some(w => /did not add lean mass/.test(w)));
   const impossible = macrosFor(P({ proteinGPerLb: 1.6, fatPct: 60 }), { calories: 1200, bodyweight: 164 });
   assert.equal(impossible.carbs, 0);
   assert.ok(impossible.fat >= 0 && impossible.protein * 4 + impossible.fat * 9 <= 1200 + 9);
