@@ -1357,6 +1357,52 @@ the same size has never been tested; the assumptions list; the "start assumed" m
 per-person `measured`/`extrapolated` labelling; prescription items marked as needing a clinician.
 
 
+### 22.10 `tLeanShare` composes (2026-10-21, fifth pass)
+
+Found reviewing §22.9: **clomiphene + aromatase inhibitor ranked above clomiphene alone** (+4.6 vs +4.3 lb net).
+At 548 ng/dL the AI's modeled rise (+322) beats clomiphene's (+275), so the AI wins the "largest LH-driven
+item" contest, clomiphene is subsumed and adds nothing to the level (`COMBO_BONUS = 0`) — and the whole
+548 → 870, produced entirely by the AI, was credited for muscle under clomiphene's evidence bound. Adding a
+drug the same engine scores at −0.8 lb alone, grades "Tolerability: poor", and has four randomized nulls on
+body composition behind it (Burnett-Bowie 2009a — T 323 → 525 ng/dL with CT *and* DXA body composition and
+strength unchanged at 12 months; Burnett-Bowie 2009b — spine BMD fell; Loves 2013; Juang 2014) *improved* the
+row. Working in `docs/research/endogenous-testosterone.md` §15.
+
+The rules:
+
+- **`tLeanShare` is a share of an item's testosterone rise that may earn muscle credit**, default 1. It must be
+  **composed**, not merely consulted when picking an evidence bound. `combineEndogenous`'s `run()` takes a
+  `lean` flag that re-runs the identical composition over the creditable part of each rise; the result
+  (`midLean.level`, exposed as `leanLevelCap`) caps the credit.
+- **A suppression always has a share of 1.** `tLeanShare` says a rise does not build muscle, never that a fall
+  does not cost it.
+- **`creditable()` is derived from `shareOf()`**, so "can this item supply the evidence bound?" and "does its
+  rise earn muscle?" cannot answer differently.
+- **A measured on-therapy lab goes through the same split.** A lab cannot say which drug produced which part of
+  the rise, so the creditable *fraction* the model computed is carried over. Without this, entering a lab
+  reinstates the bug.
+- **A zero-share item drops out of the lean LH list entirely**, so it cannot contribute a route ceiling either.
+- **The invariant, pinned by test:** *adding an aromatase inhibitor never increases modeled lean*, at any
+  baseline, in any combination. Every `X + AI` pairing now credits exactly what `X` credits alone.
+- **The estradiol side is untouched.** The AI keeps its full `e2ActionPct`, so the combination still carries the
+  Finkelstein fat penalty — which is why it is now correctly *worse* than the SERM alone rather than better.
+- **A subsumed item can be the only thing earning credit.** When the driver has a zero share and a subsumed item
+  does not, the row must say so explicitly, or it reads as though the lean mass came from the drug with no
+  body-composition evidence.
+- **The RANGE is scaled off the credited level too**, not the serum level: `leanLevelLo/Hi` (the serum bounds
+  clipped by the lean-mode composition at each CI end). The aromatase inhibitor's wide `tCI [0.45, 2.2]` was
+  otherwise still pushing the combination's upside above the SERM's own (0 to +10.1 vs 0 to +7.1). The scaling
+  denominator is the **credited mid** for the same reason — the point estimate was produced there.
+- **Every row's range must contain its own estimate** — lean, fat and net, at every baseline. This is a test,
+  and adding it caught three separate leaks (docs §15.8): `freeAdj` was evaluated at the serum level rather
+  than the credited one; the zero floors were applied *before* the range ends were ordered, so for a falling
+  fat value the floor overwrote the real low end; and a body-composition bound could leave the interval not
+  bracketing the credited mid. A row with no credited testosterone movement (an aromatase inhibitor alone,
+  whose effect is entirely the estradiol fat term) falls back to the estimate rather than collapsing to [0, 0].
+- **`freeAdj` is evaluated at the credited level.** Both halves of the ratio must refer to the same rise, or an
+  item contributing nothing creditable can change it.
+
+
 ## 23. Weight-loss goal and intentional lean loss (2026-10-20)
 
 Bob: *"the app doesn't really allow someone to lose muscle mass if they want to or if their primary goal is

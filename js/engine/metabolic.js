@@ -717,13 +717,29 @@ export function combineEndogenous(parts, ctx = {}) {
     const g = tShiftPct(model, ctx);
     return { ...p, axis, model, gate: g, pct0: g.pct * p.resp * p.ramp, ci: Array.isArray(model.tCI) ? model.tCI : [1, 1] };
   });
-  const run = (ciIdx, bonus) => {
+  // §22.10 `tLeanShare`: the fraction of an item's testosterone rise that is allowed to earn MUSCLE credit.
+  // Default 1. Zero for the aromatase inhibitors, and that zero is a measurement, not caution: Burnett-Bowie
+  // 2009a randomized anastrozole for 12 months in men over 60 and took total T from 323 to 525 ng/dL — a rise
+  // the size of a SERM's — with body composition by CT AND DXA, and strength, UNCHANGED. Burnett-Bowie 2009b
+  // (n=69, 12 months) found spine BMD actually fell. Loves 2013 (letrozole, RCT in obese hypogonadal men) and
+  // Juang 2014 found the same null on body composition. Four trials, one answer.
+  const shareOf = e => {
+    const s = num(e.model.tLeanShare, 0, 1);
+    return s != null ? s : (e.model.bodyComp === 'none' ? 0 : 1);
+  };
+  // `lean = true` re-runs the IDENTICAL composition over only the muscle-creditable part of each rise, so the
+  // credit level is composed the same way the serum level is instead of being read off the serum level.
+  const run = (ciIdx, bonus, lean = false) => {
     const f = e => ciIdx == null ? 1 : (e.ci[ciIdx] ?? 1);
+    // A SUPPRESSION is always credited in full whatever the share: `tLeanShare` says "this rise does not build
+    // muscle", never "this fall does not cost it".
+    const sh = e => (!lean || e.pct0 < 0 ? 1 : shareOf(e));
     let T = T0;
     const causeCap = [];
     for (const e of ev) {
       if (e.pct0 === 0) continue;
-      if (e.pct0 < 0 || CAUSE_AXES.has(e.axis)) { T *= 1 + (e.pct0 * f(e)) / 100; causeCap.push(num(e.model.ceilingNg, 1, 1e5) ?? TESTIS_CEILING); }
+      if (lean && e.pct0 > 0 && sh(e) === 0) continue;
+      if (e.pct0 < 0 || CAUSE_AXES.has(e.axis)) { T *= 1 + (e.pct0 * f(e) * sh(e)) / 100; causeCap.push(num(e.model.ceilingNg, 1, 1e5) ?? TESTIS_CEILING); }
     }
     if (causeCap.length) T = Math.min(T, Math.max(...causeCap));
     T = Math.max(20, T);
@@ -731,8 +747,9 @@ export function combineEndogenous(parts, ctx = {}) {
     const lh = [];
     for (const e of ev) {
       if (!LH_AXES.has(e.axis) || e.pct0 <= 0) continue;
+      if (lean && sh(e) === 0) continue;          // contributes no creditable testosterone, and no ceiling either
       const g2 = tShiftPct(e.model, { ...ctx, baselineT: T });
-      const pct = g2.pct * e.resp * e.ramp * f(e);
+      const pct = g2.pct * e.resp * e.ramp * f(e) * sh(e);
       lh.push({ e, gate2: g2, pct, delta: Math.max(0, T * pct / 100) });
     }
     lh.sort((a, b) => b.delta - a.delta);
@@ -746,6 +763,15 @@ export function combineEndogenous(parts, ctx = {}) {
   const mid = run(null, COMBO_BONUS);
   const lo = run(0, COMBO_BONUS);
   const hi = run(1, COMBO_BONUS_HI);
+  // The same composition over the muscle-creditable part only. `midLean.level` is the highest level this
+  // stack can be credited for, before any per-item body-composition bound is applied on top. The lo/hi passes
+  // exist because the RANGE needs the same treatment as the point estimate: scaling the lean interval by the
+  // combined SERUM confidence interval let an uncredited item's uncertainty widen the row's upside. For
+  // clomiphene + an aromatase inhibitor that put the top of the range at +10.1 lb against clomiphene's own
+  // +7.1 — headroom contributed entirely by a drug crediting nothing.
+  const midLean = run(null, COMBO_BONUS, true);
+  const loLean = run(0, COMBO_BONUS, true);
+  const hiLean = run(1, COMBO_BONUS_HI, true);
 
   // ---- estradiol and estrogen action (every active item acts, driver or not)
   const e2Base = num(ctx.estradiol, 0.1, 1000) ?? ASSUMED_E2;
@@ -778,7 +804,9 @@ export function combineEndogenous(parts, ctx = {}) {
   // Composed the same way the level is, so a cause item with generous body-composition evidence cannot launder a
   // drug's rise past that drug's own evidence bound: the cause chain is bounded by the cause items, and the extra
   // the drug adds on top is bounded by the DRIVER's bound.
-  const creditable = e => !(e.model.bodyComp === 'none' || e.model.tLeanShare === 0);
+  // One predicate, derived from shareOf(), so "can this item be the evidence bound?" and "does its rise earn
+  // muscle?" can never answer differently.
+  const creditable = e => shareOf(e) > 0;
   // Two bounds per item, because for clomiphene the evidence changes character part-way up the range:
   //   bcMaxLevel        — the level up to which body composition was actually MEASURED (Soares 2018: ≈500).
   //   bcExtrapMaxLevel  — how far Forge will run the T→lean curve above that, bounded by the highest level the
@@ -800,6 +828,21 @@ export function combineEndogenous(parts, ctx = {}) {
     if (Math.min(mid.level, bound) > credit) { credit = Math.min(mid.level, bound); bcSource = d.e; }
   }
   const anyCreditable = bcSource != null;
+  // ---- §22.10 THE tLeanShare COMPOSITION CAP.
+  // Before this, `credit` was read off the COMBINED serum level and merely bounded by the strongest CREDITABLE
+  // item's own body-composition bound. That let an item with `tLeanShare: 0` launder its share of the rise
+  // through a creditable item's evidence, and for one pairing it was not a share but the whole thing:
+  //   clomiphene + aromatase inhibitor at a baseline of 548 ng/dL. The AI's modeled rise (+322) is LARGER than
+  //   clomiphene's (+275), so the AI wins the "largest LH-driven item" contest, clomiphene is subsumed and
+  //   contributes NOTHING to the level (COMBO_BONUS = 0) — and then the entire 548 -> 870, produced start to
+  //   finish by the AI, was credited for muscle under clomiphene's bound. Net result: adding a drug with four
+  //   randomized nulls on body composition and a 'poor' tolerability grade IMPROVED the row's modeled lean
+  //   (5.1 lb vs 4.4) and pushed it ABOVE clomiphene alone in the ranking. That is the opposite of what the
+  //   evidence says and exactly the kind of thing that steers someone to the worst option on the page.
+  // The credit is now capped by `midLean.level` — the level the muscle-creditable items would have reached on
+  // their own, composed by the same rules. The AI's estradiol effect is untouched, so the combination still
+  // carries its full Finkelstein fat penalty; it just no longer earns muscle it was never measured to build.
+  if (mid.level > T0) credit = Math.min(credit, Math.max(T0, midLean.level));
   let creditLevel = mid.level >= T0 ? clamp(credit, Math.min(T0, mid.level), mid.level) : mid.level;
   // ---- drive the muscle credit off FREE testosterone, not total.
   // The objection this answers: a SERM raises total T, estradiol AND SHBG together, so free T might move much
@@ -815,10 +858,19 @@ export function combineEndogenous(parts, ctx = {}) {
   // So the correction below is small by construction — which is the finding, not a fudge. `freeAdj` is the
   // fraction of the total-T rise that survives into free T; it is capped at 1 so saturable SHBG binding can
   // never earn EXTRA credit, only take it away (e.g. a man with a high SHBG, or a bigger modeled SHBG rise).
+  // §22.10: evaluate it at the CREDITED level, not the serum level. The adjustment asks "of the rise being
+  // credited, how much survives into free testosterone", so both halves of the ratio have to refer to the same
+  // rise. Reading it off the serum level meant an item contributing nothing creditable could still change it:
+  // fat loss alone gave freeAdj 0.93 (weight loss raises SHBG, so free T lags total), while fat loss + an
+  // aromatase inhibitor pushed the serum level to 591 ng/dL, sent the ratio over 1, clamped it to 1 and handed
+  // the combination 5 ng/dL more credit than fat loss on its own. Same class of leak as the one above.
   let freeAdj = 1;
-  if (creditLevel > T0 && freeT != null && freeTBase != null && freeTBase > 0 && mid.level > T0) {
-    freeAdj = clamp((freeT / freeTBase) / (mid.level / T0), 0, 1);
-    creditLevel = T0 + (creditLevel - T0) * freeAdj;
+  if (creditLevel > T0 && freeTBase != null && freeTBase > 0) {
+    const freeTCredit = vermeulenFreeT(creditLevel, shbg);
+    if (freeTCredit != null) {
+      freeAdj = clamp((freeTCredit / freeTBase) / (creditLevel / T0), 0, 1);
+      creditLevel = T0 + (creditLevel - T0) * freeAdj;
+    }
   }
   const bcMax = bcSource ? bcOf(bcSource) : Infinity;
   // Is this man inside the evidence, or past it? Three ways to be past it:
@@ -839,6 +891,12 @@ export function combineEndogenous(parts, ctx = {}) {
     notes.push(`${names.join(' + ')}: these work through the same final step — your Leydig cells making testosterone — so Forge does not add them up. In the only randomized test of this (Habous 2018, 282 men) clomiphene gave +158 ng/dL, hCG +134, and both together +153: the combination was no better than clomiphene alone (p=0.57). The modeled level is driven by ${mid.driver.e.name.split(' (')[0]}; the optimistic end of the range adds a quarter of the others, which is an assumption.`);
   }
   if (mid.capped) notes.push(`Modeled level capped at ${Math.round(mid.cap)} ng/dL: that is the plateau for this route. The highest group mean any own-axis trial has reported is 1,390 ng/dL — clomiphene 50 mg twice daily for 8 weeks in five HEALTHY young men (Tenover & Bremner 1991). At conventional doses the maxima are lower: 790 on tamoxifen (Krause 1992), 764 on enclomiphene (Wiehle 2013), about 870 on hCG (Liu 2002, inferred).`);
+  // Name the items whose rise is deliberately not being credited, so a combination explains its own number.
+  const uncredited = ev.filter(e => e.pct0 > 0 && shareOf(e) < 1);
+  if (uncredited.length && mid.level > midLean.level + 1) {
+    const who = uncredited.map(e => e.name.split(' (')[0]);
+    notes.push(`Of the rise to ≈${Math.round(mid.level)} ng/dL, Forge credits muscle on at most ≈${Math.round(midLean.level)} — the part ${who.join(' and ')} did not produce. ${uncredited.map(e => e.model.leanNullNote).filter(Boolean)[0] || 'The trials that measured body composition on it found none'}, so its share of the testosterone number earns no muscle here even though another item in this combination has body-composition evidence. The estradiol effect, and the fat cost that follows from it, still apply in full.`);
+  }
   if (anyCreditable && mid.level > creditLevel + 1) {
     notes.push(`Forge credits muscle only up to ≈${Math.round(creditLevel)} ng/dL — bounded by what ${bcSource.name.split(' (')[0]}'s own trials reached${freeAdj < 0.995 ? `, and shrunk by ${Math.round((1 - freeAdj) * 100)}% because SHBG rises with it, so free testosterone moves less than total` : ''}. ${bcSource.model.bcNote || ''}`.trim());
   }
@@ -856,6 +914,9 @@ export function combineEndogenous(parts, ctx = {}) {
     e2, e2Base, e2Assumed, e2Lo: clamp(e2Base * (1 + (e2Mult - 1) * 0.5), 0.5, 500), e2Hi: clamp(e2Base * (1 + (e2Mult - 1) * 1.5), 0.5, 500),
     e2ActionDrop, shbg: Math.round(shbg * 10) / 10, shbgAssumed, freeT, freeTBase, freeAdj,
     creditLevel, creditSource: bcSource?.id || null, extrapolated, bcNote: bcSource?.model.bcNote || null,
+    // The ceiling the tLeanShare composition puts on muscle credit, and who was excluded from it.
+    leanLevelCap: midLean.level, uncreditedIds: uncredited.map(e => e.id),
+    leanLevelCapLo: Math.min(loLean.level, midLean.level), leanLevelCapHi: Math.max(hiLean.level, midLean.level),
     parts: ev.map(e => {
       const inLh = mid.lh.find(x => x.e === e);
       return { id: e.id, name: e.name, axis: e.axis, pct: inLh ? inLh.pct : e.pct0, delta: inLh ? inLh.delta : T0 * e.pct0 / 100,
@@ -936,6 +997,11 @@ export function modifiersAt(profile, date, opts = {}) {
         return { natural: tInfo.natural, naturalSource: tInfo.naturalSource, level: Math.round(tInfo.level), source: tInfo.source,
           leanLevel: Math.round(tInfo.leanLevel != null ? tInfo.leanLevel : tInfo.level),
           levelLo: C ? Math.round(C.levelLo) : Math.round(tInfo.level), levelHi: C ? Math.round(C.levelHi) : Math.round(tInfo.level),
+          // The confidence bounds on the CREDITED level: the serum bounds clipped by what the muscle-creditable
+          // items could reach at each end. The planner scales its lean/fat range off these, not off the serum
+          // bounds, so an item with tLeanShare 0 cannot widen a row's upside (CONTRACT §22.10).
+          leanLevelLo: C ? Math.round(Math.min(C.levelLo, C.leanLevelCapLo ?? C.levelLo)) : null,
+          leanLevelHi: C ? Math.round(Math.min(C.levelHi, C.leanLevelCapHi ?? C.levelHi)) : null,
           estradiol: tInfo.e2 != null ? r1(tInfo.e2) : null, estradiolBase: tInfo.e2Base != null ? r1(tInfo.e2Base) : null,
           estradiolAssumed: C ? C.e2Assumed : null, e2ActionDrop: C ? r2(C.e2ActionDrop) : 0,
           shbg: tInfo.shbg != null ? r1(tInfo.shbg) : null, freeT: tInfo.freeT != null ? r1(tInfo.freeT) : null,
@@ -1057,9 +1123,19 @@ export function modifiersAt(profile, date, opts = {}) {
       const measuredUsable = measured != null && comb.parts.some(p => p.pct !== 0);
       const level = measuredUsable ? measured : comb.level;
       if (measuredUsable) notes.push(`Your measured total T on therapy (${Math.round(measured)} ng/dL) is used as-is; Forge doesn't add a modeled rise on top of a real lab.`);
-      const creditLevel = measuredUsable
+      // §22.10: a MEASURED on-therapy lab replaces the modeled level, so it has to be put through the same
+      // tLeanShare composition — otherwise entering a lab while on clomiphene + an aromatase inhibitor would
+      // reinstate exactly the bug the modeled branch just fixed. The lab cannot tell us which drug produced
+      // which part of the rise, so Forge carries over the creditable FRACTION the model computed.
+      const modRise = comb.level - T0;
+      const leanFrac = modRise > 1 ? clamp((comb.leanLevelCap - T0) / modRise, 0, 1) : 1;
+      let creditLevel = measuredUsable
         ? (comb.creditSource ? clamp(Math.min(level, Math.max(T0, num(SUPPLEMENTS[comb.creditSource]?.model?.bcExtrapMaxLevel, 0, 1e5) ?? num(SUPPLEMENTS[comb.creditSource]?.model?.bcMaxLevel, 0, 1e5) ?? level)), Math.min(T0, level), Math.max(T0, level)) : (level >= T0 ? T0 : level))
         : comb.creditLevel;
+      if (measuredUsable && level > T0 && leanFrac < 1) {
+        creditLevel = Math.min(creditLevel, T0 + (level - T0) * leanFrac);
+        if (leanFrac < 0.995) notes.push(`Your measured level is used as-is, but only about ${Math.round(leanFrac * 100)}% of the rise is credited for muscle: the rest is the share Forge attributes to an item whose own trials measured body composition and found no change. A lab cannot say which drug produced which part of the rise, so Forge carries over the split the model computed.`);
+      }
       // Estradiol → fat (aromatase inhibitors only; Finkelstein 2013, scaled, ASSUMPTION — see E2_FAT).
       const e2Fat = estradiolFatEffect(comb.e2ActionDrop, { weeksOn: weeks, bmi: ctx.bmi, estradiol: comb.e2Base });
       if (comb.e2ActionDrop > 0.001) {
@@ -1088,8 +1164,15 @@ export function modifiersAt(profile, date, opts = {}) {
       }
       for (const p of comb.parts) {
         const src = cParts.find(c => c.id === p.id);
+        // §22.10: a subsumed item can still be the ONLY thing earning muscle credit, which happens whenever the
+        // largest rise in the stack comes from an item with tLeanShare 0 (clomiphene + an aromatase inhibitor at
+        // a mid-normal baseline is exactly this). Saying only "adds no extra testosterone" would then leave the
+        // row looking like the lean mass came from the drug that has no body-composition evidence.
+        const driverUncredited = comb.uncreditedIds?.includes(comb.driverId);
         const roleText = p.role === 'subsumed'
-          ? `Adds no extra testosterone on top of ${SUPPLEMENTS[comb.driverId]?.name.split(' (')[0] || 'the stronger item'}: they share the same final step (Habous 2018). `
+          ? (driverUncredited && !comb.uncreditedIds.includes(p.id)
+            ? `Adds no extra testosterone on top of ${SUPPLEMENTS[comb.driverId]?.name.split(' (')[0] || 'the stronger item'} — they share the same final step (Habous 2018) — but it is the only item here with body-composition evidence, so ALL of the modeled lean mass on this row is credited to it, not to the larger rise. `
+            : `Adds no extra testosterone on top of ${SUPPLEMENTS[comb.driverId]?.name.split(' (')[0] || 'the stronger item'}: they share the same final step (Habous 2018). `)
           : p.role === 'cause' ? 'Treats a cause, so it raises the level the drugs then work from. Below about 550 ng/dL that barely shrinks what a SERM adds, because the measured SERM effect is a roughly constant number of ng/dL and neither Keihani 2020 nor Kim 2026 found baseline testosterone to predict it; above 550 the modeled rise does start to taper. ' : '';
         const none = src?.model.bodyComp === 'none' || src?.model.tLeanShare === 0;
         // Extrapolated is a per-MAN judgement, not just a per-item class: clomiphene's body composition was

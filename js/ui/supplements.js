@@ -244,9 +244,9 @@ const bcBadge = r => r.bodyComp === 'measured'
   : r.bodyComp === 'extrapolated'
     ? '<span class="badge warn" title="Nobody has measured body composition on this item in a man like you. The lean number is Forge extrapolating through the testosterone→lean curve — and that curve was built by giving men testosterone from OUTSIDE with their own gonadotropins switched off, which is not what this does. Range starts at zero.">Extrapolated</span>'
     : '<span class="badge bad" title="Trials measured body composition on it and found none.">No muscle effect</span>';
-const rng = (lo, hi, dp = 1) => `${sgn(lo, dp)} to ${sgn(hi, dp)}`;
 // Inside a RANGE, an exact zero reads better as "0" than as "±0": "±0 to +10.4" looks like a typo, and the low
-// end of an unmeasured item's range is exactly zero by design, so this is the common case.
+// end of an unmeasured item's range is exactly zero by design, so this is the common case. One formatter, used
+// by the headline, the tiles and the scenario band, so a row cannot print "0 to +6.4" next to "±0 to +6.4".
 const z = (n, dp = 1) => (Math.abs(Number(n) || 0) < 0.005 ? '0' : sgn(n, dp));
 const rngz = (lo, hi, dp = 1) => `${z(lo, dp)} to ${z(hi, dp)}`;
 
@@ -407,8 +407,8 @@ function planRow(r) {
   nums.push(`<div class="sp-pn"><span class="k">Total T</span><b>${tMoved ? `${r.t.from} → ${r.t.to}` : `${r.t.from} (no change)`}</b>${tMoved && r.t.hi !== r.t.lo ? `<span class="tiny muted">range ${r.t.lo}–${r.t.hi} ng/dL${r.t.assumed ? ' · start assumed' : ''}</span>` : `<span class="tiny muted">ng/dL${r.t.assumed ? ' · start assumed' : ''}</span>`}</div>`);
   if (r.freeT.to != null) nums.push(`<div class="sp-pn"><span class="k">Free T</span><b>${f1(r.freeT.from)} → ${f1(r.freeT.to)}</b><span class="tiny muted">pg/mL (Vermeulen)</span></div>`);
   if (r.e2.from != null) nums.push(`<div class="sp-pn"><span class="k">Estradiol</span><b>${e2Moved ? `${f1(r.e2.from)} → ${f1(r.e2.to)}` : `${f1(r.e2.from)} (no change)`}</b><span class="tiny muted">pg/mL${r.e2.assumed ? ' · assumed' : ''}</span></div>`);
-  nums.push(`<div class="sp-pn ${r.lean.lb > 0.05 ? 'good' : ''}"><span class="k">Lean</span><b>${sgn(r.lean.lb)} lb</b><span class="tiny muted">${rng(r.lean.lo, r.lean.hi)} over ${Math.round(r.weeks / 4.345)} mo</span></div>`);
-  nums.push(`<div class="sp-pn ${r.fat.lb < -0.05 ? 'good' : r.fat.lb > 0.05 ? 'bad' : ''}"><span class="k">Fat</span><b>${sgn(r.fat.lb)} lb</b><span class="tiny muted">${rng(r.fat.lo, r.fat.hi)}</span></div>`);
+  nums.push(`<div class="sp-pn ${r.lean.lb > 0.05 ? 'good' : ''}"><span class="k">Lean</span><b>${sgn(r.lean.lb)} lb</b><span class="tiny muted">${rngz(r.lean.lo, r.lean.hi)} over ${Math.round(r.weeks / 4.345)} mo</span></div>`);
+  nums.push(`<div class="sp-pn ${r.fat.lb < -0.05 ? 'good' : r.fat.lb > 0.05 ? 'bad' : ''}"><span class="k">Fat</span><b>${sgn(r.fat.lb)} lb</b><span class="tiny muted">${rngz(r.fat.lo, r.fat.hi)}</span></div>`);
   return `<div class="sp-prow ${open ? 'open' : ''}${r.inStack ? ' in' : ''}" data-prow="${esc(r.id)}">
     <button class="sp-phead" data-popen="${esc(r.id)}" aria-expanded="${open}">
       <div class="grow"><div class="t">${esc(r.name)}</div>

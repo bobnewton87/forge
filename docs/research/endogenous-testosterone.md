@@ -1546,3 +1546,181 @@ Stated plainly, because the point is accuracy:
    about: no trial has ever measured body composition on it at any baseline, none has enrolled a eugonadal man,
    and there is no safety data past 16 weeks. The isomer rationale is sound and the tolerability signal
    favours it, but it rests on one unblinded retrospective chart review.
+
+---
+
+## 15. `tLeanShare` has to compose: the aromatase-inhibitor combination bug (2026-10-21)
+
+Found in review of §14, flagged as "worth a second opinion", and it is a genuine bug.
+
+### 15.1 What the planner was showing
+
+At Bob's assumed baseline of 548 ng/dL:
+
+| row | net | lean | fat | T | credited |
+|---|---|---|---|---|---|
+| Clomiphene citrate | +4.3 lb | +4.4 | +0.1 | 548 → 823 | 823 |
+| **Clomiphene + aromatase inhibitor** | **+4.6 lb** | **+5.1** | +0.5 | 548 → 870 | **870** |
+| Aromatase inhibitor alone | −0.8 lb | −0.3 | +0.5 | 548 → 800 | 548 |
+
+Adding a drug that, **on its own**, the same engine scores at −0.8 lb and grades "Tolerability: poor" *improved*
+the row and pushed it above clomiphene alone in the ranking.
+
+### 15.2 Why, exactly
+
+Not a rounding artefact — a structural hole, and the specific pairing makes it as bad as it can get:
+
+1. At 548 ng/dL the AI's modeled rise (**+322 ng/dL**) is **larger** than clomiphene's (**+275**).
+2. The LH-driven composition is "largest wins, the rest add `COMBO_BONUS × extra`", and `COMBO_BONUS = 0`
+   (Habous 2018). So the **AI becomes the driver**, clomiphene is **subsumed**, and clomiphene contributes
+   **nothing at all** to the modeled serum level. The entire 548 → 870 is the AI's.
+3. The credit then did this:
+   ```js
+   const lhCred = mid.lh.filter(x => x.delta > 0 && creditable(x.e));  // → [clomiphene] only
+   const d = lhCred[0];                                 // clomiphene
+   const bound = Math.max(credit, bcBoundOf(d.e));      // clomiphene's bound: 1,390
+   credit = Math.min(mid.level, bound);                 // min(870, 1390) = 870  ← the whole AI-made rise
+   ```
+   `creditable()` decided **which item supplies the evidence bound**. It never removed the non-creditable
+   item's *contribution to the level* from the thing being credited. So a rise produced start to finish by the
+   aromatase inhibitor was run through the Bhasin curve under clomiphene's evidence.
+
+### 15.3 Why that contradicts the measurement
+
+`tLeanShare: 0` on the aromatase inhibitors is not caution, it is four randomized trials:
+
+- **Burnett-Bowie 2009a** (Clin Endocrinol 70:116–23; RCT, men ≥60, anastrozole 1 mg, 12 months): total T
+  **323 → 525 ng/dL** — a rise the size of a SERM's — and **body composition by CT *and* DXA, and strength,
+  did not change**. This is the decisive one: it is the exact experiment, with the exact hormone change the
+  model was crediting, and the answer was no.
+- **Burnett-Bowie 2009b** (JCEM 94:4785–92; RCT, n=69, 12 months): spine BMD **fell** on anastrozole
+  (1.121 → 1.102 g/cm²) while it rose on placebo, p=0.0014. *"Aromatase inhibition does not improve skeletal
+  health in aging men."*
+- **Loves 2013** (Eur J Endocrinol 169:705–14; RCT, letrozole, obese hypogonadal men): same null on body
+  composition.
+- **Juang 2014**: same.
+- And **Mauras 2000** found +58% testosterone in eugonadal males aged 15–22 with no body-composition change —
+  which is why the catalogue deliberately has *no low-T gate* on this item: the number moves at any baseline
+  and the muscle never does.
+
+### 15.4 The fix
+
+`tLeanShare` is now a real share and is **composed**, not consulted. `combineEndogenous`'s `run()` takes a
+`lean` flag that re-runs the **identical** composition over only the creditable part of each item's rise
+(`shareOf(e)`, default 1; zero items drop out of the LH list entirely so they cannot even contribute a
+ceiling). The result, `midLean.level`, caps the credit:
+
+```js
+if (mid.level > T0) credit = Math.min(credit, Math.max(T0, midLean.level));
+```
+
+A **suppression** keeps a share of 1 regardless: `tLeanShare` says "this rise does not build muscle", never
+"this fall does not cost it". `creditable()` is now derived from `shareOf()` so the two can never disagree.
+The **measured on-therapy lab** branch got the same treatment — a lab cannot say which drug produced which part
+of the rise, so Forge carries over the creditable *fraction* the model computed; without this, entering a lab
+would have reinstated the whole bug.
+
+Credit levels after the fix — every `X + AI` pairing now credits exactly what `X` credits alone:
+
+| | T0 = 548 | | T0 = 300 | |
+|---|---|---|---|---|
+| | serum | credited | serum | credited |
+| clomiphene | 823 | 823 | 573 | 573 |
+| clomiphene + AI | 870 | **823** | 573 | **573** |
+| hCG | 1,100 | 870 | 765 | 765 |
+| hCG + AI | 1,100 | **870** | 765 | **765** |
+| enclomiphene + AI | 800 | **604** | 516 | **516** |
+| tamoxifen + AI | 800 | **790** | 609 | **609** |
+| AI alone | 800 | **548** | 503 | **300** |
+
+And the rows:
+
+| row | before | after |
+|---|---|---|
+| Clomiphene | +4.3 net (+4.4 lean) | +4.3 net (+4.4 lean) |
+| Clomiphene + AI | **+4.6 net (+5.1 lean)** | **+3.7 net (+4.0 lean)** |
+| hCG | +5.3 | +5.3 |
+| hCG + AI | +4.5 | +4.5 |
+
+The AI keeps its full **estradiol** effect, so the combination still pays the Finkelstein fat penalty — that
+penalty is the reason the combination is *worse* than the SERM alone, which is what the evidence says.
+
+### 15.5 Two things the fix had to say out loud
+
+A subsumed item can now be the **only** thing earning credit, which is confusing if the row only says "adds no
+extra testosterone on top of the aromatase inhibitor". When the driver has a zero share and a subsumed item
+does not, the contribution text now reads: *"…but it is the only item here with body-composition evidence, so
+ALL of the modeled lean mass on this row is credited to it, not to the larger rise."*
+
+And the combination note states the split: *"Of the rise to ≈870 ng/dL, Forge credits muscle on at most ≈823 —
+the part the aromatase inhibitor did not produce … The estradiol effect, and the fat cost that follows from it,
+still apply in full."*
+
+### 15.6 Scope
+
+Only the aromatase inhibitors carry `tLeanShare: 0` today (`resistance_training` has `bodyComp: 'none'` but
+`kind: 'none'`, so it never reaches this engine). The composition is written for the general fractional case
+and is pinned by a test using a synthetic half-share item, so a future entry with partial body-composition
+support needs no re-derivation. The invariant worth keeping is the test name: **adding an aromatase inhibitor
+never increases modeled lean**, at any baseline, in any combination.
+
+### 15.7 The same leak in the interval
+
+The point estimate was not the only place the uncredited rise was getting through. The planner scaled a row's
+lean/fat **range** by the log-level ratio at the ends of the combined **serum** confidence interval. The
+aromatase inhibitor carries a deliberately wide `tCI` of `[0.45, 2.2]` (+31% twice-weekly to +150% on
+letrozole), so after the point-estimate fix the row still read:
+
+> Clomiphene + aromatase inhibitor · **+5.2 lb net · 0 to +10.1**  — against clomiphene's own **0 to +7.1**
+
+The combination's *upside* was still larger than the SERM's, and all of that headroom came from the uncertainty
+of a drug crediting nothing. `combineEndogenous` now runs the lean-mode composition at the lo and hi CI ends
+too (`leanLevelCapLo/Hi`), `modifiersAt` exposes `leanLevelLo/Hi` as the serum bounds clipped by them, and the
+planner scales off those. The combination now reads **0 to +6.4** against clomiphene's **0 to +7.1**.
+
+Two things fell out of that:
+
+- **The denominator was mismatched.** The interval was `v × ln(serumBound)/ln(serumMid)` while `v` itself was
+  produced at the *credited* level. For any row where the credit is clipped below the serum level — hCG at a
+  mid-normal baseline, every SERM + AI pairing — that systematically understated the interval. The denominator
+  is now the credited mid, so numerator and denominator refer to the same quantity. hCG's upside went from
+  0 to +5.3 to 0 to +8.0; that is a correction, not a loosening.
+- **A row with no credited movement needs a fallback.** The aromatase inhibitor alone credits no testosterone
+  at all, so the scale factor is 0/0 and the range collapsed to `[0, 0]` around a point estimate of −0.8 lb —
+  an interval that did not contain its own estimate. Its whole effect is the estradiol fat term, which is not a
+  function of testosterone, so there is no testosterone-derived uncertainty to express: the range now falls
+  back to the estimate itself.
+
+A test pins the general invariant: **every row's range contains its own estimate**, at every baseline.
+
+### 15.8 Three more leaks the invariant test found
+
+Adding "every row's range contains its own estimate" as a test, across six profiles, immediately failed. Three
+separate causes, two of them pre-existing on master and unrelated to the aromatase inhibitor:
+
+**`freeAdj` was evaluated at the serum level** (new finding, same class as the main bug). The adjustment asks
+"of the rise being credited, how much survives into free testosterone", so both halves of the ratio must refer
+to the same rise — but it divided the free-T ratio by the **serum** total-T ratio. An item contributing nothing
+creditable could therefore change it: fat loss alone gives `freeAdj` 0.93 (weight loss raises SHBG, so free T
+lags total), while fat loss + an aromatase inhibitor pushed the serum level to 591 ng/dL, sent the ratio over
+1, clamped it to 1, and handed the combination **5 ng/dL more credit than fat loss on its own**. Now evaluated
+at the credited level, and the two agree exactly (352.79 both). It also makes `freeAdj` correct generally: hCG's
+was being computed at 1,100 while its credit sat at 870.
+
+**The honesty floors were applied before the range ends were ordered** (pre-existing on master; 4 rows
+affected). `scale()` returns `[at the low T bound, at the high T bound]`, which for a *negative* quantity — fat
+falling — comes back with the larger magnitude second, i.e. `lo > hi`. Setting `fatHi = Math.max(0, fat)`
+before the swap therefore overwrote whichever end happened to be *called* `fatHi`, which was the real low end.
+Tamoxifen in an obese hypogonadal man read **"fat −1.5 lb, range −0.89 to 0"** — a range excluding its own
+estimate — and the row then headlined **"+2.3 lb net, 0 to +1.9"**, an upside *below* the number beside it.
+Same for ashwagandha, tongkat ali and the sleep + food + ashwagandha combination. Order first, then floor.
+
+**A body-composition bound could leave the interval not bracketing the credited mid** (pre-existing in kind,
+surfaced by the §22.10 interval rework; 9 rows). `leanLevelLo/Hi` carry the share cap but not the per-item
+bc bound, which is applied to the mid further down the credit chain. hCG for a man at 548: serum 1,100 with a
+CI low end of 903, credited 870 because that is as far as Liu 2002 reached — so the interval's *low* end sat
+above the estimate and the row reported **"fat +0.1 lb, range +0.11 to +0.15"**. Where the bound binds there
+is less T-derived uncertainty on that side, so the end now collapses onto the estimate.
+
+After all three: **zero rows** across six profiles (no labs, low-T secondary, eugonadal, primary, high-normal,
+obese hypogonadal) have a lean, fat or net range that excludes its own estimate.

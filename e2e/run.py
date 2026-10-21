@@ -2391,6 +2391,42 @@ def t_tband(t, ctx):
           'catalogue sheet', 'extrapolation + Bhasin caveat + zero floor', short(sheet, 200))
 
 
+@test('T4', 'Adding an aromatase inhibitor never improves a row (CONTRACT \u00a722.10)')
+def t_ai_share(t, ctx):
+    """\u00a722.10: `tLeanShare: 0` has to survive composition. The AI out-rises clomiphene at a mid-normal
+    baseline, so it became the driver and its entire rise was credited for muscle under clomiphene's evidence
+    bound \u2014 making the combination outrank the SERM alone."""
+    app = t.app
+    app.load(bobir(app), 'supplements')
+    app.store("(store.updateProfile({ metabolic: { ...(store.getProfile().metabolic || {}), totalT: null, lh: null, labDate: null } }), 1)")
+    app.go('supplements', settle=700)
+    app.page.eval_on_selector_all('#sp-plan-wrap details.sp-pmore', 'els => els.forEach(d => d.open = true)')
+    app.page.wait_for_timeout(200)
+    def net(rid):
+        sel = f'#sp-plan-wrap [data-prow="{rid}"] .sp-pscore'
+        if not app.has(sel):
+            return None
+        txt = app.text(sel).replace('\u2212', '-').replace('\u00b1', '')
+        m = re.search(r'(-?\d+(?:\.\d+)?)', txt)
+        return float(m.group(1)) if m else None
+    solo, combo, ai = net('clomiphene'), net('clomiphene+aromatase_inhibitor'), net('aromatase_inhibitor')
+    t.check(solo is not None and combo is not None, 'both rows present', 'clomiphene and clomiphene+AI rows', f'{solo} / {combo}')
+    t.sub('T4a', 'Clomiphene + AI does not outrank clomiphene alone', combo <= solo,
+          'net lb', f'combo \u2264 solo', f'combo {combo} vs solo {solo}')
+    t.sub('T4b', 'The AI on its own is still modeled as a net cost', ai is not None and ai < 0,
+          'AI net', 'negative', ai)
+    app.click('#sp-plan-wrap [data-popen="clomiphene+aromatase_inhibitor"]')
+    app.page.wait_for_timeout(300)
+    det = app.text('#sp-plan-wrap [data-prow="clomiphene+aromatase_inhibitor"]').lower()
+    t.sub('T4c', 'The combination says one of its items adds testosterone and no muscle',
+          'no muscle' in det, 'row detail', 'names the no-muscle item', short(det, 160))
+    t.sub('T4d', 'And explains that the lean mass is credited to the SERM, not to the larger rise',
+          'only item here with body-composition evidence' in det,
+          'row detail', 'subsumed-but-crediting explained', short(det, 200))
+    t.sub('T4e', 'The estradiol fat cost is still shown', 'estradiol' in det and 'fat' in det,
+          'row detail', 'estradiol and fat still present', short(det, 160))
+
+
 @test('E1', 'No console/page errors during flows')
 def t_errors(t, ctx):
     app = t.app
