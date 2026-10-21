@@ -406,3 +406,30 @@ biological floor, a week that cannot fit the floors in its scheduled minutes has
 app does not yet offer: cut the **non-priority** floors toward Pelland's 4–6 rather than lengthening every session.
 By Pelland's own curve, moving a normal muscle from 10 to 5 costs roughly one detectable increment. That belongs in
 the "Make room" options, as a volume choice beside the time choices.
+
+### 8.6 Addendum (2026-10-21, second pass): two more shared targets, and what is still open
+
+The same bug class, found by the nutrition audit and routed here, in `js/engine/targets.js`:
+
+| # | Where | What it showed | Fix |
+|---|---|---|---|
+| D9 | `DEF.proteinGPerLb = 1.0`, flat across goals, while `js/engine/nutrition.js` defaults `{cut: 1.15}` | under a cut with no protein set, the Nutrition editor's slider read **1.00** while Today's target was computed from **1.15 g/lb** — two numbers for one target, on one screen (170 lb: 170 g vs 195 g) | `targets.defaultProteinGPerLb(profile)` resolves per goal and reads `nutrition.DEFAULT_PROTEIN` when that export lands, with a pinned copy of the same table until then. `test/volume-cohesion.test.js` compares the resolver against `nutrition.dailyTargets` for all four goals, and fails if the two tables ever drift. |
+| D10 | the deficit → cardio-minutes conversion used **gross** kcal | `cardio.estimateCalories` is METs × kg × hours, which includes the resting burn you would have spent anyway. Dividing a deficit by a gross rate under-prescribes the minutes: easy cycling is 5.5 METs, so only 4.5/5.5 of the burn is new energy. Bob's 595 kcal/day gap asked for **590 min/week** when the honest figure is **720** (+22%). | `targets.netKcalPerMin(modality, intensity, weightLb)`, exported. Net = gross × (METs − 1)/METs — exact *within the same model that produced the gross number*, with the MET read back through `estimateCalories` rather than duplicated, so no second metabolic model exists to drift. |
+
+**Deliberately not applied: Careau et al. 2021's ~0.72 exercise-compensation factor** (Curr Biol 31:4659, doi:10.1016/j.cub.2021.08.016 — people offset roughly a quarter of exercise energy with lower resting expenditure). It belongs in this calculation on the merits, but the projection applies it to the cardio delta on its side, and applying it in both places would compound it into a ~0.52 factor. One owner should hold it. The code says so at the call site so nobody adds it twice.
+
+**Still open, in other owners' files** (reported, not edited):
+
+- **`js/classes/classify.js` → `groupCredits(muscles)` SUMS the region credits inside a group**, which is divergence D5 all over again in the CLASSES owner's module. The class picker tells Bob what a class is worth; the week counts it once per group from the same `classify.muscles`. Measured at 45 min:
+
+  | class | picker says | the week counts |
+  |---|---|---|
+  | Body Pump | back **3.5**, chest 2.5, shoulders 2, triceps 1.5, biceps 1.5 | back **1.5**, chest 2, shoulders 1, triceps 1, biceps 0.75 |
+  | Total Body Conditioning | shoulders **3.5**, triceps **3**, back 3, core 3 | shoulders 2, triceps 1.5, back 1.5, core 2 |
+  | Barre | glutes **3.5**, quads 2.5 | glutes 2, quads 1.5 |
+  | Pilates | core **4.5**, glutes 2.5 | core 3, glutes 1.5 |
+  | Zumba, Ride | (agree) | (agree — one region per group) |
+
+  The fix is one line: take the **max** over the group's regions instead of the sum, as `recovery.sessionVolume` does. Classes whose maps touch one region per group are unaffected, which is why this went unnoticed.
+- **`js/ui/retro.js` → `lineSummary()`** keeps a fourth private copy of the working-set count (`done && r > 0`). It agrees with `recovery.blockSets` today, so it is a duplication risk rather than a live bug; it should call `blockSets`.
+- **`js/classes/classify.js`**: in this branch every class name falls through to the `other` rule (no muscle credit, cardio only), which is also what the failing `data/crunch-schedule.json has the contract shape` test reports. Pre-existing on master, not caused by this work.

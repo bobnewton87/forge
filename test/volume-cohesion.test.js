@@ -339,6 +339,51 @@ test('cohesion: the planner hands the projection the sets it planned', () => {
   for (const u of UNIT_ORDER) close(sum.units[u].total, r1(units[u] || 0), 0.051, `${u}: planner unit credit`);
 });
 
+// ---------------------------------------------------------------- other shared targets
+// Same bug class as the set counts: a target that two modules each default on their own.
+test('cohesion: the protein default is per goal and identical in targets and nutrition', async () => {
+  const NU = await import('../js/engine/nutrition.js');
+  for (const goal of TG.GOALS) {
+    const p = prof({ goal, bodyweight: 170, nutrition: { mode: 'simple' } });
+    const resolved = TG.resolveTargets(p).nutrition.proteinGPerLb;
+    const dt = NU.dailyTargets(p, { dayType: 'lift', bodyweight: 170 });
+    assert.ok(dt && dt.protein > 0, `${goal}: nutrition gave no protein target`);
+    // What the editor's slider shows must be what the day's target is computed from.
+    close(resolved, Math.round(dt.protein / 170 * 100) / 100, 0.011, `${goal}: targets vs nutrition protein`);
+    close(resolved, TG.defaultProteinGPerLb(p), 0.011, `${goal}: defaultProteinGPerLb`);
+  }
+  // A cut defends muscle with more protein than a recomp; that difference must survive the resolver.
+  assert.ok(TG.defaultProteinGPerLb(prof({ goal: 'cut' })) > TG.defaultProteinGPerLb(prof({ goal: 'recomp' })), 'a cut should default higher');
+  // An explicit setting always wins over either default.
+  close(TG.resolveTargets(prof({ goal: 'cut', bodyweight: 170, nutrition: { mode: 'simple', proteinGPerLb: 1.3 } })).nutrition.proteinGPerLb, 1.3, 0.011);
+  // CONTRACT-NOTE: nutrition.js owns the table; the copy in targets.js (PROTEIN_FALLBACK) exists only
+  // until that export lands. If nutrition.js exports it, the two must agree exactly.
+  if (NU.DEFAULT_PROTEIN) for (const goal of TG.GOALS) close(TG.defaultProteinGPerLb(prof({ goal })), NU.DEFAULT_PROTEIN[goal], 0.001, `${goal}: fallback table drifted from nutrition.DEFAULT_PROTEIN`);
+});
+
+test('cohesion: a deficit is converted to cardio minutes with NET calories', async () => {
+  const { estimateCalories } = await import('../js/data/cardio.js');
+  const W = 170;
+  // Net is exactly (METs - 1) / METs of the gross figure: resting is 1 MET by definition.
+  for (const [mod, int] of [['bike', 'easy'], ['run', 'hard'], ['walk', 'easy']]) {
+    const gross = estimateCalories(mod, 60, int, W);
+    const mets = gross / (W / 2.20462);
+    close(TG.netKcalPerMin(mod, int, W), gross / 60 * (mets - 1) / mets, 0.011, `${mod}/${int}`);
+    assert.ok(TG.netKcalPerMin(mod, int, W) < gross / 60, `${mod}/${int}: net must be below gross`);
+  }
+  assert.equal(TG.netKcalPerMin('not-a-modality', 'easy', W), 0, 'unknown modality costs nothing');
+  assert.equal(TG.netKcalPerMin('bike', 'easy', 0), TG.netKcalPerMin('bike', 'easy', 165), 'a missing weight falls back, it does not divide by zero');
+  // The prescription must cover the deficit when the minutes are actually done.
+  const p = prof({ goal: 'weight_loss', bodyweight: W, body: { ...prof().body, goalWeightLb: 150 } });
+  const plan = TG.resolveTargets(p).goals.plan;
+  assert.ok(plan && plan.deficitKcal > 0 && plan.cardioMinPerWeek > 0, 'fixture: a loss plan with a deficit');
+  const covered = plan.cardioMinPerWeek * TG.netKcalPerMin('bike', 'easy', W) / 7;
+  close(covered, plan.deficitKcal, Math.max(12, plan.deficitKcal * 0.03), 'minutes x net kcal/min should cover the daily deficit');
+  // Gross would have under-prescribed: the honest figure is meaningfully more minutes.
+  const grossMin = Math.round(plan.deficitKcal * 7 / (estimateCalories('bike', 60, 'easy', W) / 60) / 5) * 5;
+  assert.ok(plan.cardioMinPerWeek > grossMin * 1.1, `net should ask clearly more than gross (${plan.cardioMinPerWeek} vs ${grossMin})`);
+});
+
 // ---------------------------------------------------------------- data invariants
 test('data: counted units, tracked units and sub-units are consistent', () => {
   for (const g of GROUP_ORDER) {

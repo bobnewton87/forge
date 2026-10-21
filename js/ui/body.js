@@ -23,7 +23,18 @@ import { targetsSummaryHTML, bindTargetsSummary, cardioTargetHTML, bindCardioTar
 // such, next to each group. This screen keeps no volume maths of its own.
 let card3d = null;   // 3D opts for the "Your body" card (UI-LAB)
 
-const safe = (fn, fb) => { try { const v = fn(); return v == null ? fb : v; } catch (e) { console.error(e); return fb; } };
+// Falls back on null/undefined, on a throw, and - when the caller's fallback is an array - on any
+// non-array result. Every `safe(..., [])` site here goes straight into .filter/.map, and a truthy
+// non-array (a store that returned an object, or a stub) used to sail past the guard and throw there
+// instead, taking the whole Body tab down.
+const safe = (fn, fb) => {
+  try {
+    const v = fn();
+    if (v == null) return fb;
+    if (Array.isArray(fb) && !Array.isArray(v)) return fb;
+    return v;
+  } catch (e) { console.error(e); return fb; }
+};
 const f1 = n => { n = Number(n) || 0; return Math.round(n) === n ? String(n) : n.toFixed(1); };
 const statusLabel = (r = 1, n = 0) => r < 0.5 ? 'Recovering' : r < 0.8 ? 'Almost ready' : n >= 0.5 ? 'Needs work' : n >= 0.2 ? 'Ready' : 'On track';
 const ago = d => d == null ? 'Not trained yet' : d === 0 ? 'Today' : d === 1 ? 'Yesterday' : `${d}d ago`;
@@ -308,21 +319,30 @@ export function bind(root, ctx) {
     const r = g.dataset.region; groupSheet(ctx, REGIONS[r]?.group, r);
   }));
   root.querySelectorAll('[data-ex]').forEach(b => b.onclick = () => ctx.nav('exercise', { id: b.dataset.ex }));
+  // render() can bail out of a card (a bad body log, a stub store) and still paint the rest of the tab.
+  // bind() must not then take the whole screen down with "Cannot set properties of null": every node
+  // it wires up is optional.
   const wIn = root.querySelector('#wIn');
   const logW = () => {
-    const v = parseFloat(wIn.value);
+    const v = parseFloat(wIn ? wIn.value : NaN);
     if (!(v > 50 && v < 600)) { ctx.toast('Enter a weight in lb'); return; }
     wIn.blur(); ctx.store.logBodyweight(ds(), v); ctx.toast(`Logged ${f1(v)} lb`);
   };
-  root.querySelector('[data-wlog]').onclick = logW;
-  wIn.addEventListener('keydown', e => { if (e.key === 'Enter') logW(); });
+  const wlog = root.querySelector('[data-wlog]');
+  if (wlog) wlog.onclick = logW;
+  if (wIn) wIn.addEventListener('keydown', e => { if (e.key === 'Enter') logW(); });
   root.querySelector('[data-wall]')?.addEventListener('click', () => weightsSheet(ctx));
 
   // Weight chart tooltip (tap / hover → nearest point)
   const svg = root.querySelector('#wchart');
-  if (svg) {
-    const pts = JSON.parse(svg.dataset.pts || '[]'); const tip = svg.querySelector('#wtip');
+  const tip0 = svg && svg.querySelector('#wtip');
+  if (svg && tip0) {
+    let pts = [];
+    try { pts = JSON.parse(svg.dataset.pts || '[]'); } catch (e) { pts = []; }
+    if (!Array.isArray(pts)) pts = [];
+    const tip = tip0;
     const show = ev => {
+      if (!pts.length) return;
       const box = svg.getBoundingClientRect(); const vb = svg.viewBox.baseVal;
       const x = ((ev.clientX - box.left) / box.width) * vb.width;
       let best = pts[0]; for (const p of pts) if (Math.abs(p[0] - x) < Math.abs(best[0] - x)) best = p;

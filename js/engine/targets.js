@@ -53,6 +53,10 @@ import { STYLE_LIMITS, normalizeCustomStyle, styleOptions, isStyleId, resolveSty
 export { BUILTIN_STYLES as STYLES } from './generator.js';
 import { sexOf, BODY } from './sex.js';
 import { lossRateDeficit, KCAL_PER_LB_TREND } from './nutrition.js';
+// Namespace import on purpose: it lets this module read nutrition.js's own tables when they are
+// exported and fall back to a pinned copy when they are not, so the two can never resolve one target
+// to two numbers while the export lands. test/volume-cohesion.test.js pins them equal.
+import * as NUT from './nutrition.js';
 // CONTRACT-NOTE (§20 Female mode): goals.goalBodyFatPct defaults to 22 for women (15 DXA-equivalent for men, §20b) and is clamped to the
 //   female limits [14, 35] (men keep LIMITS.goalBodyFatPct [5, 30]); goalBodyFatLimits(profile) exposes them for UI steppers.
 //   Weekly set targets are NOT sex-specific: no study supports different targets for women (Roberts 2020: same relative
@@ -115,6 +119,23 @@ export const LOSS_RATES = [
 export const KCAL_PER_LB = KCAL_PER_LB_TREND;   // first approximation, shared with nutrition.lossRateDeficit
 // Share of the week's weight loss Forge calls "fast". Tiers drive the warning text, not the model.
 const rateTier = r => (r <= 0.4 ? 'gentle' : r <= 0.6 ? 'slow' : r <= 0.85 ? 'steady' : r <= 1.15 ? 'fast' : 'aggressive');
+// NET kcal per minute of cardio: the energy the session ADDS over resting. cardio.estimateCalories is
+// gross (METs x kg x hours, resting burn included), and resting is 1 MET by definition, so the net
+// share is exactly (METs - 1) / METs within the same model that produced the gross number - no second
+// metabolic model, nothing to drift. The MET value is read back through the public API rather than
+// duplicated here, so a change in cardio.js flows straight through.
+// CONTRACT-NOTE: swap this for bodycomp.estimateNetCalories() once that export lands, and keep ONE
+// net-calorie function (CONTRACT §18). Careau 2021's ~0.72 exercise-compensation factor
+// (doi:10.1016/j.cub.2021.08.016) is deliberately NOT applied here: the projection applies it to the
+// cardio delta on its side, and applying it in both places would compound it.
+export function netKcalPerMin(modality = 'bike', intensity = 'easy', weightLb = 165) {
+  const W = Number(weightLb) > 0 ? Number(weightLb) : 165;
+  const gross = estimateCalories(modality, 60, intensity, W);
+  if (!(gross > 0)) return 0;
+  const mets = gross / (W / 2.20462);                 // kcal/hr / kg = METs
+  if (!(mets > 1)) return 0;                          // at or below resting: no net cost
+  return gross / 60 * (mets - 1) / mets;
+}
 
 // ---- §23 lean protection ----------------------------------------------------------------------
 // A PRESET, not a fudge factor: it writes protein and the weekly-set floors, and the projection then
@@ -176,6 +197,18 @@ export const MINIMUMS_EVIDENCE = [
 const DEF_VOLUME = { mode: 'extend', maxMinutes: 90 };
 // goalBodyFatPct: 15 % DXA-equivalent ≈ the colloquial "12 %" (§20b); a saved goal is never changed.
 const DEF = { cardioMin: 120, hardPerWeek: 1, adherence: 0.85, defaultMinutes: 45, style: 'hypertrophy', proteinGPerLb: 1.0, fatPct: 25, goalBodyFatPct: BODY.male.goalBodyFat, goal: 'recomp' };
+// §18: the protein default is PER GOAL, and nutrition.js owns the table. `DEF.proteinGPerLb` was flat
+// at 1.0, so under a cut with no protein set the Nutrition editor's slider read 1.00 while Today's
+// target computed at 1.15 g/lb - two numbers for one target, on one screen.
+// CONTRACT-NOTE: NUT.DEFAULT_PROTEIN is the source once nutrition.js exports it; PROTEIN_FALLBACK is
+// the same table, kept only so this resolves correctly before that export lands. Do not edit one
+// without the other - the cohesion test fails if they disagree.
+const PROTEIN_FALLBACK = { recomp: 1.0, lean_bulk: 1.0, cut: 1.15, weight_loss: 1.0 };
+export function defaultProteinGPerLb(profile) {
+  const table = (NUT && NUT.DEFAULT_PROTEIN && typeof NUT.DEFAULT_PROTEIN === 'object') ? NUT.DEFAULT_PROTEIN : PROTEIN_FALLBACK;
+  const v = Number(table[goalOf(profile)]);
+  return Number.isFinite(v) && v > 0 ? v : DEF.proteinGPerLb;
+}
 export function goalBodyFatLimits(profile) { return sexOf(profile) === 'female' ? BODY.female.goalBfLimits : LIMITS.goalBodyFatPct; }
 const goalBfDefault = profile => (sexOf(profile) === 'female' ? BODY.female.goalBodyFat : DEF.goalBodyFatPct);
 export function goalWeightLimits() { return LIMITS.goalWeightLb; }
@@ -223,9 +256,13 @@ export function lossPlan(profile, { weightLb = null, now = new Date() } = {}) {
   if (deficitKcal != null && deficitKcal > 500) warnings.push(`A ${deficitKcal} kcal/day deficit is past the ~500 kcal/day point where lifters stopped gaining lean mass at all (Murphy & Koehler 2022). Strength holds up better than size.`);
   // §23: cardio is the other half of a deficit. Minutes/week of easy Zone-2 work that would cover the whole
   // gap, so the user can move more instead of eating less (and so the Plan screen can say how much).
+  // This uses NET calories: cardio.estimateCalories is gross (METs x kg x hours includes the resting
+  // burn you would have spent anyway), and dividing a deficit by a gross rate under-prescribes the
+  // minutes - easy cycling is 5.5 METs, so only 4.5/5.5 of the burn is new energy and the honest
+  // figure is 22% more minutes.
   let cardioMinPerWeek = null;
   if (deficitKcal != null && W != null) {
-    const perMin = estimateCalories('bike', 60, 'easy', W) / 60;
+    const perMin = netKcalPerMin('bike', 'easy', W);
     if (perMin > 0) cardioMinPerWeek = Math.round(deficitKcal * 7 / perMin / 5) * 5;
   }
   return { goalWeightLb: goalW, goalWeightDate: date, pctPerWeek: Math.round(pct * 100) / 100, lbPerWeek, deficitKcal, cardioMinPerWeek,
@@ -664,7 +701,7 @@ function activeStack(profile, today) {
 }
 function nutritionOf(profile) {
   const n = profile?.nutrition || {}, bw = Number(profile?.bodyweight) || 0;
-  const pg = fin(n.proteinGPerLb) && num(n.proteinGPerLb) > 0 ? num(n.proteinGPerLb) : fin(n.protein) && num(n.protein) > 0 && bw ? Math.round(num(n.protein) / bw * 20) / 20 : DEF.proteinGPerLb;
+  const pg = fin(n.proteinGPerLb) && num(n.proteinGPerLb) > 0 ? num(n.proteinGPerLb) : fin(n.protein) && num(n.protein) > 0 && bw ? Math.round(num(n.protein) / bw * 20) / 20 : defaultProteinGPerLb(profile);
   return {
     mode: MODES.includes(n.mode) ? n.mode : 'off',
     calories: fin(n.calories) && num(n.calories) > 0 ? Math.round(num(n.calories)) : null,

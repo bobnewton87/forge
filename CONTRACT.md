@@ -761,6 +761,20 @@ The conclusion, now enforced by `test/volume-cohesion.test.js`:
   `sessionVolume` from `recovery.js` (the counter). Neither calls the other during module evaluation, and
   `targets.STYLES` is a re-exported live binding for that reason. Five entry orders are pinned by test.
 
+Second pass (same amendment): two more targets that each module defaulted on its own.
+- **Protein is a per-goal default**, resolved by `targets.defaultProteinGPerLb(profile)` from
+  `nutrition.DEFAULT_PROTEIN` (a pinned copy of the table lives in `targets.js` only until that export
+  lands; the cohesion test fails if they drift). `DEF.proteinGPerLb` was flat at 1.0, so under a cut the
+  Nutrition slider read 1.00 while Today's target was computed from 1.15 g/lb.
+- **A deficit converts to cardio minutes with NET calories**, via `targets.netKcalPerMin(modality,
+  intensity, weightLb)` = gross × (METs − 1)/METs. `cardio.estimateCalories` is gross, so the old
+  conversion under-prescribed by 22% (590 min/wk where 720 was needed). Careau 2021's ~0.72
+  exercise-compensation factor is deliberately NOT applied here: the projection applies it to the cardio
+  delta, and one owner must hold it or it compounds.
+Still open in other owners' files (see audit §8.6): `classes/classify.js → groupCredits` sums region
+credits inside a group (the class picker says Body Pump is worth 3.5 back sets where the week counts 1.5
+— the fix is max, not sum), and `ui/retro.js → lineSummary` keeps a private copy of the working-set count.
+
 Set-count semantics (documented in docs/research/weekly-volume-audit.md §8.1): only **working sets** count, at 0–3
 reps in reserve; warm-ups are not stored as sets and never count; a planned day counts its prescription; credit is
 fractional (direct 1.0, synergist 0.5) and each enforcement unit is credited once per set, at the largest weight over
