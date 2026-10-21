@@ -1,10 +1,12 @@
 // Workout tab (UI-TRAIN): the per-set logger for the active session (or params.id).
 // CONTRACT-NOTE: extra optional fields written by this module: Block.skipped (lift, boolean).
 //   Skipped blocks are kept for the record but their undone sets never count.
-// CONTRACT-NOTE: a session with source 'manual' and startedAt null is a "log a past workout"
-//   session: the header shows an editable date instead of the elapsed timer.
+// CONTRACT-NOTE: a session with startedAt null is a session being written up after the fact
+//   ("log a past workout", a retro build from the date builder, §24): the header shows an editable
+//   date instead of the elapsed timer, bounded by the retro window, and Finish stamps startedAt /
+//   endedAt onto that session's own date so every reader attributes it to the right day and week.
 // Every change is saved right away (typing is debounced 400 ms and flushed on pagehide).
-import { ds, fmtShort } from '../util.js';
+import { ds, fmtShort, fmtDay } from '../util.js';
 import { GROUPS } from '../data/muscles.js';
 import { CARDIO, INTENSITIES, estimateCalories } from '../data/cardio.js';
 import { getEx } from '../data/exercises.js';
@@ -12,6 +14,7 @@ import { groupStatus, sessionVolume } from '../engine/recovery.js';
 import { sessionPRs, personalRecords } from '../engine/progression.js';
 import { swapBlock, addExercise } from '../engine/generator.js';
 import { cardioWeek } from '../engine/targets.js';
+import { retroTimes, retroFloor, canLogPast } from '../engine/retro.js';
 import { targetBar } from './targets.js';
 // CONTRACT-NOTE (INTEGRATOR §18): the finish summary shows this week's cardio vs the weekly target
 //   (targets.cardioWeek) when the session had cardio or the week is behind. "Your week now" bars
@@ -143,6 +146,7 @@ function renderInner(ctx) {
     i++;
   }
   const done = s.status === 'done';
+  const retro = !s.startedAt && s.date < ds();      // §24: written up after the fact
   return `${renderHeader(profile)}
     <div class="tr-blocks">${blocks || `<div class="empty muted tr-noblocks">${s.source === 'manual' ? 'Add what you did, set by set.' : 'No exercises yet.'}</div>`}</div>
     <div class="tr-plan-tools">
@@ -152,7 +156,7 @@ function renderInner(ctx) {
     <label class="tr-field"><span class="tr-label">Notes</span><textarea rows="2" data-f="notes" placeholder="How did it feel? Anything to remember?">${esc(s.notes || '')}</textarea></label>
     ${done
       ? '<button type="button" class="btn btn-primary tr-big" data-s="close">Done editing</button>'
-      : '<button type="button" class="btn btn-primary tr-big tr-finish" data-s="finish">Finish workout</button>'}
+      : `<button type="button" class="btn btn-primary tr-big tr-finish" data-s="finish">${retro ? `✓ Save it on ${esc(fmtDay(s.date).split(',')[0])}` : 'Finish workout'}</button>`}
     <button type="button" class="btn btn-ghost tr-danger-text tr-discard" data-s="discard">${done ? 'Delete workout' : 'Discard workout'}</button>`;
 }
 
@@ -166,9 +170,9 @@ function renderHeader(profile) {
   return `<header class="tr-shead" data-head>
     <div class="tr-shead-row">
       <div class="tr-shead-title"><h1>${esc(s.title || 'Workout')}</h1>
-        <div class="muted small">${loc ? esc(`${loc.icon || ''} ${loc.name}`) : ''}${s.status === 'done' ? ' · Completed' : ''}</div></div>
+        <div class="muted small">${loc ? esc(`${loc.icon || ''} ${loc.name}`) : ''}${s.status === 'done' ? ' · Completed' : manual && s.date < ds() ? ` · Logging ${esc(fmtDay(s.date))}` : ''}</div></div>
       ${manual
-        ? `<input type="date" class="tr-date-in" value="${esc(s.date)}" max="${ds()}" data-f="date" aria-label="Date">`
+        ? `<input type="date" class="tr-date-in" value="${esc(s.date)}" min="${retroFloor()}" max="${ds()}" data-f="date" aria-label="Date">`
         : `<div class="tr-clock"><b data-elapsed>${fmtDuration((s.endedAt ? new Date(s.endedAt) : Date.now()) - new Date(s.startedAt))}</b><span>elapsed</span></div>`}
     </div>
     <div class="tr-sprog"><div style="width:${pct}%"></div></div>
@@ -429,11 +433,13 @@ function finish(root) {
   const now = new Date();
   S.status = 'done';
   S.endedAt = now.toISOString();
-  if (!S.startedAt && S.source === 'manual') {
-    // past log: give it plausible timestamps on its own date so recovery can order it
-    const d = S.date === ds(now) ? now : new Date(S.date + 'T18:00:00');
-    S.endedAt = d.toISOString();
-    S.startedAt = new Date(d - 45 * 60000).toISOString();
+  if (!S.startedAt) {
+    // Written up after the fact (§24): plausible timestamps on its OWN date, so recovery
+    // ("days since"), the weekly volume audit and History put it on that day, not today.
+    const mins = Math.max(10, Math.round(Number(S.minutes) || Number(S.estMinutes) || 45));
+    const t = retroTimes(S.date, { time: (S.blocks || []).find(b => b.kind === 'class')?.time || null, minutes: mins, now });
+    S.startedAt = t.startedAt;
+    S.endedAt = t.endedAt;
   }
   store.saveSession(S);
   if (store.getActiveSession()?.id === S.id || !store.getActiveSession()) store.setActiveSessionId(null);
@@ -622,7 +628,10 @@ export function bind(root, ctx, params = {}) {
       case 'c-mod': b.modality = t.value; saveNow(); redrawBlock(root, i); break;
       case 'c-int': b.intensity = t.value; saveNow(); break;
       case 'c-unit': if (b.distance) { b.distance.unit = t.value; saveNow(); } break;
-      case 'date': if (t.value) { S.date = t.value; saveNow(); } break;
+      case 'date':   // §24: a logged-after-the-fact session can be re-dated inside the retro window
+        if (t.value && canLogPast(t.value)) { S.date = t.value; saveNow(); redrawHeader(root); }
+        else if (t.value) { toast(CTX, 'Pick a day inside the last 60 days'); t.value = S.date; }
+        break;
       case 'w': case 'r': saveNow(); break;
     }
   };

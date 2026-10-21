@@ -10,6 +10,15 @@
 // Fallback: if that endpoint fails or returns nothing, scrape "Today's Classes" from the
 // server-rendered location page (same approach as Radiance's scrape-crunch.js).
 //
+// MERGE, NEVER OVERWRITE (CONTRACT §24). The endpoint only returns upcoming classes, so a plain
+// write would erase the days that have already happened and Bob could never log yesterday's class.
+// Instead the file accumulates: freshly fetched days are merged into the stored ones, days older
+// than KEEP_BACK_DAYS are pruned, and days that are now in the past are compacted to the fields the
+// app actually uses (name/time/start/duration/instructor) — `classify` is recomputed by
+// js/classes/crunch.js on load and `description`/`id`/`room` are never displayed, so dropping them
+// is lossless and keeps the committed file (and its daily diff) small. The output is deterministic:
+// same inputs → byte-identical file apart from `fetchedAt`, which the Action's diff ignores.
+//
 // Node 20, no npm deps. Usage: node scripts/scrape-crunch.mjs
 
 import https from 'node:https';
@@ -26,6 +35,11 @@ const LOCATION_URL = 'https://www.crunch.com/locations/allen';
 const OCCURRENCES_URL = `https://www.crunch.com/crunch_core/occurrences?club_id=${CLUB_ID}`;
 const TZ = 'America/Chicago';
 const DAYS_AHEAD = 7;
+// How much history the file keeps. 90 days comfortably covers the 60-day retro-logging window
+// (js/engine/retro.js RETRO_DAYS) with a month of slack, and costs ~50 KB of compacted days.
+export const KEEP_BACK_DAYS = 90;
+// Fields kept for a day that has already happened (everything the UI reads).
+const PAST_FIELDS = ['name', 'time', 'start', 'duration', 'instructor'];
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 function get(url, accept, maxRedirects = 5) {
@@ -48,10 +62,10 @@ function get(url, accept, maxRedirects = 5) {
   });
 }
 
-function todayLocal() {
+export function todayLocal() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 }
-function addDaysDs(ds, n) {
+export function addDaysDs(ds, n) {
   const [y, m, d] = ds.split('-').map(Number);
   const x = new Date(Date.UTC(y, m - 1, d + n));
   return x.toISOString().slice(0, 10);
@@ -116,6 +130,76 @@ function parseTodayHtml(html) {
   return classes.length ? [{ date: todayLocal(), classes }] : [];
 }
 
+// ---------- merge (pure, tested in test/retro-schedule.test.js) ----------
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const validDay = d => !!d && typeof d.date === 'string' && DATE_RE.test(d.date) && Array.isArray(d.classes);
+const byStart = (a, b) => String(a.start || a.time || '').localeCompare(String(b.start || b.time || '')) || String(a.name || '').localeCompare(String(b.name || ''));
+// Identity of one occurrence within its day: the club's own id when we have it, else time + name.
+const classKey = c => (c && c.id != null ? `#${c.id}` : `${c?.start || c?.time || ''}|${String(c?.name || '').toLowerCase()}`);
+
+function compactClass(c) {
+  const out = {};
+  for (const k of PAST_FIELDS) if (c[k] !== undefined) out[k] = c[k];
+  return out;
+}
+// A day that has already happened keeps only the displayed fields. Idempotent.
+export function compactDay(day) {
+  return { date: day.date, classes: day.classes.map(compactClass).sort(byStart) };
+}
+
+// Union the classes of two copies of the SAME day, fresh fields winning. Used for `today`, which is
+// the only date the endpoint can return partially (it drops occurrences that already started), so a
+// midday run must not delete this morning's classes.
+function unionClasses(prev, next) {
+  const by = new Map();
+  for (const c of prev.classes || []) by.set(classKey(c), c);
+  for (const c of next.classes || []) { const k = classKey(c); by.set(k, by.has(k) ? { ...by.get(k), ...c } : c); }
+  return [...by.values()].sort(byStart);
+}
+
+// Merge freshly fetched days into the stored ones.
+//   past days   → kept (the endpoint never returns them) and compacted
+//   today       → union of stored + fresh
+//   future days → the fresh copy wins outright (so moved/removed classes disappear)
+//   older than today - keepBack → pruned
+// Pure and idempotent: mergeDays(mergeDays(p, n, o), n, o) deep-equals mergeDays(p, n, o).
+export function mergeDays(prevDays, newDays, { today = todayLocal(), keepBack = KEEP_BACK_DAYS } = {}) {
+  const floor = addDaysDs(today, -keepBack);
+  const by = new Map();
+  for (const d of prevDays || []) if (validDay(d)) by.set(d.date, d);
+  for (const d of newDays || []) {
+    if (!validDay(d)) continue;
+    const prev = by.get(d.date);
+    by.set(d.date, prev && d.date === today ? { date: d.date, classes: unionClasses(prev, d) } : d);
+  }
+  return [...by.keys()].filter(dt => dt >= floor).sort()
+    .map(dt => { const d = by.get(dt); return dt < today ? compactDay(d) : { date: d.date, classes: [...d.classes].sort(byStart) }; });
+}
+
+export function buildPayload({ prev = null, days = [], source = 'occurrences', fetchedAt, today = todayLocal(), keepBack = KEEP_BACK_DAYS } = {}) {
+  return {
+    club: 'Crunch Allen',
+    clubId: CLUB_ID,
+    address: '510 N Watters Rd, Allen, TX 75013',
+    phone: '469.824.3022',
+    locationUrl: LOCATION_URL,
+    source,
+    fetchedAt,
+    keepBackDays: keepBack,
+    days: mergeDays(prev && prev.days, days, { today, keepBack }),
+  };
+}
+
+function readPrev() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(OUT, 'utf8'));
+    return raw && Array.isArray(raw.days) ? raw : null;
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error('Could not read the existing schedule (starting fresh):', err.message);
+    return null;
+  }
+}
+
 async function main() {
   let days = [];
   let source = 'occurrences';
@@ -132,23 +216,21 @@ async function main() {
     catch (err) { console.error('Location page failed:', err.message); }
   }
   const count = days.reduce((s, d) => s + d.classes.length, 0);
-  const payload = {
-    club: 'Crunch Allen',
-    clubId: CLUB_ID,
-    address: '510 N Watters Rd, Allen, TX 75013',
-    phone: '469.824.3022',
-    locationUrl: LOCATION_URL,
-    source,
-    fetchedAt: new Date().toISOString(),
-    days,
-  };
   if (count === 0) {
-    console.error('ERROR: 0 classes parsed. Crunch endpoint or page structure may have changed. Not overwriting.');
+    console.error('ERROR: 0 classes parsed. Crunch endpoint or page structure may have changed. Not touching the stored schedule.');
     process.exit(2);
   }
+  const today = todayLocal();
+  const prev = readPrev();
+  const payload = buildPayload({ prev, days, source, fetchedAt: new Date().toISOString(), today });
+  const kept = payload.days.filter(d => d.date < today).length;
+  const total = payload.days.reduce((s, d) => s + d.classes.length, 0);
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, JSON.stringify(payload, null, 2) + '\n');
-  console.log(`Wrote ${OUT}: ${count} classes over ${days.length} day(s) via ${source} (${days.map(d => d.date).join(', ')})`);
+  console.log(`Wrote ${OUT}: fetched ${count} classes over ${days.length} day(s) via ${source} (${days.map(d => d.date).join(', ')})`);
+  console.log(`  merged → ${total} classes over ${payload.days.length} day(s) (${kept} past day(s) kept, window ${payload.days[0]?.date} … ${payload.days[payload.days.length - 1]?.date}, pruning beyond ${KEEP_BACK_DAYS} days back)`);
 }
 
-main().catch((err) => { console.error('Scrape failed:', err.message); process.exit(1); });
+// Importable for tests (the merge helpers above are pure); only fetches when run directly.
+const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (invokedDirectly) main().catch((err) => { console.error('Scrape failed:', err.message); process.exit(1); });

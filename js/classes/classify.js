@@ -241,6 +241,36 @@ export function classify(name, durationMin = 45) {
   };
 }
 
+// Known classes, for logging one on a day whose schedule we never cached (CONTRACT §24). Names and
+// typical durations as they appear on the Crunch Allen timetable, plus generic ones for other gyms;
+// classify() still does the crediting, so a name that is not here works too — this is just the
+// pick-list. `type` is only for grouping the list in the UI.
+export const CLASS_CATALOGUE = [
+  { name: 'Circuit HIIT', duration: 45, type: 'hiit' },
+  { name: 'CircHIIT (HIITZone)', duration: 45, type: 'hiit' },
+  { name: 'ExtremeHIIT (HIITZone)', duration: 45, type: 'hiit' },
+  { name: 'Superset HIIT (HIITZone)', duration: 45, type: 'hiit' },
+  { name: 'Strong-er HIIT (HIITZone)', duration: 45, type: 'hiit' },
+  { name: 'Barbell 45', duration: 45, type: 'strength' },
+  { name: 'Chisel', duration: 30, type: 'sculpt' },
+  { name: 'Top it Off', duration: 30, type: 'sculpt' },
+  { name: 'Top to Bottom Burnout', duration: 30, type: 'sculpt' },
+  { name: 'Belly, Butt, & Thighs Bootcamp', duration: 30, type: 'sculpt' },
+  { name: 'Transform it: Cardio', duration: 30, type: 'hiit' },
+  { name: 'Transform it: Core', duration: 30, type: 'core' },
+  { name: 'The Ride', duration: 45, type: 'cycle' },
+  { name: 'The Ride: Let the Beat Drop', duration: 45, type: 'cycle' },
+  { name: 'P3 Pilates', duration: 45, type: 'pilates' },
+  { name: 'Yoga Body Sculpt', duration: 60, type: 'yoga' },
+  { name: 'ZUMBA', duration: 60, type: 'cardio_dance' },
+  { name: 'Bootcamp', duration: 45, type: 'hiit' },
+  { name: 'Kettlebell', duration: 45, type: 'strength' },
+  { name: 'TRX', duration: 45, type: 'strength' },
+  { name: 'Boxing', duration: 45, type: 'boxing' },
+  { name: 'Abs & Core', duration: 30, type: 'core' },
+  { name: 'Stretch & Recover', duration: 30, type: 'stretch' },
+];
+
 // Group lookup for regions (kept local so this module stays dependency-free).
 export const REGION_GROUP = {
   chest_upper: 'chest', chest_mid: 'chest', chest_lower: 'chest',

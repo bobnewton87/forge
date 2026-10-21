@@ -198,3 +198,7 @@ button.pl-line:active { background: var(--card2); }
 .pl-exbtns button { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--line); background: var(--card2); color: var(--text); font-size: 15px; line-height: 1; }
 .pl-exbtns button[data-exrm] { color: var(--bad); }
 .pl-exadd { margin-top: 8px; }
+
+/* §24 Logging a past day: a past day that can still be logged is not dimmed. */
+.pl-day.past.empty.can-log { opacity: 1; }
+.pl-day.past .pl-line.open .pl-title { color: var(--text); font-weight: 650; }

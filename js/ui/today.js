@@ -34,6 +34,11 @@ import { contextFor, suggestForDay } from '../engine/planner.js';
 import { renderClassPicker, bindClassPicker } from './classes.js';
 import { resolveTargets, suggestFinisher } from '../engine/targets.js';
 import { targetsSummaryHTML, bindTargetsSummary } from './targets.js';
+// CONTRACT-NOTE (§24): params.date may also be a PAST date (within retro.RETRO_DAYS). The builder
+//   then runs in LOG mode: same build flow, but the primary button logs it on that day (an 'active'
+//   session with startedAt null, which the Workout screen finishes as 'done' stamped on that date)
+//   instead of saving a planned day. Nothing in log mode writes to the plan.
+import { canLogPast, retroFloor, startRetroLog, RETRO_DAYS } from './retro.js';
 // CONTRACT-NOTE (INTEGRATOR §18): when this week's cardio (done + planned on later days) is under
 //   the weekly target, recommendations show a cardio nudge sized to the remaining deficit
 //   (targets.suggestFinisher) with a one-tap "Add N′ finisher", and turning the finisher on defaults
@@ -68,6 +73,8 @@ function refNow() {
   if (!planDate) return new Date();
   const d = parseDs(planDate); d.setHours(12, 0, 0, 0); return d;
 }
+// Log mode: the builder is aimed at a day that has already happened (§24).
+const logMode = () => !!planDate && planDate < ds();
 const draftKey = () => (planDate ? 'planDraft' : 'draft');
 function getDraft(ctx) {
   const d = ctx.store.kv(draftKey());
@@ -161,7 +168,9 @@ export function render(ctx, params = {}) {
   const store = ctx.store;
   const profile = store.getProfile();
   const sessions = store.getSessions();
-  const wantDate = typeof params?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(params.date) && params.date >= ds() ? params.date : null;
+  // A date in the future plans that day; a date in the past (within the retro window) logs it.
+  const wantDate = typeof params?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(params.date)
+    && (params.date >= ds() || canLogPast(params.date)) ? params.date : null;
   if (wantDate !== planDate) { if (wantDate) enterPlanMode(ctx, wantDate, profile); else exitPlanMode(ctx, profile); showBuilderOverride = false; }
   if (!B) B = builderState(ctx, profile);
   const pkey = JSON.stringify(params?.targets || null);
@@ -190,10 +199,13 @@ export function render(ctx, params = {}) {
   const showPreview = draft?.session && !showBuilderOverride;
 
   if (planDate) {
-    let p = `<div class="tr-today pl-planning"><header class="tr-hello pl-plan-hello">
+    const log = logMode();
+    let p = `<div class="tr-today pl-planning${log ? ' pl-logging' : ''}"><header class="tr-hello pl-plan-hello">
       <button type="button" class="tr-link" data-t="plan-back">‹ Plan</button>
-      <div class="tr-date">Planning</div><h1>${esc(fmtDay(planDate))}</h1>
-      <div class="muted small">Build it your way, then save it to that day. Re-planning won't overwrite it.</div></header>`;
+      <div class="tr-date">${log ? 'Logging' : 'Planning'}</div><h1>${esc(fmtDay(planDate))}</h1>
+      <div class="muted small">${log
+        ? 'What did you actually do? Build it to match, then log it — it is saved as done on that day, not planned.'
+        : "Build it your way, then save it to that day. Re-planning won't overwrite it."}</div></header>`;
     if (showPreview) p += preview(draft, profile);
     else { p += recsSection(sessions, profile, loc); p += builderSection(sessions, profile, loc); }
     return p + '</div>';
@@ -457,7 +469,10 @@ function preview(draft, profile) {
       ${draft.params ? '<button type="button" class="btn btn-ghost" data-t="shuffle">🔀 Shuffle</button>' : ''}
       <button type="button" class="btn btn-ghost" data-t="add-cardio">+10′ cardio</button>
     </div>
-    ${planDate ? `<button type="button" class="btn btn-primary tr-big" data-t="save-plan">Save to plan · ${esc(fmtDay(planDate))}</button>
+    ${logMode() ? `<button type="button" class="btn btn-primary tr-big" data-t="log-past">✓ Log it on ${esc(fmtDay(planDate))}</button>
+    <div class="muted small center" style="margin-top:6px">Next: tick off the sets you actually did, then Finish.</div>
+    <div class="tr-plan-tools"><button type="button" class="btn btn-ghost tr-danger-text" data-t="discard">Discard</button></div>`
+    : planDate ? `<button type="button" class="btn btn-primary tr-big" data-t="save-plan">Save to plan · ${esc(fmtDay(planDate))}</button>
     <div class="tr-plan-tools"><button type="button" class="btn btn-ghost tr-danger-text" data-t="discard">Discard</button></div>`
     : `<button type="button" class="btn btn-primary tr-big" data-t="start">▶ Start workout</button>
     <div class="tr-plan-tools">
@@ -626,7 +641,7 @@ function openManualSheet(ctx, loc) {
   const today = ds();
   const profile = ctx.store.getProfile();
   const html = `<div class="tr-sheet-h"><h3>Log a past workout</h3><div class="muted small">Add exercises and sets freely, then finish.</div></div>
-    <label class="tr-field"><span class="tr-label">Date</span><input type="date" value="${today}" max="${today}" data-m-date></label>
+    <label class="tr-field"><span class="tr-label">Date</span><input type="date" value="${today}" min="${retroFloor()}" max="${today}" data-m-date></label>
     <label class="tr-field"><span class="tr-label">Title (optional)</span><input type="text" placeholder="e.g. Hotel upper body" data-m-title></label>
     <div class="tr-label">Where</div>
     <div class="tr-chiprow wrap" data-m-locs>${(profile.locations || []).map(l => chip(`${l.icon || ''} ${l.name}`, { active: l.id === loc.id, attrs: `data-id="${esc(l.id)}"` })).join('')}</div>
@@ -638,19 +653,12 @@ function openManualSheet(ctx, loc) {
       locId = b.dataset.id; el.querySelectorAll('[data-m-locs] [data-id]').forEach(x => x.classList.toggle('active', x === b));
     };
     el.querySelector('[data-m-go]').onclick = () => {
-      const date = el.querySelector('[data-m-date]').value || today;
+      const raw = el.querySelector('[data-m-date]').value || today;
+      if (!canLogPast(raw)) { toast(ctx, `Pick a day in the last ${RETRO_DAYS} days`); return; }
+      const date = raw;
       const title = el.querySelector('[data-m-title]').value.trim() || 'Logged workout';
-      const store = ctx.store;
-      const active = store.getActiveSession();
-      if (active && active.status === 'active') {
-        if (!confirm(`"${active.title || 'Workout'}" is in progress. Save it for later and log this instead?`)) return;
-        active.status = 'planned'; store.saveSession(active);
-      }
-      const s = { id: store.newSessionId(), date, status: 'active', startedAt: null, endedAt: null, location: locId, minutes: null, title, targets: [], source: 'manual', blocks: [], rationale: [], notes: '' };
-      store.saveSession(s);
-      store.setActiveSessionId(s.id);
       close();
-      ctx.nav('session', { id: s.id });
+      startRetroLog(ctx, { date, title, location: locId, source: 'manual' });
     };
   });
 }
@@ -673,8 +681,22 @@ export function bind(root, ctx, params = {}) {
       case 'plan-back': ctx.nav('plan', planDate ? { date: planDate } : {}); break;
       case 'plan-open': ctx.nav('plan'); break;
       case 'plan-change': ctx.nav('today', { date: ds() }); break;
+      case 'log-past': {
+        // §24: this day already happened. Open the logger on it so the real weights and reps go in;
+        // session.js's Finish then stamps it 'done' with timestamps on planDate.
+        if (!draft?.session || !planDate || !canLogPast(planDate)) return;
+        const date = planDate;
+        const { plan, ...s } = draft.session;   // a log is not a plan
+        setDraft(ctx, null);
+        startRetroLog(ctx, {
+          date, title: s.title || 'Logged workout', location: s.location, blocks: s.blocks || [],
+          targets: s.targets || [], source: s.source || 'generated', minutes: s.minutes ?? null,
+          rationale: [`Logged after the fact for ${fmtDay(date)}`],
+        });
+        break;
+      }
       case 'save-plan': {
-        if (!draft?.session || !planDate) return;
+        if (!draft?.session || !planDate || logMode()) return;
         const blocks = draft.session.blocks || [];
         const kind = blocks.some(b => b.kind === 'lift') ? 'lift' : blocks.some(b => b.kind === 'class') ? 'class' : blocks.length ? 'cardio' : 'lift';
         const s = { ...draft.session, id: store.newSessionId(), date: planDate, status: 'planned', startedAt: null, endedAt: null,

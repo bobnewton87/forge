@@ -2036,6 +2036,79 @@ def t_weight_loss(t, ctx):
     t.check(not errs, 'no page errors across the weight-loss flow', 'no console/page errors', '; '.join(errs[:3]))
 
 
+@test('R1', 'Log a past day (CONTRACT §24): Plan → past day → class → History + week coverage')
+def t_retro_past_day(t, ctx):
+    """Bob's report: he did a Crunch class yesterday and could not log it. Past day on the Plan tab →
+    "Log what I did" → the class picker for THAT day → log a class by name → it shows up in History
+    and in that week's cardio coverage, dated to the day it happened."""
+    app = t.app
+    d = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    sheet = '#sheet-root > .sheet:last-child'
+
+    def open_week_with(day):
+        """Plan, on the week that contains `day` (yesterday is in last week on a Monday)."""
+        if app.page.evaluate("() => document.querySelector('#content').dataset.route") != 'plan':
+            app.go('plan')
+        if not app.has(f'[data-retro="{day}"]'):
+            app.click('[data-a="prev"]'); app.page.wait_for_timeout(250)
+
+    def cardio_done():
+        """Minutes already DONE in the coverage card's cardio row (the solid part of 'x/y min')."""
+        return app.page.evaluate("""() => { const r = document.querySelector('.pl-bar-row.cardio'); if (!r) return null;
+          const m = (r.innerText || '').replace(/\\s+/g, ' ').match(/([\\d,]+)\\s*\\/\\s*([\\d,]+)\\s*min/); return m ? parseFloat(m[1].replace(/,/g, '')) : null; }""")
+
+    e0 = len(app.errors)
+    app.load(bobir(app), 'plan')
+    open_week_with(d)
+    t.check(app.has(f'[data-retro="{d}"]'), 'past day is actionable', f'"Log what I did" on {d}', short(app.text('.pl-days'), 180))
+    c0 = cardio_done()
+    app.go('history'); h0 = app.count('[data-sid]')
+    t.check(app.has('[data-retro]'), 'History entry point', '＋ Log a past workout button', short(app.text('.page-head'), 120))
+
+    open_week_with(d)
+    app.click(f'[data-retro="{d}"]')
+    t.check(app.wait_sheet('[data-rt-act="class"]'), 'past-day sheet', 'Log a class / Build what I did / Log cardio', short(app.text(app.sheet()), 160))
+    app.click(f'{sheet} [data-rt-act="class"]')
+    t.check(app.wait_sheet('.cls-picker'), 'retro class picker', '.cls-picker for that day', short(app.text(app.sheet()), 160))
+    app.page.wait_for_function("() => !/Loading Crunch/.test(document.querySelector('#sheet-root > .sheet:last-child')?.innerText || '')", timeout=6000, polling=100)
+    txt = app.text(app.sheet())
+    t.check(re.search(r'Which class did you do', txt), 'picker is in logging mode', '"Which class did you do?"', short(txt, 140))
+    t.check(app.has(f'{sheet} [data-cls-cat]'), 'class catalogue', 'known-class chips for a day we never cached', short(txt, 140))
+
+    # Type the class by name (the path that works whether or not that day was ever scraped).
+    app.fill(f'{sheet} .cls-other [name="name"]', 'Circuit HIIT')
+    app.fill(f'{sheet} .cls-other [name="min"]', 45)
+    app.page.wait_for_timeout(150)
+    t.check('cardio min' in app.text(f'{sheet} [data-cls-preview]'), 'credit preview', 'HIIT · N cardio min', app.text(f'{sheet} [data-cls-preview]'))
+    m = app.toast_mark()
+    app.click(f'{sheet} .cls-other button[type="submit"]')
+    msg = app.wait_toast(r'Logged: Circuit HIIT', since=m)
+    t.check(msg, 'log toast', 'toast "Logged: Circuit HIIT · <day>"', app.toasts(m))
+
+    stored = app.store(f"""store.getSessions().filter(x => x.date === '{d}' && x.title === 'Circuit HIIT').map(x => {{
+      const t0 = new Date(x.startedAt), p = n => String(n).padStart(2, '0');
+      return [x.status, `${{t0.getFullYear()}}-${{p(t0.getMonth() + 1)}}-${{p(t0.getDate())}}`, x.blocks[0].done, x.blocks[0].classify.cardioMinutes > 0]; }})""")
+    t.check(stored == [['done', d, True, True]], 'stored as a finished session on that day',
+            f"[['done', '{d}', True, True]]", stored)
+    t.check(app.store('store.getActiveSession()') is None, 'not made the active workout', 'no active session', 'an active session was started')
+
+    app.wait_route('history')
+    app.page.wait_for_timeout(200)
+    h1 = app.count('[data-sid]')
+    t.check(h1 == h0 + 1, 'History lists it', h0 + 1, h1)
+    t.check('Circuit HIIT' in app.text(), 'History shows the class', 'Circuit HIIT row', short(app.text(), 160))
+
+    open_week_with(d)
+    c1 = cardio_done()
+    t.check(c0 is not None and c1 is not None and c1 > c0, "that week's cardio coverage grew",
+            f'> {c0} min done', f'{c0} → {c1}')
+    t.check(app.count(f'.pl-day.past .pl-line.done') >= 1, 'the past day card shows it', 'a ✓ line on the past day',
+            short(app.text('.pl-days'), 160))
+
+    errs = [f'[{k}] {short(x, 90)}' for k, x, r in app.errors[e0:]]
+    t.check(not errs, 'no page errors while logging a past day', 'no console/page errors', '; '.join(errs[:3]))
+
+
 @test('E1', 'No console/page errors during flows')
 def t_errors(t, ctx):
     app = t.app

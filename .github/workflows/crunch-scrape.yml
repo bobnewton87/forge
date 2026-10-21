@@ -2,8 +2,13 @@ name: Scrape Crunch Allen class schedule
 
 on:
   schedule:
-    # Daily at 10:00 UTC = 5:00 AM CDT / 4:00 AM CST, before Crunch opens at 5am.
-    # One request to crunch.com's public occurrences endpoint returns the next ~7 days.
+    # Daily at 10:00 UTC = 5:00 AM CDT / 4:00 AM CST, before Crunch opens at 5am, so the day it
+    # fetches is still complete.
+    # One request to crunch.com's public occurrences endpoint returns the next ~7 days. The
+    # scraper MERGES that into data/crunch-schedule.json instead of overwriting it (CONTRACT §24),
+    # so the file accumulates ~90 days of history and a day that has already happened can still be
+    # logged in the app. Past days are compacted to the displayed fields, so the daily diff is
+    # one new day in, one pruned day out, and today refreshed.
     - cron: '0 10 * * *'
   workflow_dispatch: {}
   push:
@@ -44,7 +49,7 @@ jobs:
             echo "No schedule changes, skipping commit."
           else
             git add data/crunch-schedule.json
-            git commit -m "chore: refresh Crunch Allen class schedule ($(date -u +%Y-%m-%d))"
+            git commit -m "chore: merge Crunch Allen class schedule ($(date -u +%Y-%m-%d))"
             git pull --rebase --autostash || true
             git push
           fi

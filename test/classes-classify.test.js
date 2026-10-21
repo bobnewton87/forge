@@ -163,7 +163,13 @@ test('data/crunch-schedule.json has the contract shape', () => {
 
 test('class picker renders without a DOM', async () => {
   const { renderClassPicker } = await import('../js/ui/classes.js');
-  const html = renderClassPicker({}, { date: '2026-10-10', minutes: 45, targets: ['triceps'] });
+  const { ds, addDays } = await import('../js/util.js');
+  const html = renderClassPicker({}, { date: ds(addDays(new Date(), 2)), minutes: 45, targets: ['triceps'] });
   assert.match(html, /cls-picker/);
   assert.match(html, /Log a different class/);
+  // §24: a past date puts the picker in logging mode, with the class catalogue always available.
+  const retro = renderClassPicker({}, { date: ds(addDays(new Date(), -1)), minutes: 45, targets: [] });
+  assert.match(retro, /Which class did you do\?/);
+  assert.match(retro, /Log a class by name/);
+  assert.match(retro, /data-cls-cat="Circuit HIIT"/);
 });
