@@ -7,9 +7,15 @@
 // container's data-* attributes so bind() can use them.
 // CONTRACT-NOTE: picking a class on a FUTURE day creates a 'planned' session (startedAt
 // null, not set active). Same-day picks are 'active' with startedAt = now, per §6.
+// CONTRACT-NOTE (§24, retro): with a PAST date the picker switches to logging mode — it lists the
+//   classes that were actually scheduled that day (the schedule file keeps ~90 days of history),
+//   always offers "log a class by name" with the known-class catalogue (so a day we never cached
+//   still works), and a pick becomes a finished session dated to that day (status 'done', blocks
+//   ticked, timestamps from the class time, never the active session).
 import { esc, chip } from './components.js';
 import { loadSchedule } from '../classes/crunch.js';
-import { classify, groupCredits, matchScore } from '../classes/classify.js';
+import { classify, groupCredits, matchScore, CLASS_CATALOGUE } from '../classes/classify.js';
+import { markLogged } from '../engine/retro.js';
 import { ds, fmtDay } from '../util.js';
 
 let cache = null;          // last loaded schedule
@@ -61,6 +67,8 @@ const STYLE = `<style>
 .cls-inputs input[name=min]{width:80px}
 .cls-preview{font-size:12px;color:var(--muted)}
 .cls-stale{font-size:12px;color:var(--warn)}
+.cls-cat{display:flex;flex-wrap:wrap;gap:6px;max-height:132px;overflow-y:auto}
+.cls-cat .chip{flex:0 0 auto}
 </style>`;
 
 function nowHHMM(now = new Date()) {
@@ -81,9 +89,11 @@ function badge(type) {
   return `<span class="cls-badge" style="color:${color}">${esc(label)}</span>`;
 }
 
-function classCard(c, { dayDate, idx, minutes, targets, today, now }) {
+function classCard(c, { dayDate, idx, minutes, targets, today, now, retro = false }) {
   const info = c.classify || classify(c.name, c.duration);
-  const past = dayDate === today && c.start && c.start < nowHHMM(now);
+  // In retro mode every class of that day is loggable; on today, ones that already started are not
+  // "do this" any more.
+  const past = !retro && dayDate === today && c.start && c.start < nowHHMM(now);
   const m = matchScore({ ...c, classify: info }, { minutes, targets });
   const good = !past && m.good;
   const meta = [c.duration ? c.duration + ' min' : null, c.instructor, c.room && c.room !== 'Group Fitness' ? c.room : null]
@@ -96,29 +106,64 @@ function classCard(c, { dayDate, idx, minutes, targets, today, now }) {
     ${muscleChips(info)}
     <div class="cls-blurb">${esc(info.blurb)}</div>
     ${past ? '<div class="cls-meta">Already started</div>'
-      : `<button class="cls-btn${good ? '' : ' cls-ghost'}" data-cls-do="${idx}" data-cls-day="${esc(dayDate)}">Do this class</button>`}
+      : `<button class="cls-btn${good ? '' : ' cls-ghost'}" data-cls-do="${idx}" data-cls-day="${esc(dayDate)}">${retro ? '✓ I did this class' : 'Do this class'}</button>`}
   </div>`;
 }
 
-function otherForm() {
-  return `<details class="cls-form">
-    <summary>+ Log a different class</summary>
-    <div class="cls-sub">Peloton, another gym, a YouTube workout… We estimate muscle and cardio credit from the name.</div>
+// The class catalogue: everything we have ever seen on this club's schedule, then the known-class
+// list (CONTRACT §24). Used when logging a class on a day we have no cached schedule for.
+function catalogue(sched) {
+  const out = [], seen = new Set();
+  const add = (name, duration) => {
+    const k = String(name || '').toLowerCase();
+    if (!name || seen.has(k)) return;
+    seen.add(k); out.push({ name, duration: Number(duration) || 45 });
+  };
+  for (const d of [...(sched?.days || [])].reverse()) for (const c of d.classes || []) add(c.name, c.duration);
+  for (const c of CLASS_CATALOGUE) add(c.name, c.duration);
+  return out.slice(0, 24);
+}
+
+function otherForm({ retro = false, date = null, sched = null } = {}) {
+  const cat = retro ? catalogue(sched) : [];
+  return `<details class="cls-form"${retro ? ' open' : ''}>
+    <summary>${retro ? '+ Log a class by name' : '+ Log a different class'}</summary>
+    <div class="cls-sub">${retro
+      ? 'Not on the list above? Tap one you know or type the name — logged at Crunch Allen, credited from the name.'
+      : 'Peloton, another gym, a YouTube workout… We estimate muscle and cardio credit from the name.'}</div>
+    ${cat.length ? `<div class="cls-cat">${cat.map(c => chip(c.name, { attrs: `data-cls-cat="${esc(c.name)}" data-cls-dur="${c.duration}"`, cls: 'sm' })).join('')}</div>` : ''}
     <form class="cls-other" autocomplete="off">
       <div class="cls-inputs">
-        <input name="name" type="text" placeholder="e.g. Peloton Power Zone Ride" required maxlength="80">
+        <input name="name" type="text" placeholder="${retro ? 'e.g. Circuit HIIT' : 'e.g. Peloton Power Zone Ride'}" required maxlength="80">
         <input name="min" type="number" inputmode="numeric" min="5" max="180" value="45" aria-label="Minutes">
       </div>
       <div class="cls-preview" data-cls-preview></div>
-      <button class="cls-btn" type="submit" style="margin-top:8px">Log this class</button>
+      <button class="cls-btn" type="submit" style="margin-top:8px">${retro && date ? `✓ Log it on ${esc(fmtDay(date).split(',')[0])}` : 'Log this class'}</button>
     </form>
   </details>`;
+}
+
+// A day that has already happened: show what was actually on that day's timetable (the schedule
+// file keeps ~90 days back), and never dead-end if we have nothing for it.
+function pastHtml(sched, { date, minutes, targets }) {
+  const today = ds();
+  const now = new Date();
+  const day = (sched.days || []).find(d => d.date === date);
+  if (!day || !(day.classes || []).length) {
+    return `<div class="cls-empty">No saved class list for ${esc(fmtDay(date))}${sched.error ? ' (offline?)' : ''}.
+      Forge only keeps the schedules it has fetched, so days before that are blank. Log the class by name below —
+      it is credited exactly the same way.</div>`;
+  }
+  const cards = day.classes.map((c, idx) => classCard(c, { dayDate: date, idx, minutes, targets, today, now, retro: true }));
+  return `<div class="cls-sub">${esc(fmtDay(date))} · ${day.classes.length} classes that day · tap the one you took
+    <br>Not one of these? Log it by name at the bottom.</div>${cards.join('')}`;
 }
 
 function listHtml(sched, { date, minutes, targets }) {
   const today = ds();
   const now = new Date();
   if (!sched) return '<div class="cls-empty">Loading Crunch Allen schedule…</div>';
+  if (date < today) return pastHtml(sched, { date, minutes, targets });
   const days = (sched.days || []).filter(d => d.date >= today);
   if (!days.length) {
     return `<div class="cls-empty">No upcoming Crunch classes in the saved schedule${sched.error ? ' (offline?)' : ''}.
@@ -144,13 +189,16 @@ function listHtml(sched, { date, minutes, targets }) {
 
 export function renderClassPicker(ctx, { date = ds(), minutes = null, targets = [] } = {}) {
   const t = Array.isArray(targets) ? targets : [];
-  const stale = cache && cache.stale && cache.days?.length;
+  const retro = date < ds();
+  // `stale` means "we have no schedule at or after today" — irrelevant when logging a past day.
+  const stale = !retro && cache && cache.stale && cache.days?.length;
   return `${STYLE}<div class="cls-wrap cls-picker" data-date="${esc(date)}" data-minutes="${esc(minutes ?? '')}" data-targets="${esc(t.join(','))}">
-    <div class="cls-head"><h3>Crunch Allen classes</h3>
+    <div class="cls-head"><h3>${retro ? 'Which class did you do?' : 'Crunch Allen classes'}</h3>
       <a class="cls-sub" href="https://www.crunch.com/locations/allen" target="_blank" rel="noopener" style="color:var(--muted)">crunch.com ↗</a></div>
+    ${retro ? `<div class="cls-sub">Crunch Allen · ${esc(fmtDay(date))} · logged as done on that day</div>` : ''}
     ${stale ? '<div class="cls-stale">Schedule may be out of date. It refreshes daily.</div>' : ''}
     <div class="cls-list">${listHtml(cache, { date, minutes, targets: t })}</div>
-    ${otherForm()}
+    <div class="cls-formhost">${otherForm({ retro, date, sched: cache })}</div>
   </div>`;
 }
 
@@ -165,8 +213,11 @@ function readOpts(el) {
 function createClassSession(ctx, { provider, name, time = null, duration, instructor = null, info, date }) {
   const today = ds();
   const future = date && date > today;
+  // Any earlier day is a log, never a workout to start now. (How far back you can GET here is
+  // enforced by the entry points and the date inputs, retro.canLogPast.)
+  const retro = !!date && date < today;
   const loc = (typeof ctx.location === 'function' && ctx.location()) || null;
-  const session = {
+  let session = {
     id: ctx.store.newSessionId(),
     date: date || today,
     status: future ? 'planned' : 'active',
@@ -181,10 +232,13 @@ function createClassSession(ctx, { provider, name, time = null, duration, instru
     rationale: [info.blurb].filter(Boolean),
     notes: '',
   };
+  // Past day: it already happened. Finished session, ticked off, stamped on its own day, and never
+  // the active session (CONTRACT §24).
+  if (retro) session = markLogged(session);
   ctx.store.saveSession(session);
-  if (!future) ctx.store.setActiveSessionId(session.id);
-  if (ctx.toast) ctx.toast(future ? `Planned: ${name}` : `Started: ${name}`);
-  ctx.nav('session', { id: session.id });
+  if (!future && !retro) ctx.store.setActiveSessionId(session.id);
+  if (ctx.toast) ctx.toast(future ? `Planned: ${name}` : retro ? `Logged: ${name} · ${fmtDay(date)}` : `Started: ${name}`);
+  ctx.nav(retro ? 'history' : 'session', retro ? {} : { id: session.id });
 }
 
 export function bindClassPicker(root, ctx) {
@@ -192,7 +246,18 @@ export function bindClassPicker(root, ctx) {
   if (!el || el.dataset.clsBound) return;
   el.dataset.clsBound = '1';
   const list = el.querySelector('.cls-list');
-  const refresh = () => { if (list) list.innerHTML = listHtml(cache, readOpts(el)); };
+  const formHost = el.querySelector('.cls-formhost');
+  const refresh = () => {
+    const opts = readOpts(el);
+    if (list) list.innerHTML = listHtml(cache, opts);
+    // The catalogue grows with the stored schedule, so re-render the form once it loads — but never
+    // over something the user is typing.
+    const inp = formHost?.querySelector('[name="name"]');
+    if (formHost && (!inp || (!inp.value && document.activeElement !== inp))) {
+      formHost.innerHTML = otherForm({ retro: opts.date < ds(), date: opts.date, sched: cache });
+      bindOtherForm(el, ctx);
+    }
+  };
 
   if (!cache || Date.now() - cacheAt > 30 * 60e3) {
     loading = loading || loadSchedule().then(s => { cache = s; cacheAt = Date.now(); return s; }).finally(() => { loading = null; });
@@ -216,24 +281,47 @@ export function bindClassPicker(root, ctx) {
     }
   });
 
-  const form = el.querySelector('.cls-other');
-  if (form) {
-    const preview = form.querySelector('[data-cls-preview]');
-    const upd = () => {
-      const name = form.elements.name.value.trim();
-      if (!name) { preview.textContent = ''; return; }
-      const info = classify(name, Number(form.elements.min.value) || 45);
-      const gc = groupCredits(info.muscles);
-      const top = Object.entries(gc).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([g, v]) => `${GROUP_NAME[g] || g} ${v}`);
-      preview.textContent = `${info.label} · ${info.cardioMinutes} cardio min${top.length ? ' · ' + top.join(', ') : ''}`;
-    };
-    form.addEventListener('input', upd);
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const name = form.elements.name.value.trim();
-      if (!name) return;
-      const duration = Math.max(5, Math.min(180, Number(form.elements.min.value) || 45));
-      createClassSession(ctx, { provider: 'other', name, duration, info: classify(name, duration), date: ds() });
-    });
-  }
+  bindOtherForm(el, ctx);
+}
+
+// "Log a class by name": the catalogue chips, the live credit preview and the submit. Re-bound
+// whenever the form is re-rendered.
+function bindOtherForm(el, ctx) {
+  const host = el.querySelector('.cls-formhost') || el;
+  const form = host.querySelector('.cls-other');
+  if (!form || form.dataset.bound) return;
+  form.dataset.bound = '1';
+  const preview = form.querySelector('[data-cls-preview]');
+  const catHost = host.dataset.catBound ? null : host;   // the chips live outside the form; bind once
+  if (catHost) catHost.dataset.catBound = '1';
+  const upd = () => {
+    const name = form.elements.name.value.trim();
+    if (!name) { preview.textContent = ''; return; }
+    const info = classify(name, Number(form.elements.min.value) || 45);
+    const gc = groupCredits(info.muscles);
+    const top = Object.entries(gc).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([g, v]) => `${GROUP_NAME[g] || g} ${v}`);
+    preview.textContent = `${info.label} · ${info.cardioMinutes} cardio min${top.length ? ' · ' + top.join(', ') : ''}`;
+  };
+  form.addEventListener('input', upd);
+  catHost?.addEventListener('click', e => {
+    const c = e.target.closest('[data-cls-cat]');
+    if (!c) return;
+    e.preventDefault();
+    const f = host.querySelector('.cls-other');
+    f.elements.name.value = c.dataset.clsCat;
+    f.elements.min.value = c.dataset.clsDur || 45;
+    host.querySelectorAll('[data-cls-cat]').forEach(x => x.classList.toggle('active', x === c));
+    f.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = form.elements.name.value.trim();
+    if (!name) return;
+    const duration = Math.max(5, Math.min(180, Number(form.elements.min.value) || 45));
+    // The day the picker was opened for (a past day logs on that day, not today). A retro entry
+    // belongs to the club whose picker this is; the forward-looking form is for anywhere.
+    const { date } = readOpts(el);
+    const provider = date < ds() ? 'crunch' : 'other';
+    createClassSession(ctx, { provider, name, duration, info: classify(name, duration), date });
+  });
 }

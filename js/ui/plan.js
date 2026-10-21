@@ -25,6 +25,10 @@ import { loadSchedule } from '../classes/crunch.js';
 import { renderClassPicker, bindClassPicker } from './classes.js';
 import { startSession, sessionGroups } from './today.js';
 import { summarize, detailSheet } from './history.js';
+// CONTRACT-NOTE (§24): a past day card offers "Log what I did" (retro.openRetroSheet) when it is
+//   inside the retro window; already-logged lines keep opening the session detail sheet, which can
+//   edit or delete them. Nothing else about past days changed.
+import { openRetroSheet, canLogPast } from './retro.js';
 import { setTargets, targetsSummaryHTML, bindTargetsSummary, makeRoomHTML, bindMakeRoom, extendedToast, openMinimumsInfo, openVolumeRoomSheet, openExtendSheet, openHitTargetsSheet } from './targets.js';
 import { resolveTargets, volumePolicyOf, CARDIO_STYLES, CARDIO_STYLE_NAMES, starredUnits, unitTargets, maxNote, STAR_LEGEND } from '../engine/targets.js';
 import { UNIT_ORDER } from '../data/muscles.js';
@@ -162,7 +166,14 @@ function dayCard(date, sessions, profile, t) {
       const missed = plan && !isRestPlan(plan);
       body = `<div class="pl-line quiet"><span class="grow"><span class="pl-title muted">${missed ? 'Skipped' : 'Rest'}</span>${missed ? `<span class="pl-meta">Planned: ${esc(plan.title || 'Workout')}</span>` : ''}</span></div>`;
     }
-    return `<div class="pl-day past ${done.length ? 'has-done' : 'empty'}">${dateCol}<div class="pl-body">${body}</div></div>`;
+    // §24: it already happened, so it can still be logged (or added to) within the retro window.
+    const canLog = safe(() => canLogPast(date), false);
+    if (canLog) {
+      body += `<button type="button" class="pl-line open" data-retro="${date}"><span class="grow">
+        <span class="pl-title">${done.length ? 'Log something else' : 'Log what I did'}</span>
+        <span class="pl-meta">${done.length ? 'Another class, workout or cardio on this day' : 'A class, a workout, cardio — or leave it as rest'}</span></span><span class="pl-plus">＋</span></button>`;
+    }
+    return `<div class="pl-day past ${done.length ? 'has-done' : 'empty'}${canLog ? ' can-log' : ''}">${dateCol}<div class="pl-body">${body}</div></div>`;
   }
 
   let main;
@@ -708,6 +719,8 @@ export function bind(root, ctx) {
       if (s && s.status === 'active') ctx.nav('session', { id: s.id }); else safe(() => detailSheet(ctx, sid.dataset.sid), null);
       return;
     }
+    const retro = e.target.closest('[data-retro]');     // §24: past day → log what happened
+    if (retro) { openRetroSheet(ctx, retro.dataset.retro); return; }
     const day = e.target.closest('[data-day]');
     if (day) { openDay(ctx, day.dataset.day); return; }
     const a = e.target.closest('[data-a]'); if (!a || a.disabled) return;

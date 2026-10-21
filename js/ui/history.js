@@ -1,8 +1,12 @@
 // History tab: calendar strip + reverse-chronological session list + detail sheet (UI-SHELL).
+// CONTRACT-NOTE (§24): History is where people look after the fact, so it offers "＋ Log a past
+//   workout" in the page head and on an empty selected day — the shared retro sheet (js/ui/retro.js),
+//   pre-filled with that day when one is selected on the calendar.
 import * as prog from '../engine/progression.js';
 import { getEx } from '../data/exercises.js';
 import { CARDIO, INTENSITIES } from '../data/cardio.js';
 import { esc } from './components.js';
+import { openRetroSheet, canLogPast } from './retro.js';
 import { ds, parseDs, addDays, weekStart, fmtShort, fmtDay, daysBetween } from '../util.js';
 
 const WEEKS = 6;
@@ -77,14 +81,17 @@ export function render(ctx) {
   const all = (() => { try { return ctx.store.getSessions().filter(s => s.status !== 'planned'); } catch (e) { return []; } })();
   if (!all.length) {
     return `<div class="page-head"><h1>History</h1></div><div class="card"><div class="empty"><div class="big">📅</div><h3>No workouts yet</h3><p>Finish a workout or import your Iron Runner history.</p>
-      <div class="btn-row"><button class="btn btn-primary" data-nav="today">Start one</button><button class="btn" data-nav="import">Import</button></div></div></div>`;
+      <div class="btn-row"><button class="btn btn-primary" data-nav="today">Start one</button><button class="btn" data-retro="">＋ Log a past one</button><button class="btn" data-nav="import">Import</button></div></div></div>`;
   }
   const list = [...all].reverse().filter(s => !selDay || s.date === selDay);
   const done = all.filter(s => s.status === 'done');
   const last30 = done.filter(s => daysBetween(s.date, new Date()) < 30);
-  let html = `<div class="page-head"><h1>History</h1><p class="sub">${done.length} workouts logged · ${last30.length} in the last 30 days</p></div>${calendar(all)}`;
+  let html = `<div class="page-head" style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px"><div><h1>History</h1><p class="sub">${done.length} workouts logged · ${last30.length} in the last 30 days</p></div>
+    <button class="btn btn-sm btn-ghost" data-retro="">＋ Log a past workout</button></div>${calendar(all)}`;
   if (selDay) html += `<div class="row between" style="margin:18px 4px 10px"><div class="section-title" style="margin:0">${fmtDay(selDay)}</div><button class="chip sm" data-clear>Show all ✕</button></div>`;
-  if (!list.length) html += `<div class="card"><div class="empty" style="padding:18px"><p>Nothing logged on this day.</p><button class="btn btn-sm" data-nav="today">Plan a workout</button></div></div>`;
+  if (!list.length) html += `<div class="card"><div class="empty" style="padding:18px"><p>Nothing logged on this day.</p>
+    ${selDay && canLogPast(selDay) ? `<button class="btn btn-sm btn-primary" data-retro="${esc(selDay)}">＋ Log what I did</button>`
+      : '<button class="btn btn-sm" data-nav="today">Plan a workout</button>'}</div></div>`;
   let curW = null;
   for (const s of list) {
     if (!selDay) { const w = ds(weekStart(parseDs(s.date))); if (w !== curW) { curW = w; html += `<div class="section-title">${weekLabel(parseDs(w))}</div>`; } }
@@ -155,4 +162,5 @@ export function bind(root, ctx) {
   root.querySelectorAll('[data-day]').forEach(b => b.onclick = () => { selDay = selDay === b.dataset.day ? null : b.dataset.day; ctx.rerender(); });
   root.querySelector('[data-clear]')?.addEventListener('click', () => { selDay = null; ctx.rerender(); });
   root.querySelectorAll('[data-nav]').forEach(b => b.onclick = () => ctx.nav(b.dataset.nav));
+  root.querySelectorAll('[data-retro]').forEach(b => b.onclick = () => openRetroSheet(ctx, b.dataset.retro || selDay || null));
 }

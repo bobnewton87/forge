@@ -1546,3 +1546,96 @@ the surface at every chord midpoint, runs front → over the trapezius → back 
 converges to the spine, never touches the deltoid, and keeps a 0.75–1.6 in strap from 56 to 76 in stature; the
 inframammary station stays clear of the waist and monotone in bust size from 30 to 58 in while still reproducing
 the modelled under-bust girth.
+
+## 24. Logging a past day (2026-10-21)
+
+Bob: *"I did the Crunch in Allen Circuit HIIT class this morning, but it won't let me change the workout
+to that one since it is past. Need the ability to change those days later if I don't log for a few days.
+Maybe you need to cache class schedules I don't know."*
+
+Two causes, both fixed here: past days on the Plan tab were read-only, and the class-schedule file was a
+rolling forward-only window that the daily Action overwrote, so yesterday's class list was gone.
+
+**The rule.** A date in the future is **planning**; a date in the past is **logging what happened**. They
+share the builder and the class picker but never the storage: nothing written for a past day is `planned`.
+
+### Ownership
+`js/engine/retro.js` (pure: the window, the timestamps, stamping a session done), `js/ui/retro.js` (the
+past-day sheet, the retro class picker and cardio form; re-exports the pure helpers so screens have one
+import), plus targeted edits in `js/ui/plan.js` (past-day card + one click branch), `js/ui/today.js`,
+`js/ui/session.js`, `js/ui/history.js`, `js/ui/classes.js`, `js/classes/crunch.js`, `js/classes/classify.js`,
+`scripts/scrape-crunch.mjs`. Tests: `test/retro-logging.test.js`, `test/retro-schedule.test.js`, e2e `R1`.
+
+### How far back: 60 days
+`retro.RETRO_DAYS = 60`; `retroFloor(now)` is the oldest loggable date and `canLogPast(date, now)` is the
+single gate (today counts — "I did it this morning"). Long enough to catch up after a holiday or a few
+forgotten days; short enough that a mistyped date cannot silently rewrite the months of history that
+progression, the projection and the body model read. Every date input is bounded by `min=retroFloor()`
+`max=today`, and every entry point re-checks `canLogPast` before writing.
+
+```js
+// js/engine/retro.js (pure, DOM-free)
+export const RETRO_DAYS = 60;
+export function retroFloor(now = new Date()) → 'YYYY-MM-DD'
+export function canLogPast(date, now = new Date()) → boolean        // the one gate
+export function retroReason(date, now) → null | 'bad-date' | 'future' | 'too-old'
+export function retroTimes(date, { time, minutes, now }) → { startedAt, endedAt }   // both ON `date`
+export function markLogged(session, { now }) → session              // status 'done' + stamps + blocks ticked
+```
+
+### What a retro log stores
+`status: 'done'`, `date` = the day it happened, `startedAt`/`endedAt` **on that same calendar day**
+(the class's own time when we know it, else 18:00, clamped so a late class cannot spill past midnight;
+`date === today` ends at *now*), non-lift blocks `done: true`, and no `plan` field. Lift sets are never
+invented — a lift set still only counts when the user logged `done && r > 0` (§6), so a retro lift goes
+through the per-set logger: an `'active'` session with `startedAt: null`, which `js/ui/session.js` shows
+an editable date for (not a running clock) and whose **Finish** applies `retroTimes` to its own date.
+
+Those stamps are the whole trick: `recovery.sessionTime` only trusts `startedAt`/`endedAt` when they fall
+on the session's `date`, so the work lands on the right day for "days since" and the rolling 7-day volume;
+`planner.weekPlanSummary` and `recovery.weekSummary` bucket by `date`, so a workout logged for last Tuesday
+counts toward **that** week's coverage and not this one; History, the Body tab and the projection's
+history drivers all read the same `status === 'done'` + `date` pair and need no special case.
+
+### Where you can do it
+- **Plan, past day card** — "Log what I did" (`[data-retro="<date>"]`) opens the shared sheet: log a class,
+  build what you did, log exercises freely, log cardio, or (when a plan was left unlogged) "It was a rest
+  day", which clears the missed plan so the day reads *Rest* instead of *Skipped*. **No rest marker session
+  is written** — an unlogged past day with no leftover plan already means rest, and a fake `done` session
+  would inflate History counts and the projection's adherence driver. Already-logged lines keep opening the
+  session, where they can be edited or deleted.
+- **History** — "＋ Log a past workout" in the page head (and on a selected empty day), since that is where
+  people look after the fact. Without a day in hand the sheet asks for one (default: yesterday).
+- **Today** — "Log something I already did" is unchanged except that its date is bounded by the window.
+- **The date builder** (`#/today?date=…`) now accepts a past date and runs in **log mode**: same
+  recommendations and build flow (engines see `contextFor(date)`, i.e. the history as it was *then*), the
+  header says *Logging*, and the primary button is "✓ Log it on <day>" → the per-set logger. "Save to plan"
+  is not offered for a past day.
+
+### Class schedules: merge, never overwrite
+`scripts/scrape-crunch.mjs` merges the fetched days into `data/crunch-schedule.json` instead of replacing
+it, so the file accumulates history:
+
+- **past days** are kept (the endpoint never returns them) and **compacted** to the fields the app shows
+  (`name`, `time`, `start`, `duration`, `instructor`) — `classify` is recomputed on load by
+  `normalizeSchedule`, and `description`/`id`/`room`/`category` are never displayed, so this is lossless
+  and keeps the committed file and its daily diff small;
+- **today** is a union of stored + fetched, because the occurrences endpoint drops classes that have
+  already started and a midday run must not delete the morning;
+- **future days** are taken from the fresh fetch outright, so moved or cancelled classes disappear;
+- anything older than `KEEP_BACK_DAYS = 90` is pruned (90 covers the 60-day logging window with slack,
+  ≈ 50 KB of compacted days).
+
+The merge is pure and **idempotent** (`mergeDays`, `buildPayload`): same inputs → byte-identical file apart
+from `fetchedAt`, which the Action's diff already ignores. A fetch that parses zero classes still exits 2
+and leaves the stored file alone.
+
+`js/classes/crunch.js`: `normalizeSchedule` keeps every day in the file; `stale` keeps meaning **"we have
+no data at or after today"** (never "this file contains old days"); `date` falls back to the next day we
+have, else the most recent one; `dayFor(sched, date)` serves one day.
+
+`js/ui/classes.js`: with a past date the picker shows that day's actual classes ("✓ I did this class") and
+always offers **"Log a class by name"** with chips from everything the schedule file has ever held plus
+`classify.CLASS_CATALOGUE` (known Crunch Allen classes + generic types), so a day we never cached — anything
+before this shipped — degrades to typing or tapping a name rather than dead-ending. Credit comes from
+`classify()` either way, so a typed class is credited exactly like a scraped one.
