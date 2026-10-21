@@ -319,17 +319,40 @@ export function tPlan(profile, opts = {}) {
 
     // Range: scale the lean/fat point estimate by the log-level ratio at the two ends of the T confidence interval.
     const ln = x => Math.log(Math.max(1, x) / Math.max(1, t0));
-    const dLn = ln(t.level ?? t0);
+    // §22.10: the interval is scaled off the CREDITED level and its bounds, not the serum level and its bounds.
+    // An item whose rise earns no muscle (tLeanShare 0) must not widen this row's upside through its own wide
+    // confidence interval — that put clomiphene + an aromatase inhibitor at "0 to +10.1" against clomiphene's
+    // own "0 to +7.1", headroom contributed entirely by the drug crediting nothing. The denominator is the
+    // credited mid for the same reason: the point estimate `v` was produced at the credited level, so dividing
+    // by the serum log-change would mismatch numerator and denominator and understate the interval.
+    const cMid = t.leanLevel ?? t.level ?? t0;
+    // The interval ends must bracket the credited mid. They do not automatically: `leanLevelLo/Hi` carry the
+    // tLeanShare cap but not the per-item BODY-COMPOSITION bound, which is applied to the mid further down the
+    // credit chain. hCG for a man at 548 is the case — serum 1,100 with a CI low end of 903, credited 870
+    // because that is as far as Liu 2002 reached — so the "low" end of the interval sat ABOVE the estimate and
+    // the row reported "fat +0.1 lb, range +0.11 to +0.15", which excludes its own number. Where the bound
+    // binds there is simply less T-derived uncertainty on that side, so the end collapses onto the estimate.
+    const cLo = Math.min(t.leanLevelLo ?? t.levelLo ?? cMid, cMid);
+    const cHi = Math.max(t.leanLevelHi ?? t.levelHi ?? cMid, cMid);
+    const dLn = ln(cMid);
+    // No credited movement at all (e.g. an aromatase inhibitor, whose whole effect is the estradiol fat term):
+    // there is no testosterone-derived uncertainty to express, so the estimate stands without a T-scaled range.
     const scale = v => Math.abs(dLn) < 1e-6 ? [v, v]
-      : [v * (ln(t.levelLo ?? t.level ?? t0) / dLn), v * (ln(t.levelHi ?? t.level ?? t0) / dLn)];
+      : [v * (ln(cLo) / dLn), v * (ln(cHi) / dLn)];
     let [leanLo, leanHi] = scale(lean);
     let [fatLo, fatHi] = scale(fat);
-    if (t.extrapolated) {
-      leanLo = Math.min(0, lean);   // zero is what has actually been measured for these items
-      fatHi = Math.max(0, fat);     // ...and the same honesty in the fat direction
-    }
+    // ORDER FIRST, THEN FLOOR. scale() returns [at the low T bound, at the high T bound], which for a NEGATIVE
+    // quantity — fat falling — comes back with the larger magnitude second, i.e. lo > hi. Applying the honesty
+    // floors before ordering therefore overwrote whichever end happened to be called `fatHi`, which could be
+    // the real low end: tamoxifen in an obese hypogonadal man came out as "fat −1.5 lb, range −0.89 to 0", a
+    // range that does not contain its own estimate, and the row then headlined "+2.3 lb net, 0 to +1.9".
+    // (Pre-existing; found by the §22.10 invariant test that every row's range contains its estimate.)
     if (leanLo > leanHi) [leanLo, leanHi] = [leanHi, leanLo];
     if (fatLo > fatHi) [fatLo, fatHi] = [fatHi, fatLo];
+    if (t.extrapolated) {
+      leanLo = Math.min(0, lean, leanLo);   // zero is what has actually been measured for these items
+      fatHi = Math.max(0, fat, fatHi);      // ...and the same honesty in the fat direction
+    }
 
     // Evidence grade and body-composition class describe the items that are actually DOING something in this
     // man — a combination whose only working part is a herb must not inherit sleep's "strong".

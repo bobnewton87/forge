@@ -679,3 +679,221 @@ test('§22.9 the planner never hides a positive estimate behind a conservative b
   const ai = live.find(r => r.id === 'aromatase_inhibitor');
   if (ai) assert.ok(ai.net.lb <= 0.05 || ai.bodyComp === 'none', 'the AI does not become a muscle drug');
 });
+
+// ====================================================================== §22.10 tLeanShare composition
+// Caught in review of §22.9: clomiphene + aromatase inhibitor ranked ABOVE clomiphene alone (+4.6 vs +4.3 lb
+// net). The AI's modeled rise at a mid-normal baseline (+322 ng/dL) is LARGER than clomiphene's (+275), so the
+// AI won the "largest LH-driven item" contest, clomiphene was subsumed and contributed nothing to the level
+// (COMBO_BONUS = 0) — and the entire 548 → 870, produced start to finish by the AI, was then credited for
+// muscle under clomiphene's evidence bound. Adding a drug with four randomized nulls on body composition and a
+// 'poor' tolerability grade IMPROVED the row.
+//
+// Four trials say AI-driven testosterone does not build muscle:
+//   Burnett-Bowie 2009a (RCT, men ≥60, anastrozole 1 mg, 12 mo): total T 323 → 525 ng/dL — a SERM-sized rise —
+//     and body composition by CT AND DXA, and strength, did not change.
+//   Burnett-Bowie 2009b (RCT, n=69, 12 mo): spine BMD FELL on anastrozole and rose on placebo (p=0.0014).
+//   Loves 2013 (RCT, letrozole, obese hypogonadal men): same null on body composition.
+//   Juang 2014: same.
+// That is what `tLeanShare: 0` encodes, and it now has to survive composition.
+const AI = 'aromatase_inhibitor';
+
+test('§22.10 an aromatase inhibitor never increases modeled lean, in any combination or at any baseline', () => {
+  // The headline invariant. If this ever fails again, the planner is steering people toward the worst option.
+  for (const met of [{}, LOW, EUGONADAL, { totalT: 400, labDate: '2026-07-01', lh: 4 }, { totalT: 750, labDate: '2026-07-01', lh: 4 }]) {
+    const plan = tPlan(P([], met), BOB_PROJ);
+    const row = id => plan.rows.find(r => r.id === id);
+    const label = met.totalT ? `T0=${met.totalT}` : 'no labs';
+    for (const base of ['clomiphene', 'hcg']) {
+      const solo = row(base), combo = row(`${base}+${AI}`);
+      if (!solo || !combo) continue;
+      assert.ok(combo.lean.lb <= solo.lean.lb + 0.001,
+        `${label}: ${base} + AI lean ${combo.lean.lb} must not exceed ${base} alone ${solo.lean.lb}`);
+      assert.ok(combo.net.lb <= solo.net.lb + 0.001,
+        `${label}: ${base} + AI net ${combo.net.lb} must not exceed ${base} alone ${solo.net.lb}`);
+      // ...and the estradiol fat penalty is still engaged. NOTE the invariant is on estrogen ACTION and on the
+      // direct Finkelstein term, not on the row's projected fat delta: the projection couples the two, so a
+      // combination that builds less lean also deposits slightly less fat, and asserting "more fat" would be
+      // asserting an artefact of that coupling rather than the thing being tested.
+      assert.ok(combo.e2.actionDrop > 0.3, `${label}: ${base} + AI still blocks estrogen action`);
+      assert.ok(combo.t.credited <= solo.t.credited + 1,
+        `${label}: the AI's share of the rise earns no muscle credit`);
+      // The RANGE too. Before the fix the interval was scaled off the combined SERUM confidence interval, so
+      // the AI's own wide CI (tCI [0.45, 2.2]) pushed the top of the row's range ABOVE the SERM's own upside
+      // (+10.1 against +7.1) on a rise that credits nothing.
+      assert.ok(combo.net.hi <= solo.net.hi + 0.001,
+        `${label}: ${base} + AI upside ${combo.net.hi} must not exceed ${base} alone ${solo.net.hi}`);
+      assert.ok(combo.lean.hi <= solo.lean.hi + 0.001, `${label}: ${base} + AI lean upside is not widened`);
+    }
+    // Every row's range must contain its own estimate — the interval is scaled off the credited level now,
+    // and a degenerate credited change must fall back to the estimate rather than collapsing to zero.
+    for (const r of plan.rows) {
+      assert.ok(r.net.lo <= r.net.lb + 1e-9 && r.net.lb <= r.net.hi + 1e-9,
+        `${label}: ${r.id} net ${r.net.lb} sits inside [${r.net.lo}, ${r.net.hi}]`);
+    }
+    // The AI on its own is never a muscle drug either.
+    const ai = row(AI);
+    if (ai) assert.ok(ai.lean.lb <= 0.05, `${label}: the AI alone credits no lean (${ai.lean.lb})`);
+  }
+});
+
+test('§22.10 tLeanShare composes: the credit level is the creditable items composed, not the serum level', () => {
+  const mk = ids => ids.map(id => ({ id, name: SUPPLEMENTS[id].name, item: SUPPLEMENTS[id], model: SUPPLEMENTS[id].model, dose: null, resp: 1, ramp: 1, weeksOn: 52 }));
+  const ctx = { baselineT: 548, lh: 4, bmi: 23.5, age: 39, estradiol: 25, shbg: 35 };
+  const solo = combineEndogenous(mk(['clomiphene']), ctx);
+  const combo = combineEndogenous(mk(['clomiphene', AI]), ctx);
+  // THE SETUP that made this a bug rather than a rounding error: the AI is the DRIVER and clomiphene is
+  // subsumed, so the serum rise is entirely the AI's.
+  assert.equal(combo.driverId, AI, 'the AI out-rises clomiphene at a mid-normal baseline');
+  assert.equal(combo.parts.find(p => p.id === 'clomiphene').role, 'subsumed');
+  assert.ok(combo.level > solo.level, `the combination reaches a higher serum level (${Math.round(combo.level)} vs ${Math.round(solo.level)})`);
+  // THE FIX: the credit is composed over the creditable items only, so it lands exactly on clomiphene alone.
+  assert.ok(Math.abs(combo.creditLevel - solo.creditLevel) < 1,
+    `credit ${Math.round(combo.creditLevel)} equals clomiphene alone ${Math.round(solo.creditLevel)}`);
+  assert.ok(combo.leanLevelCap < combo.level - 1, 'and the cap is below the serum level');
+  assert.deepEqual(combo.uncreditedIds, [AI], 'the AI is named as the uncredited contributor');
+  assert.equal(solo.uncreditedIds.length, 0, 'nothing is uncredited when nothing has a reduced share');
+  // The estradiol machinery is untouched: the fat cost still applies in full.
+  assert.ok(combo.e2ActionDrop > 0.3, 'estrogen action still blocked');
+  assert.ok(combo.e2 < solo.e2, 'estradiol still falls');
+  // And it really reaches the body model: the direct (calorie-independent) fat term is higher on the combination.
+  const mSolo = mods(P([e('clomiphene')])), mCombo = mods(P([e('clomiphene'), e(AI)]));
+  assert.ok(mCombo.fatDirectLbPerWeek > mSolo.fatDirectLbPerWeek + 0.001,
+    `the Finkelstein fat term is applied (${mCombo.fatDirectLbPerWeek} vs ${mSolo.fatDirectLbPerWeek} lb/wk)`);
+  assert.ok(mCombo.leanDirectLbPerWeek <= mSolo.leanDirectLbPerWeek + 1e-9,
+    'while the direct lean term is no higher than clomiphene alone');
+  // The row explains itself rather than silently differing.
+  assert.ok(combo.notes.some(n => /credits muscle on at most/i.test(n)), 'says how much of the rise is credited');
+  assert.ok(combo.notes.some(n => /fat cost that follows from it, still apply/i.test(n)), 'and that the fat cost still applies');
+});
+
+test('§22.10 the share cap applies to every creditable partner and to a measured on-therapy lab', () => {
+  const mk = ids => ids.map(id => ({ id, name: SUPPLEMENTS[id].name, item: SUPPLEMENTS[id], model: SUPPLEMENTS[id].model, dose: null, resp: 1, ramp: 1, weeksOn: 52 }));
+  for (const T0 of [300, 400, 548, 750]) {
+    const ctx = { baselineT: T0, lh: 4, bmi: 23.5, age: 39, estradiol: 25, shbg: 35 };
+    for (const partner of ['clomiphene', 'enclomiphene', 'hcg', 'tamoxifen']) {
+      const solo = combineEndogenous(mk([partner]), ctx);
+      const combo = combineEndogenous(mk([partner, AI]), ctx);
+      assert.ok(combo.creditLevel <= solo.creditLevel + 1,
+        `T0=${T0} ${partner}: adding the AI must not raise the credited level (${Math.round(combo.creditLevel)} vs ${Math.round(solo.creditLevel)})`);
+    }
+    // The AI alone credits nothing at all, at any baseline.
+    const ai = combineEndogenous(mk([AI]), ctx);
+    assert.ok(Math.abs(ai.creditLevel - T0) < 1, `T0=${T0}: the AI alone credits no rise`);
+    assert.equal(ai.creditSource, null);
+  }
+  // A MEASURED on-therapy lab replaces the modeled level and must go through the same split — otherwise
+  // entering a lab would reinstate the bug.
+  const prof = (ids, onTrtT) => P(ids.map(id => e(id, '2026-04-01')), { totalT: 548, labDate: '2026-01-01', lh: 4, onTrtT });
+  const soloLab = mods(prof(['clomiphene'], 900)).testosterone;
+  const comboLab = mods(prof(['clomiphene', AI], 900)).testosterone;
+  assert.equal(soloLab.source, 'measured');
+  assert.equal(Math.round(soloLab.level), 900);
+  assert.equal(Math.round(comboLab.level), 900, 'the measured lab is still used as-is for the serum number');
+  assert.ok(comboLab.leanLevel < soloLab.leanLevel - 1,
+    `but the credited level is reduced (${Math.round(comboLab.leanLevel)} vs ${Math.round(soloLab.leanLevel)})`);
+  assert.ok(comboLab.leanLevel > 548, 'and it is still a real rise, not zeroed');
+});
+
+test('§22.10 the honesty around the AI is unchanged, and nothing else regressed', () => {
+  // The AI must still raise the testosterone NUMBER — that part is measured, including in eugonadal males
+  // (Mauras 2000, +58%), and the catalogue deliberately has no low-T gate on it.
+  const plan = tPlan(P(), BOB_PROJ);
+  const ai = plan.rows.find(r => r.id === AI);
+  assert.ok(ai.t.to > ai.t.from + 150, `the AI still raises total T (${ai.t.from} → ${ai.t.to})`);
+  assert.equal(ai.bodyComp, 'none', 'and is still badged as having no muscle effect');
+  assert.ok(ai.net.lb < 0, 'and still nets negative, because estrogen runs fat (Finkelstein 2013)');
+  assert.ok(ai.tolerability.grade === 'poor', 'and is still graded poorly tolerated');
+  assert.ok(plan.rows.find(r => r.id === `clomiphene+${AI}`).warnings.some(w => /no muscle|credits NO muscle/i.test(w)),
+    'the combination warns that one of its items adds testosterone without muscle');
+  // A subsumed item that IS creditable, behind a driver that is not, has to say so — otherwise the row reads
+  // as though the lean mass came from the drug with no body-composition evidence.
+  const m = mods(P([e('clomiphene'), e(AI)]));
+  const cloText = m.contributions.find(c => c.id === 'clomiphene').text;
+  assert.match(cloText, /only item here with body-composition evidence/i);
+  assert.match(cloText, /ALL of the modeled lean mass on this row is credited to it/);
+  // Combinations of two creditable items are untouched by any of this.
+  const mk = ids => ids.map(id => ({ id, name: SUPPLEMENTS[id].name, item: SUPPLEMENTS[id], model: SUPPLEMENTS[id].model, dose: null, resp: 1, ramp: 1, weeksOn: 52 }));
+  const ctx = { baselineT: 548, lh: 4, bmi: 23.5, age: 39, estradiol: 25, shbg: 35 };
+  const ch = combineEndogenous(mk(['clomiphene', 'hcg']), ctx);
+  assert.ok(Math.abs(ch.leanLevelCap - ch.level) < 1, 'two creditable items: the cap is the level itself');
+  assert.equal(ch.uncreditedIds.length, 0);
+  // A SUPPRESSION is credited in full whatever the share: tLeanShare says a rise does not build muscle, never
+  // that a fall does not cost it.
+  const loss = combineEndogenous(mk(['endurance_load']), ctx);
+  assert.ok(loss.level < 548 && Math.abs(loss.creditLevel - loss.level) < 1, 'a modeled loss is credited in full');
+});
+
+test('\u00a722.10 a FRACTIONAL tLeanShare composes proportionally (no catalogue item uses one yet)', () => {
+  // `tLeanShare` is documented as a share, and only the value 0 is in the catalogue today. The composition is
+  // written for the general case so that an item with, say, half its rise supported by body-composition data
+  // can be added without re-deriving any of this. Pinned with a synthetic item rather than by inventing a
+  // fractional share for a real drug.
+  const mk = (id, over = {}) => ({ id, name: SUPPLEMENTS[id].name, item: SUPPLEMENTS[id],
+    model: { ...SUPPLEMENTS[id].model, ...over }, dose: null, resp: 1, ramp: 1, weeksOn: 52 });
+  const ctx = { baselineT: 548, lh: 4, bmi: 23.5, age: 39, estradiol: 25, shbg: 35 };
+  const full = combineEndogenous([mk('clomiphene')], ctx);
+  const half = combineEndogenous([mk('clomiphene', { tLeanShare: 0.5 })], ctx);
+  const none = combineEndogenous([mk('clomiphene', { tLeanShare: 0 })], ctx);
+  assert.ok(Math.abs(full.level - half.level) < 1, 'the SERUM level is unchanged by the share');
+  // Half the rise is creditable, so half of it reaches the credit level.
+  const rise = full.level - 548;
+  assert.ok(Math.abs((half.leanLevelCap - 548) - rise * 0.5) < 2,
+    `half the rise is creditable (${Math.round(half.leanLevelCap - 548)} of ${Math.round(rise)})`);
+  assert.ok(half.creditLevel < full.creditLevel && half.creditLevel > 548, 'and the credit lands between');
+  assert.ok(Math.abs(none.creditLevel - 548) < 1, 'a zero share credits nothing');
+  assert.deepEqual(half.uncreditedIds, ['clomiphene'], 'a partial share is reported as uncredited too');
+});
+
+test('\u00a722.10 the cap works through the CAUSE chain too, and leaves Colleluori\'s exception alone', () => {
+  // The lean pass runs over the cause axis as well as the LH axis, so a zero-share item cannot raise the
+  // set-point the credit is computed from either. The pairing that exercises this is the one real-world case
+  // where an AI is defensible: fat loss + an aromatase inhibitor in a severely obese hypogonadal man, which is
+  // the arm Colleluori 2020 randomized and the one population where lowering estradiol did NOT cost fat.
+  const obese = { goal: 'recomp', bodyweight: 260, body: { birthYear: 1987, heightIn: 70 }, supplements: [],
+    metabolic: { sleepHours: 5, stress: 3, deficitKcal: 900, totalT: 280, lh: 3.1, labDate: '2026-07-01' } };
+  const plan = tPlan(obese, { ...BOB_PROJ, bodyweightLb: 260, baseline: { weightLb: 260, bfPct: 30, date: DATE } });
+  const solo = plan.rows.find(r => r.id === 'fat_loss');
+  const combo = plan.rows.find(r => r.id === `fat_loss+${AI}`);
+  assert.ok(solo && combo, 'both rows exist for an obese hypogonadal profile');
+  // LEAN is the invariant, and it holds: the AI raises the serum number and credits nothing.
+  assert.ok(combo.lean.lb <= solo.lean.lb + 0.001, `lean ${combo.lean.lb} vs ${solo.lean.lb}`);
+  assert.ok(combo.lean.hi <= solo.lean.hi + 0.001, 'and the lean upside is not widened');
+  assert.ok(combo.t.to > solo.t.to + 50, 'even though the combination reaches a much higher serum level');
+  assert.ok(combo.t.credited <= solo.t.credited + 1, 'none of which is credited');
+  // NET may be a shade better here, and that is a measured finding rather than a leak: the fat sign-reversal
+  // gate (BMI ≥ 35 with a reasonable estradiol) is Colleluori 2020. The fat term is what moved, not the lean.
+  assert.ok(combo.fat.lb <= solo.fat.lb + 0.001, 'and any net gain comes from the fat term, not the lean term');
+  // Every range still contains its estimate across this profile too.
+  for (const r of plan.rows) {
+    assert.ok(r.net.lo <= r.net.lb + 1e-9 && r.net.lb <= r.net.hi + 1e-9, `${r.id} range contains its estimate`);
+  }
+});
+
+test('\u00a722.10 every row\'s range contains its own estimate, at every baseline', () => {
+  // The invariant that caught three separate leaks (docs \u00a715.8): freeAdj evaluated at the serum level rather
+  // than the credited one; the zero floors applied BEFORE the range ends were ordered, so for a falling fat
+  // value the floor overwrote the real low end (tamoxifen in an obese hypogonadal man read "fat \u22121.5 lb,
+  // range \u22120.89 to 0" and headlined "+2.3 lb net, 0 to +1.9"); and a body-composition bound leaving the
+  // interval not bracketing the credited mid (hCG: "fat +0.1 lb, range +0.11 to +0.15").
+  const PROFILES = [
+    ['no labs', 164, 9, { sleepHours: 7, stress: 3 }],
+    ['low-T secondary', 164, 9, LOW],
+    ['eugonadal', 164, 9, EUGONADAL],
+    ['primary', 164, 9, PRIMARY],
+    ['high-normal', 164, 9, { totalT: 850, lh: 4, labDate: '2026-07-01' }],
+    ['obese hypogonadal', 260, 30, { sleepHours: 5, stress: 3, deficitKcal: 900, totalT: 280, lh: 3.1, labDate: '2026-07-01' }],
+  ];
+  let checked = 0;
+  for (const [label, bw, bf, met] of PROFILES) {
+    const plan = tPlan({ goal: 'recomp', bodyweight: bw, body: { birthYear: 1987, heightIn: 70 }, supplements: [], metabolic: met },
+      { ...BOB_PROJ, bodyweightLb: bw, baseline: { weightLb: bw, bfPct: bf, date: DATE } });
+    for (const r of plan.rows) {
+      for (const [k, v] of [['lean', r.lean], ['fat', r.fat], ['net', r.net]]) {
+        assert.ok(v.lo <= v.lb + 1e-9 && v.lb <= v.hi + 1e-9,
+          `${label}: ${r.id} ${k} estimate ${v.lb} is outside its range [${v.lo}, ${v.hi}]`);
+        checked++;
+      }
+    }
+  }
+  assert.ok(checked > 300, `checked a meaningful number of ranges (${checked})`);
+});
