@@ -5,9 +5,10 @@
 //   proteinGPerLb, fatPct } per CONTRACT §15. If the engine has no macrosFor() yet, today's target is
 //   computed here from maintenance + surplus so the numbers match what Bob set.
 import * as nut from '../engine/nutrition.js';
+import { ENERGY_COMPENSATION } from '../engine/bodycomp.js';
 import { esc } from './components.js';
 import { ds } from '../util.js';
-import { macros, macroBar, nutritionContext, safe, f1 } from './projection.js';
+import { macroBar, nutritionContext, safe, f1 } from './projection.js';
 import { resolveTargets } from '../engine/targets.js';
 import { setTargets } from './targets.js';
 // CONTRACT-NOTE (§20 Female mode): tips come from nutrition.tipsFor(profile) (female list; Adderall tips for women only
@@ -16,6 +17,18 @@ import { setTargets } from './targets.js';
 // CONTRACT-NOTE (INTEGRATOR §18): targets are read via resolveTargets(profile).nutrition (same
 //   defaults the projection uses) and saved via setTargets (no re-plan: nutrition doesn't change
 //   the plan, but the projection reads the same profile values).
+
+// CONTRACT §18: macros come straight from the engine. This screen used to call ui/projection.js's
+// macros() wrapper, which carries a fallback that re-implements the macro split with its OWN copies of
+// the protein and fat thresholds (0.7 / 1.15 / 20 % / 120 g). Those constants had already drifted from
+// the engine's, so the Nutrition screen could warn with numbers the model does not use. One call site,
+// one set of numbers. (ui/projection.js still has that fallback; it is unreachable while
+// nutrition.macrosFor exists, and removing it belongs to that file's owner.)
+function macros(profile, { calories, bodyweight, proteinGPerLb, fatPct, leanLb = null }) {
+  const prof = { ...profile, nutrition: { ...(profile?.nutrition || {}), proteinGPerLb, fatPct } };
+  const r = nut.macrosFor(prof, { calories, bodyweight, leanLb });
+  return { ...r, warnings: r.warnings || [] };
+}
 
 let override = null;   // user-picked day type for today (module state)
 let basisPick = null;  // 'cal' | 'surplus' while editing
@@ -35,6 +48,25 @@ export function inferDayType(sessions, date = ds()) {
     }
   }
   return lift && cardio ? 'both' : lift ? 'lift' : cardio ? 'cardio' : 'rest';
+}
+
+// Day-type counts for the user's week, from profile.schedule (the targets resolver's own source) with
+// today's actual sessions respected. Shape: { lift, cardio, both, rest } summing to 7.
+export function scheduleWeek(profile) {
+  const sch = profile?.schedule && typeof profile.schedule === 'object' ? profile.schedule : null;
+  if (!sch) return null;
+  const out = { lift: 0, cardio: 0, both: 0, rest: 0 };
+  let n = 0;
+  for (const dow of ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']) {
+    const k = sch[dow]?.kind;
+    if (k == null) continue;
+    n++;
+    if (k === 'lift') out.lift++;
+    else if (k === 'cardio') out.cardio++;
+    else if (k === 'rest') out.rest++;
+    else out.both++;                                  // 'flex' / 'class' days usually carry both
+  }
+  return n === 7 ? out : null;
 }
 
 const tips = (title, list, icon) => list?.length ? `<div class="section-title">${icon} ${esc(title)}</div><div class="card"><ul class="tip-list">${list.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>` : '';
@@ -85,6 +117,23 @@ function lossCard(T, nc, p) {
   </div>`;
 }
 
+// Three claims Forge is often expected to make and the evidence it actually has. Every number comes
+// from the engine's own constants (nut.FAT_EVIDENCE, nut.PROTEIN_EVIDENCE, bodycomp.ENERGY_COMPENSATION), so
+// this card cannot drift away from the model.
+function evidenceCard() {
+  const F = nut.FAT_EVIDENCE, P = nut.PROTEIN_EVIDENCE, comp = Math.round(ENERGY_COMPENSATION * 100);
+  const rows = [
+    ['“More fat makes you more fat”',
+      `Not as stated. At the same calories and protein, dietary fat is no more fattening than carbohydrate — a surplus is what adds fat. There IS a floor: men who drop from ~40% to ~20% of calories from fat lose a little testosterone (${F.totalTestosteroneSMD} SD, 95% CI ${F.totalTestosteroneCI[0]} to ${F.totalTestosteroneCI[1]}; Whittaker 2021), which is why Forge warns under ${F.floorPct}% and not over it. ${F.amdr[0]}-${F.amdr[1]}% is the recommended range.`],
+    ['“More protein is better, up to a point”',
+      `Right, and the point is lower than most people think: lean-mass gains stopped improving past ${P.plateauGPerKg} g/kg ≈ ${P.plateauGPerLb} g/lb across 49 trials (Morton 2018). Forge targets ~${P.ceilingGPerLb} g/lb — the top of that study's confidence interval — so you are covered rather than average. In a deficit it keeps paying past that: ${P.deficitGPerKgLean[0]}-${P.deficitGPerKgLean[1]} g/kg of lean mass protects muscle (Helms 2014).`],
+    ['“More cardio burns fat faster”',
+      `True but not linearly, and Forge's own math shows the bend. Two things shrink it: the calorie figure on a watch or machine includes the calories you would have burned at rest (Forge subtracts those), and about ${comp}% of the calories from ADDED activity get cancelled out by your resting burn falling (Careau 2021, n = 1,754). Appetite does the rest. Cardio is a real lever; food is the bigger one.`],
+  ];
+  return `<div class="card bd-why">${rows.map(([q, a]) => `<div style="margin-bottom:12px"><div class="t" style="font-weight:750">${esc(q)}</div><p class="small" style="color:#cfcfd8;margin-top:4px;line-height:1.5">${esc(a)}</p></div>`).join('')}
+    <p class="tiny muted">Full constants, sources and uncertainties: docs/research/energy-model.md</p></div>`;
+}
+
 export function render(ctx) {
   const p = ctx.store.getProfile();
   const n = p.nutrition || {};
@@ -97,7 +146,7 @@ export function render(ctx) {
   const cal = targetCalories(n, nc);
   const surplus = nc && cal ? cal - nc.maint : (n.surplus ?? 0);
   const bw = Number(p.bodyweight) || nc?.weight || null;
-  const m = cal && bw ? macros(p, { calories: cal, bodyweight: bw, proteinGPerLb: pg, fatPct }) : null;
+  const m = cal && bw ? macros(p, { calories: cal, bodyweight: bw, proteinGPerLb: pg, fatPct, leanLb: nc?.leanLb ?? null }) : null;
   const pct = (v, a, b) => ((v - a) / (b - a)) * 100;
 
   const editor = `<div class="card" id="nEdit">
@@ -119,8 +168,10 @@ export function render(ctx) {
     const sessions = safe(() => ctx.store.getSessions(), []);
     const inferred = inferDayType(sessions);
     const dayType = override || inferred;
-    let t = safe(() => nut.dailyTargets(p, { dayType, bodyweight: bw, tdee: nc?.maint, leanLb: nc?.leanLb, exerciseKcal: nc?.exerciseKcal }), null);
-    if (typeof nut.macrosFor !== 'function' && mode === 'simple' && m) t = { ...m, note: t?.note || '' };
+    // The real week, so carb cycling centres its offsets on the days this user actually trains and
+    // therefore averages to exactly the intake shown in the editor (nutrition.cycleMean).
+    const week = safe(() => scheduleWeek(p), null);
+    let t = safe(() => nut.dailyTargets(p, { dayType, bodyweight: bw, tdee: nc?.maint, leanLb: nc?.leanLb, exerciseKcal: nc?.exerciseKcal, week }), null);
     if (t && nc && (Number(n.calories) > 0 || (n.surplus != null && isFinite(n.surplus)))) {
       const avgS = (Number(n.calories) > 0 ? Number(n.calories) : nc.maint + Number(n.surplus)) - nc.maint;
       const lbl = avgS <= -400 ? 'Cut' : avgS < -100 ? 'Recomp' : avgS <= 100 ? 'Maintenance' : avgS <= 500 ? 'Lean bulk' : 'Big surplus';
@@ -143,6 +194,7 @@ export function render(ctx) {
     <div class="section-title">Targets</div>
     ${editor}
     ${T.goals.losing ? `<div class="section-title">Losing weight, honestly</div>${lossCard(T, nc, p)}` : `<div class="section-title">Bulking, honestly</div>${whyCard(nc)}`}
+    <div class="section-title">What the research actually says</div>${evidenceCard(p)}
     ${(() => { const T = typeof nut.tipsFor === 'function' ? nut.tipsFor(p) : { nutrition: nut.NUTRITION_TIPS, adderall: nut.ADDERALL_TIPS }; return tips('Eating on Adderall', T.adderall, '💊') + tips('Nutrition basics', T.nutrition, '📌'); })()}
     ${(() => { const SL = typeof nut.supplementsFor === 'function' ? nut.supplementsFor(p) : nut.SUPPLEMENTS; return Array.isArray(SL) && SL.length ? `<div class="section-title">💊 Supplements worth it</div><div class="list">${SL.map(s => `<div class="list-item" style="align-items:flex-start"><div class="grow"><div class="t">${esc(s.name)} <span class="muted small" style="font-weight:600">· ${esc(s.dose || '')}</span></div><div class="s">${esc(s.note || '')}</div></div></div>`).join('')}</div>` : ''; })()}`;
 }
@@ -173,7 +225,7 @@ export function bind(root, ctx) {
     ed.querySelector('#nPgV').textContent = (+pgEl.value).toFixed(2) + ' g/lb';
     ed.querySelector('#nFatV').textContent = fatEl.value + '% of kcal';
     if (nc && cal) ed.querySelector('#nValHint').textContent = basis() === 'cal' ? `${sgnK(cal - nc.maint)} vs maintenance` : `≈ ${Math.round(cal).toLocaleString()} kcal/day today. Follows your maintenance as your weight and training change.`;
-    if (cal > 800 && bw) { const m = macros(p, { calories: cal, bodyweight: bw, proteinGPerLb: +pgEl.value, fatPct: +fatEl.value }); ed.querySelector('#nMacros').innerHTML = macroBar(m) + warnList(m.warnings); }
+    if (cal > 800 && bw) { const m = macros(p, { calories: cal, bodyweight: bw, proteinGPerLb: +pgEl.value, fatPct: +fatEl.value, leanLb: nc?.leanLb ?? null }); ed.querySelector('#nMacros').innerHTML = macroBar(m) + warnList(m.warnings); }
   };
   valEl.addEventListener('input', live); pgEl.addEventListener('input', live); fatEl.addEventListener('input', live);
   pgEl.onchange = () => pgEl.blur(); fatEl.onchange = () => fatEl.blur();

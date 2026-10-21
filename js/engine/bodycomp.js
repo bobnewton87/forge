@@ -36,12 +36,18 @@
 // CONTRACT-NOTE: tdee() returns extra { neatFactor, days, sessions } and sessionCalories() counts
 //   GROSS kcal; tdee() subtracts the resting calories already covered by BMR+NEAT during the
 //   session minutes so exercise calories are not double-counted.
+// CONTRACT-NOTE (energy model, docs/research/energy-model.md): bodyComp() also returns
+//   bmrEquation ('Cunningham 1991'|'Mifflin-St Jeor'|'kcal/kg'), bmrRange { low, high } (the spread of
+//   published equations for this person) and bmrNote (plain English, names the known bias). New exports
+//   bmrFromLean(), mifflinBmr(), BMR_EQUATIONS, ENERGY_COMPENSATION, compensatedKcal(), TEF_FRACTION.
+//   Class METs moved to data/cardio.js CLASS_CARDIO + classMets() so classes and cardio share one
+//   intensity model (CONTRACT §18); bodycomp no longer keeps its own CLASS_METS/INTENSITY_SCALE.
 // CONTRACT-NOTE (§20 Female mode): baseline() reads sex through sex.js sexOf(); ratios gain waistToHip (both sexes,
 //   additive), and female profiles get female-specific missingInfo wording (no V-taper, hips for waist:hip) plus
 //   baseline.bodyFatCategory (Gallagher 2000 healthy range for her age) and baseline.femaleStatus (sex.femaleStatus).
 //   The formulas were already sex-aware (Navy, Mifflin-St Jeor, RFM, Deurenberg); Katch-McArdle is sex-neutral
 //   because it runs on lean mass.
-import { estimateCalories } from '../data/cardio.js';
+import { estimateCalories, classMets } from '../data/cardio.js';
 import { sexOf, bodyFatCategory, femaleStatus } from './sex.js';
 import { ds, parseDs, addDays, daysBetween } from '../util.js';
 
@@ -49,14 +55,40 @@ const LB_PER_KG = 2.20462;
 const CM_PER_IN = 2.54;
 export const DEFAULT_AGE = 35;
 
-// BMR multiplier for NEAT (non-exercise movement) + thermic effect of food, on top of BMR.
-// desk ≈ classic "sedentary" 1.2 plus ~0.1 for TEF.
+// BMR multiplier for NEAT (non-exercise movement) + the thermic effect of food, on top of BMR, and
+// BEFORE planned exercise — which tdee() adds separately. So 1 + factor is a *non-exercise* physical
+// activity level (PAL), not the all-in PAL you see in textbooks.
+//   desk 1.30 · light 1.45 · active 1.60
+// These line up with the IOM/DRI PAL categories (sedentary 1.0-1.39, low active 1.4-1.59, active
+// 1.6-1.89; Institute of Medicine, Dietary Reference Intakes for Energy, 2005) read as the activity a
+// person does *apart from* training, which is why they sit at the bottom of each band.
+// They include the thermic effect of food: a mixed diet eaten at energy balance costs 5-15 % of daily
+// energy expenditure to process — ~10 % for a typical mix, more with high protein or alcohol, LESS
+// with high fat (Westerterp KR 2004, Nutr Metab (Lond) 1:5, doi:10.1186/1743-7075-1-5). TEF is
+// therefore folded into the factor rather than modelled per macro: at Bob's intake the protein-vs-fat
+// difference is worth roughly ±40 kcal/day, inside the error of the BMR estimate itself.
 export const NEAT_FACTORS = { desk: 0.3, light: 0.45, active: 0.6 };
+// TEF as a fraction of intake for a mixed diet (Westerterp 2004). Documented; already inside NEAT_FACTORS.
+export const TEF_FRACTION = { low: 0.05, typical: 0.1, high: 0.15 };
 
-// Approximate METs per Crunch class type (Compendium of Physical Activities ranges).
-const CLASS_METS = { hiit: 8, cycle: 8.5, cardio_dance: 6.5, strength: 5, sculpt: 4.5, core: 3.8, boxing: 7.5,
-  yoga: 3, pilates: 3.5, stretch: 2.5, other: 5 };
-const INTENSITY_SCALE = { easy: 0.85, moderate: 1, hard: 1.1, intervals: 1.1 };
+// Energy compensation: only ~72 % of the calories burned by ADDING activity show up as extra total
+// daily expenditure; the rest is offset by a fall in basal expenditure. 28 % is the average in the
+// largest doubly-labelled-water dataset assembled (n = 1,754 adults living normal lives; Careau V,
+// Halsey LG, Pontzer H et al. 2021, Curr Biol 31:4659-4666, doi:10.1016/j.cub.2021.08.016), and it is
+// larger in people with more body fat.
+// It applies to a CHANGE in habitual activity, not to a single session and not to activity a person
+// already does — their measured BMR and weight trend already contain whatever they compensate today.
+// So tdee() deliberately does NOT apply it (it estimates current burn at current habits), and neither
+// does sessionCalories(). It belongs on the projection's cardio delta: "what if I add 100 min/week".
+export const ENERGY_COMPENSATION = 0.28;
+// Pass-through kcal for a change of `deltaKcal` in activity energy expenditure. Symmetric: cutting
+// cardio frees basal expenditure back up the same way.
+export function compensatedKcal(deltaKcal, compensation = ENERGY_COMPENSATION) {
+  const d = num(deltaKcal), c = num(compensation);
+  if (!Number.isFinite(d)) return 0;
+  const k = Number.isFinite(c) ? Math.max(0, Math.min(1, c)) : ENERGY_COMPENSATION;
+  return d * (1 - k);
+}
 
 const num = x => (typeof x === 'number' ? x : x == null || x === '' ? NaN : Number(x));
 const pos = x => { const n = num(x); return Number.isFinite(n) && n > 0 ? n : null; };
@@ -82,6 +114,48 @@ export function navyBodyFat({ sex = 'male', heightIn, neckIn, waistIn, hipsIn } 
   return r1(bf);
 }
 
+// ---------------------------------------------------------------- BMR
+// THE lean-mass BMR equation, exported so nothing else re-types it (projection.js had its own copy).
+// REE = 370 + 21.6 × fat-free mass (kg). The app used to label this "Katch-McArdle"; the primary
+// source is actually **Cunningham JJ 1991**, Am J Clin Nutr 54:963-9, doi:10.1093/ajcn/54.6.963, a
+// synthetic review of a decade of body-composition/REE studies. Fat-free mass explains 65-90 % of the
+// variance in REE, and fat mass adds nothing independent in non-obese people — which is why this is
+// the right equation to use once body fat is known.
+export function bmrFromLean(leanLb) {
+  const l = pos(leanLb);
+  return l == null ? null : Math.round(370 + 21.6 * (l / LB_PER_KG));
+}
+// Mifflin-St Jeor (1990). Of the equations that run on bodyweight alone it is the most reliable:
+// within 10 % of measured RMR in more non-obese and obese individuals than Harris-Benedict, Owen or
+// WHO/FAO/UNU, with the narrowest error range (Frankenfield D, Roth-Yousey L, Compher C 2005,
+// J Am Diet Assoc 105:775-89, doi:10.1016/j.jada.2005.02.005). Used only when body fat is unknown.
+export function mifflinBmr({ weightLb, heightIn, age, sex = 'male' } = {}) {
+  const w = pos(weightLb), h = pos(heightIn);
+  if (w == null || h == null) return null;
+  const a = pos(age) ?? DEFAULT_AGE;
+  return Math.round(10 * (w / LB_PER_KG) + 6.25 * (h * CM_PER_IN) - 5 * a + (sex === 'female' ? -161 : 5));
+}
+export const BMR_EQUATIONS = {
+  katch: { name: 'Cunningham 1991', formula: '370 + 21.6 × lean kg', doi: '10.1093/ajcn/54.6.963', needs: 'lean mass' },
+  mifflin: { name: 'Mifflin-St Jeor', formula: '10 × kg + 6.25 × cm − 5 × age + 5', doi: '10.1016/j.jada.2005.02.005', needs: 'height' },
+  weight: { name: 'kcal/kg rule of thumb', formula: '22 × kg (men), 20 × kg (women)', doi: null, needs: 'weight only' },
+};
+// Published lean-mass equations disagree by a few hundred kcal, and in lean muscular people they tend
+// to read LOW: in 27 physique athletes "nearly all existing BW- and FFM-based prediction equations …
+// did not exhibit acceptable validity and typically underestimated RMR", with Cunningham among the
+// few judged acceptable (Tinsley GM, Graybeal AJ, Moore ML 2018, Appl Physiol Nutr Metab 44:397-406,
+// doi:10.1139/apnm-2018-0412). Their own fits were REE = 284 + 25.9 × FFM kg and 10 + 24.8 × BW kg.
+// bmrRange reports that spread instead of pretending to one number; the real fix is a measured burn,
+// which nutrition.adaptiveTdee() provides once there are 10+ days of food logs and weigh-ins.
+function leanBmrRange(leanLb, weightLb) {
+  const l = pos(leanLb), w = pos(weightLb);
+  if (l == null) return null;
+  const kg = l / LB_PER_KG;
+  const vals = [370 + 21.6 * kg, 500 + 22 * kg, 284 + 25.9 * kg];      // Cunningham 1991, Cunningham 1980, Tinsley 2018
+  if (w != null) vals.push(10 + 24.8 * (w / LB_PER_KG));               // Tinsley 2018 bodyweight fit
+  return { low: Math.round(Math.min(...vals)), high: Math.round(Math.max(...vals)) };
+}
+
 // ---------------------------------------------------------------- bodyComp
 export function bodyComp({ weightLb, heightIn, bodyFatPct, age, sex = 'male', waistIn } = {}) {
   const w = pos(weightLb), h = pos(heightIn);
@@ -89,7 +163,8 @@ export function bodyComp({ weightLb, heightIn, bodyFatPct, age, sex = 'male', wa
   const bf = bfRaw != null && bfRaw < 70 ? bfRaw : null;
   const a = pos(age);
   const out = { weightLb: w != null ? r1(w) : null, bodyFatPct: bf != null ? r1(bf) : null, leanLb: null, fatLb: null,
-    bmi: null, ffmi: null, ffmiNormalized: null, bmr: null, bmrMethod: null, ageAssumed: false, leanKg: null, heightM: null };
+    bmi: null, ffmi: null, ffmiNormalized: null, bmr: null, bmrMethod: null, ageAssumed: false, leanKg: null, heightM: null,
+    bmrEquation: null, bmrRange: null, bmrNote: null };
   if (w == null) return out;
   const kg = w / LB_PER_KG;
   const m = h != null ? (h * CM_PER_IN) / 100 : null;
@@ -105,16 +180,25 @@ export function bodyComp({ weightLb, heightIn, bodyFatPct, age, sex = 'male', wa
       out.ffmi = r1(ffmi);
       out.ffmiNormalized = r1(ffmi + 6.1 * (1.8 - m));
     }
-    out.bmr = Math.round(370 + 21.6 * (leanLb / LB_PER_KG));        // Katch-McArdle
-    out.bmrMethod = 'katch';
+    // Body fat is known → use the lean-mass equation (Cunningham 1991). Sex-neutral by construction:
+    // it runs on fat-free mass, which is where the sex difference in BMR mostly lives.
+    out.bmr = bmrFromLean(leanLb);
+    out.bmrMethod = 'katch';                                           // key kept for API compatibility
+    out.bmrEquation = BMR_EQUATIONS.katch.name;
+    out.bmrRange = leanBmrRange(leanLb, w);
+    out.bmrNote = `Resting burn ${out.bmr} kcal/day from lean mass (${BMR_EQUATIONS.katch.formula}, Cunningham 1991), the right equation once body fat is known. Published equations put you between ${out.bmrRange.low} and ${out.bmrRange.high}, and in lean muscular people they tend to read low (Tinsley 2018), so treat this as a starting point: log food and weight for 10+ days and Forge measures your real burn instead.`;
   } else if (m) {
     const age_ = a ?? DEFAULT_AGE;
     out.ageAssumed = a == null;
-    out.bmr = Math.round(10 * kg + 6.25 * m * 100 - 5 * age_ + (sex === 'female' ? -161 : 5));   // Mifflin-St Jeor
+    out.bmr = mifflinBmr({ weightLb: w, heightIn: h, age: age_, sex });
     out.bmrMethod = 'mifflin';
+    out.bmrEquation = BMR_EQUATIONS.mifflin.name;
+    out.bmrNote = `Resting burn ${out.bmr} kcal/day from weight, height and age (Mifflin-St Jeor, the most reliable equation that does not need body fat; Frankenfield 2005). Measure your body fat and Forge switches to the lean-mass equation, which is more accurate for muscular people.`;
   } else {
     out.bmr = Math.round(kg * (sex === 'female' ? 20 : 22));           // crude fallback (no height, no BF)
     out.bmrMethod = 'weight';
+    out.bmrEquation = BMR_EQUATIONS.weight.name;
+    out.bmrNote = `Resting burn ${out.bmr} kcal/day from bodyweight alone — a rule of thumb, easily ±20 %. Add your height for a real equation.`;
   }
   const wa = pos(waistIn);
   if (wa != null && h != null) out.waistToHeight = r2(wa / h);
@@ -419,7 +503,8 @@ function sessionDetail(session, { weightLb } = {}) {
       if (done && !b.done) continue;
       const dur = pos(b.duration) ?? 45;
       const ci = b.classify || {};
-      const mets = (CLASS_METS[ci.type] ?? 5) * (INTENSITY_SCALE[ci.intensity] ?? 1);
+      // Same easy/hard + INTENSITIES.factor model the cardio modalities use (data/cardio.js).
+      const mets = classMets(ci.type, ci.intensity || 'moderate');
       kcal += mets * kg * dur / 60; minutes += dur; otherMin += dur;
     } else if (b.kind === 'lift') {
       const sets = Array.isArray(b.sets) ? b.sets : [];
@@ -434,6 +519,11 @@ function sessionDetail(session, { weightLb } = {}) {
     if (!(liftMin > 0)) liftMin = liftSets * 2.5;
     liftMin = Math.min(liftMin, liftSets * 5);                           // don't credit long idle sessions
     const density = liftSets / liftMin;                                   // sets per minute (~0.3-0.5)
+    // 4-6 kcal/min at 165 lb ≈ 3.2-4.8 METs, interpolated by set density. The 2024 Adult Compendium
+    // brackets resistance training at 02054 "multi-exercise weight training, 8-15 reps" 3.5 METs and
+    // 02050 "free weights, machines or bodybuilding, vigorous" 6.0 METs; a hypertrophy session with
+    // 2-3 min rests sits near the bottom of that band, a dense circuit near the top. This is the
+    // loosest estimate in the energy model (see docs/research/energy-model.md §7).
     const rate = Math.max(4, Math.min(6, 3.5 + density * 5)) * (wt / 165);
     kcal += rate * liftMin; minutes += liftMin;
   }
@@ -446,6 +536,17 @@ export function sessionCalories(session, { weightLb } = {}) {
 
 // Average kcal/day over [from, to] (inclusive). Defaults to the last 28 days. Counts done sessions,
 // plus planned ones dated today or later (pass a filtered list to change that).
+//
+// NET exercise, not gross. sessionDetail() returns gross kcal (1 MET of the MET value IS rest), so
+// `restPerMin × session minutes` is subtracted: during those minutes BMR + NEAT already accounted for
+// the resting burn, and adding gross exercise kcal on top would count it twice. Double-counting a
+// 45-min run at Bob's size is ~65 kcal/session, ~2,000 kcal over a 4-week block — about 0.6 lb of
+// phantom fat loss a month. Floored at 0 so a very light session can never subtract from TDEE.
+//
+// This is current burn at current habits, so energy compensation (ENERGY_COMPENSATION, Careau 2021)
+// is deliberately NOT applied here: whatever this person compensates for the training they already do
+// is already inside their measured weight trend and body composition. Compensation belongs on a
+// *change* in volume — see compensatedKcal() and the projection's cardio delta.
 export function tdee({ comp, activity = 'desk', sessions = [], from, to, now = new Date() } = {}) {
   const today = ds(toDate(now));
   const toS = to || today;

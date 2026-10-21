@@ -37,6 +37,14 @@ const clampN = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 
 // Calories below estimated maintenance (negative = surplus). Ported from Iron Runner calcNutri
 // (recomp/bulk/cut), with 'both' (lift + cardio) days fuelled a bit more than a lift day.
+//
+// WHAT CARB CYCLING IS AND ISN'T (docs/research/energy-model.md §5). These are day-to-day *offsets*
+// around the same weekly average, so cycling changes WHEN you eat carbs, not how much you eat in a
+// week. That is the honest claim and the only one Forge makes: at matched weekly calories and protein,
+// the carbohydrate/fat split has little effect on body composition (CONTRACT §15; Helms ER, Aragon AA,
+// Fitschen PJ 2014, J Int Soc Sports Nutr 11:20, doi:10.1186/1550-2783-11-20, whose own
+// recommendation is to set calories and protein first and let carbs and fat fill the rest). The value
+// is fuelling: carbs around training support the volume that actually drives the adaptation.
 const CYCLE = {
   recomp: { lift: 100, cardio: 300, rest: 500, both: -100 },
   lean_bulk: { lift: -250, cardio: 0, rest: 200, both: -400 },
@@ -45,12 +53,71 @@ const CYCLE = {
   // rate or goal weight is set); the day-type spread keeps carbs around training.
   weight_loss: { lift: 400, cardio: 650, rest: 900, both: 250 },
 };
-// Flat daily offset for 'simple' mode (roughly the weekly average of the cycle).
-const SIMPLE = { recomp: 250, lean_bulk: -250, cut: 500, weight_loss: 600 };
+// Flat daily offset for 'simple' mode.
+export const SIMPLE_DEFICIT = { recomp: 250, lean_bulk: -250, cut: 500, weight_loss: 600 };
+const SIMPLE = SIMPLE_DEFICIT;
+// The week the cycling offsets are centred on when the caller does not pass one: Forge's default
+// schedule (CONTRACT Phase 2) of 4 lifting days — one of which also carries cardio — 2 cardio days and
+// 1 rest day. `cycleMean()` divides by 7, so cycling mode averages EXACTLY to the target intake.
+// This was a real bug before: the cycling formula subtracted CYCLE[dayType] and added back the flat
+// SIMPLE offset, which is not the mean of the CYCLE values. Over this week that made a cut average
+// ~86 kcal/day MORE than the stated target and a lean bulk ~136 kcal/day LESS, so Nutrition and the
+// projection quietly disagreed about how much the user was actually eating.
+export const REFERENCE_WEEK = { lift: 3, both: 1, cardio: 2, rest: 1 };
+export function cycleMean(goal, week = REFERENCE_WEEK) {
+  const c = CYCLE[goal] || CYCLE.recomp;
+  let days = 0, sum = 0;
+  for (const [k, n] of Object.entries(week || {})) {
+    const cnt = num(n);
+    if (!(cnt > 0) || c[k] == null) continue;
+    days += cnt; sum += cnt * c[k];
+  }
+  return days > 0 ? sum / days : (SIMPLE[goal] ?? SIMPLE.recomp);
+}
 // §23: weight_loss defaults to a protective 1.0 g/lb. The user lowers it deliberately (Targets →
 // lean protection), and the engine then predicts the extra lean loss instead of hiding it.
-const DEFAULT_PROTEIN = { recomp: 1.0, lean_bulk: 1.0, cut: 1.15, weight_loss: 1.0 };
+//
+// WHY THESE NUMBERS (docs/research/energy-model.md §4). Morton RW et al. 2018, Br J Sports Med
+// 52:376-84, doi:10.1136/bjsports-2017-097608 (49 RCTs, 1,863 people): gains in fat-free mass stop
+// improving past a TOTAL intake of 1.62 g/kg/day = **0.73 g/lb**, with the upper bound of the
+// confidence interval at ~2.2 g/kg = **1.0 g/lb**. 1.0 g/lb is that upper bound, picked so the target
+// covers essentially everyone rather than the average person — not because more builds more muscle.
+// Morton's figure is per kg of BODYWEIGHT (that is how total intake was expressed), which is what
+// `proteinGPerLb` means everywhere in Forge.
+// The cut default of 1.15 g/lb is higher because a deficit changes the question from "how much can I
+// build" to "how much can I keep", and there the dose-response runs past Morton's plateau: Longland TM
+// et al. 2016, Am J Clin Nutr 103:738-46, doi:10.3945/ajcn.115.119339 put trained men in a 40 %
+// deficit with hard training and 2.4 g/kg/day GAINED 1.2 kg of lean against 0.1 kg at 1.2 g/kg, and
+// lost more fat (−4.8 vs −3.5 kg). Helms 2014 (doi:10.1186/1550-2783-11-20) recommends 2.3-3.1 g/kg
+// of LEAN mass during contest prep, which at Bob's ~23 % body fat is 0.80-1.08 g/lb of bodyweight.
+export const DEFAULT_PROTEIN = { recomp: 1.0, lean_bulk: 1.0, cut: 1.15, weight_loss: 1.0 };
+// Morton's break-point and CI, in both units, so no screen re-derives them.
+export const PROTEIN_EVIDENCE = {
+  plateauGPerKg: 1.62, plateauGPerLb: 0.73, ceilingGPerKg: 2.2, ceilingGPerLb: 1.0,
+  deficitGPerKgLean: [2.3, 3.1],
+  doi: '10.1136/bjsports-2017-097608', deficitDoi: '10.3945/ajcn.115.119339', leanDoi: '10.1186/1550-2783-11-20',
+};
 export const DEFAULT_FAT_PCT = 25;
+// Dietary fat (docs/research/energy-model.md §6). TWO separate things, and Forge must not merge them:
+//  - There is **no mechanism by which fat calories are uniquely fattening**. At equal calories and
+//    protein the carbohydrate/fat split barely moves body composition. The one measurable asymmetry
+//    runs the other way and is tiny: a high-fat mixed diet has a slightly LOWER thermic effect than a
+//    high-protein one, ~5 % of intake vs ~15 % (Westerterp KR 2004, Nutr Metab (Lond) 1:5,
+//    doi:10.1186/1743-7075-1-5) — worth tens of kcal a day, not a mechanism for getting fat.
+//  - There IS a real floor. Men moved from a higher-fat to a lower-fat diet lose a little
+//    testosterone: pooled standardised mean difference −0.38 for total T (95 % CI −0.75 to −0.01,
+//    p = 0.04) and −0.37 for free T across 6 intervention studies, n = 206 (Whittaker J, Wu K 2021,
+//    J Steroid Biochem Mol Biol 210:105878, doi:10.1016/j.jsbmb.2021.105878; corrigendum 2025,
+//    doi:10.1016/j.jsbmb.2025.106880). The trials compared roughly 20 % vs 40 % of calories from fat,
+//    all six were small, and the effect is a nudge inside the normal range, not hypogonadism.
+// So the warning below is a FLOOR warning. The range is 20-35 % of calories (IOM AMDR); Helms 2014
+// allows 15-30 % for physique athletes, which is why the slider goes to 15 % without complaining.
+export const FAT_EVIDENCE = {
+  floorPct: 20, amdr: [20, 35], athleteRange: [15, 30],
+  totalTestosteroneSMD: -0.38, totalTestosteroneCI: [-0.75, -0.01], freeTestosteroneSMD: -0.37,
+  doi: '10.1016/j.jsbmb.2021.105878', tefDoi: '10.1186/1743-7075-1-5', amdrSource: 'IOM DRI 2005',
+  noFatteningMechanism: 'At equal calories and protein, dietary fat is not more fattening than carbohydrate. Energy balance decides fat gain; the fat/carb split decides how training feels and where hormones sit.',
+};
 
 const NOTES = {
   lift: 'Lift day: put most of your carbs in the meals before and after training.',
@@ -67,7 +134,7 @@ const GOAL_NOTES = {
 
 // ---------------------------------------------------------------- macros
 // Protein from g per lb of bodyweight, fat as a % of calories, carbs = whatever is left.
-export function macrosFor(profile, { calories, bodyweight } = {}) {
+export function macrosFor(profile, { calories, bodyweight, leanLb = null } = {}) {
   const n = profile?.nutrition || {};
   const goal = CYCLE[profile?.goal] ? profile.goal : 'recomp';
   const bw = num(bodyweight) > 0 ? num(bodyweight) : num(profile?.bodyweight) > 0 ? num(profile.bodyweight) : 0;
@@ -93,10 +160,30 @@ export function macrosFor(profile, { calories, bodyweight } = {}) {
     carbsGPerLb: bw > 0 ? Math.round(100 * carbs / bw) / 100 : 0,
     warnings,
   };
+  // Bodyweight vs lean mass. Forge expresses protein per lb of BODYWEIGHT everywhere, which is what
+  // Morton 2018 measured (total g/kg of body mass). The deficit literature uses lean mass instead
+  // (Helms 2014: 2.3-3.1 g/kg LBM), and the two only diverge at high body fat, where per-bodyweight
+  // prescribes protein for tissue that is not metabolically asking for it. Reported so no screen has
+  // to guess, and flagged only where the gap actually matters.
+  const lean = num(leanLb) > 0 ? num(leanLb) : null;
+  if (lean != null && protein > 0) {
+    out.leanLb = Math.round(lean * 10) / 10;
+    out.proteinGPerLbLean = Math.round(100 * protein / lean) / 100;
+    out.proteinGPerKgLean = Math.round(100 * protein / (lean / 2.20462)) / 100;
+    const bfPct = bw > 0 ? (1 - lean / bw) * 100 : 0;
+    const highBf = sexOf(profile) === 'female' ? bfPct > 40 : bfPct > 30;
+    if (highBf) {
+      const lo = Math.round(lean / 2.20462 * PROTEIN_EVIDENCE.deficitGPerKgLean[0]);
+      const hi = Math.round(lean / 2.20462 * PROTEIN_EVIDENCE.deficitGPerKgLean[1]);
+      warnings.push(`At ${Math.round(bfPct)}% body fat, protein per pound of bodyweight asks for more than the research does. Per pound of LEAN mass you are at ${out.proteinGPerLbLean} g/lb (${out.proteinGPerKgLean} g/kg); the range that protects muscle in a deficit is ${lo}-${hi} g/day (2.3-3.1 g/kg of lean mass, Helms 2014). Anything above that is fine, just not doing extra work.`);
+    }
+  }
   if (kcal > 0) {
-    if (out.fatPct < 20) warnings.push(sexOf(profile) === 'female'
-      ? `Fat is only ${out.fatPct}% of calories. Below ~20% for long stretches makes meals less filling and fat-soluble vitamins harder to absorb; 20-35% is the recommended range (IOM).`
-      : `Fat is only ${out.fatPct}% of calories. Going below ~20% for long stretches can lower testosterone and makes meals less filling; 20-35% is the usual range.`);
+    // FLOOR warning only. Fat is not uniquely fattening (see FAT_EVIDENCE); the reason to keep it up
+    // is hormones, satiety and fat-soluble vitamins.
+    if (out.fatPct < FAT_EVIDENCE.floorPct) warnings.push(sexOf(profile) === 'female'
+      ? `Fat is only ${out.fatPct}% of calories. Below ~20% for long stretches makes meals less filling and fat-soluble vitamins harder to absorb; 20-35% is the recommended range (IOM). Eating more fat does not make you gain fat — only a calorie surplus does.`
+      : `Fat is only ${out.fatPct}% of calories. 20-35% is the usual range (IOM), and 15-30% is fine for a physique athlete (Helms 2014). Going below ~20% for long stretches nudges testosterone down a little (pooled effect −0.38 SD, 95% CI −0.75 to −0.01, in trials comparing ~20% vs ~40% fat; Whittaker 2021) and makes meals less filling. Note the direction: eating MORE fat does not make you gain fat — only a calorie surplus does.`);
     if (carbs < 100) warnings.push(`Only ${carbs} g of carbs a day. Under ~100 g, hard lifting and cardio usually feel flat because muscle glycogen runs low.`);
   }
   if (bw > 0 && out.proteinGPerLb < 0.7) warnings.push(goal === 'weight_loss'
@@ -104,8 +191,12 @@ export function macrosFor(profile, { calories, bodyweight } = {}) {
     // Exerc 42:326, doi:10.1249/MSS.0b013e3181b2ef8e): resistance-trained men at 60 % of habitual intake for
     // 2 weeks lost 1.6 kg of lean at 1.0 g/kg (~0.45 g/lb) vs 0.3 kg at 2.3 g/kg (~1.05 g/lb).
     ? `Protein is ${out.proteinGPerLb} g/lb. In a deficit that is the single biggest lever on how much of the weight you lose is muscle: 0.45 g/lb cost 1.6 kg of lean mass in two weeks where 1.05 g/lb cost 0.3 kg (Mettler 2010). Fine if a smaller body is the point; not if you want to keep the muscle.`
-    : `Protein is ${out.proteinGPerLb} g/lb. Research (Morton 2018) shows muscle gain is reduced below ~0.7 g/lb; ~1 g/lb covers almost everyone.`);
-  if (bw > 0 && out.proteinGPerLb > 1.3) warnings.push(`Protein is ${out.proteinGPerLb} g/lb. Above ~1 g/lb there is no extra muscle benefit; the extra just displaces carbs that fuel training (it is safe, just not needed).`);
+    : `Protein is ${out.proteinGPerLb} g/lb. Gains in lean mass stop improving past 1.62 g/kg ≈ 0.73 g/lb (Morton 2018, 49 trials), so below ~0.7 g/lb you are giving some of them up; ~1 g/lb is the top of that study's confidence interval and covers almost everyone.`);
+  if (bw > 0 && out.proteinGPerLb > 1.3) warnings.push(goal === 'cut' || goal === 'weight_loss'
+    // In a deficit the dose-response runs past Morton's plateau (Longland 2016), so the wording must
+    // not claim "no benefit" — 1.3 g/lb is simply above even the deficit recommendations.
+    ? `Protein is ${out.proteinGPerLb} g/lb — above even the high end for dieting (Helms 2014's 3.1 g/kg of lean mass, and the 2.4 g/kg of bodyweight that beat 1.2 g/kg in Longland 2016). It is safe, and in a deficit erring high is the right error; just know the extra is displacing carbs that fuel training.`
+    : `Protein is ${out.proteinGPerLb} g/lb. Past ~1 g/lb (2.2 g/kg, the top of Morton 2018's confidence interval) more protein did not add lean mass in the trials; the extra just displaces carbs that fuel training. Safe, not needed — unless you are in a deficit, where higher protein does keep paying off.`);
   return out;
 }
 
@@ -146,7 +237,7 @@ function lossDeficitOf(profile, bw) {
 export const DEFAULT_LOSS_RATE_PCT = 0.7;   // Garthe 2011's slow arm (doi:10.1123/ijsnem.21.2.97)
 
 // ---------------------------------------------------------------- daily targets
-export function dailyTargets(profile, { dayType = 'lift', bodyweight, tdee: tdeeIn, leanLb = null, exerciseKcal = null } = {}) {
+export function dailyTargets(profile, { dayType = 'lift', bodyweight, tdee: tdeeIn, leanLb = null, exerciseKcal = null, week = null } = {}) {
   const n = profile?.nutrition || {};
   const mode = n.mode || 'off';
   if (mode === 'off') return null;
@@ -166,16 +257,22 @@ export function dailyTargets(profile, { dayType = 'lift', bodyweight, tdee: tdee
   // weight + date, so Nutrition and the projection always quote the same number.
   else if (goal === 'weight_loss' && !fs?.pregnant) avg = tdee - (lossDeficitOf(profile, bw) ?? SIMPLE.weight_loss);
   else avg = fs?.pregnant ? tdee : tdee - SIMPLE[goal];      // pregnancy: no planned deficit (§20)
-  let calories = mode === 'simple' ? avg : avg + SIMPLE[goal] - CYCLE[goal][dayType];
+  // Cycling: day-type offsets around `avg`, centred on the mean of the offsets over the week so the
+  // weekly average IS `avg` (see REFERENCE_WEEK / cycleMean). Callers that know the real schedule pass
+  // `week` ({ lift, cardio, both, rest } day counts) and the centring uses their week instead.
+  const cm = cycleMean(goal, week || REFERENCE_WEEK);
+  let calories = mode === 'simple' ? avg : avg + cm - CYCLE[goal][dayType];
   if (fs?.pregnant && !userCal && !userSur) calories = mode === 'simple' ? tdee : Math.max(tdee - 150, calories);
   calories = round10(Math.max(1000, calories));
 
-  const m = macrosFor(profile, { calories, bodyweight: bw });
+  const m = macrosFor(profile, { calories, bodyweight: bw, leanLb });
   const balNote = balanceNote(goal, avg - tdee);
   const note = mode === 'simple' ? balNote : `${NOTES[dayType]} ${balNote}`;
   const out = { calories, protein: m.protein, carbs: m.carbs, fat: m.fat, note, tdee, mode, goal,
     dayType: mode === 'simple' ? null : dayType,
-    proteinPct: m.proteinPct, carbPct: m.carbPct, fatPct: m.fatPct, proteinGPerLb: m.proteinGPerLb, warnings: m.warnings };
+    proteinPct: m.proteinPct, carbPct: m.carbPct, fatPct: m.fatPct, proteinGPerLb: m.proteinGPerLb, warnings: m.warnings,
+    avgCalories: round10(avg), cycleMean: mode === 'simple' ? null : Math.round(cm),
+    proteinGPerLbLean: m.proteinGPerLbLean ?? null, proteinGPerKgLean: m.proteinGPerKgLean ?? null };
   // §23: energy availability is checked for BOTH sexes under the weight-loss goal. 30 kcal/kg FFM/day is the
   // threshold at which LH pulsatility was disrupted in women within 5 days (Loucks & Thuma 2003, J Clin
   // Endocrinol Metab 88:297, doi:10.1210/jc.2002-020369); no equivalent number has been established in men, but
@@ -207,6 +304,14 @@ export function dailyTargets(profile, { dayType = 'lift', bodyweight, tdee: tdee
 // the same first approximation MacroFactor-style apps use.
 export const KCAL_PER_LB_TREND = 3500;
 const ALPHA = 0.1;
+// THE window every screen calibrates over. Measurements used to ask for 42 days while the projection
+// used this default of 28, so the two screens could show different "measured TDEE" numbers for the
+// same logs (CONTRACT §18). 28 days is long enough that day-to-day water, glycogen and gut-fill noise
+// (±2-3 lb) averages down below the signal a 500 kcal/day error would produce (~1 lb/week), and short
+// enough that it tracks a real change in burn rather than last season's.
+export const ADAPTIVE_WINDOW_DAYS = 28;
+// Minimum logged days of each kind inside the window, and the confidence ladder.
+export const ADAPTIVE_MIN_DAYS = 10;
 
 // §23 (weight-loss goal). THE one formula that turns "lose r % of bodyweight per week" into a daily calorie
 // deficit, used by engine/targets.lossPlan() (which every screen reads) and therefore by the projection too.
@@ -257,22 +362,35 @@ function slope(points, key) {
   return sxx > 0 ? sxy / sxx : 0;
 }
 
-// MacroFactor-style: average intake − (trend weight change × ~3,500 kcal/lb) / days.
-// Needs ≥10 days of both weigh-ins and food logs inside the window (default: the last 28 days
-// that have data).
+// MacroFactor-style: average intake − (trend weight change × ~3,500 kcal/lb) / days. This is the
+// ONLY measurement of real expenditure Forge has, and it beats every formula because it contains
+// whatever the formulas miss: this person's actual NEAT, their energy compensation (Careau 2021), the
+// 8-15 % individual variation in the cost of their own cardio, and any adaptive thermogenesis.
+// Needs ≥ADAPTIVE_MIN_DAYS days of both weigh-ins and food logs inside the window (default: the last
+// ADAPTIVE_WINDOW_DAYS days that have data).
+//
+// KNOWN BIASES, in order of size:
+//  1. Under-reported intake. Food logs run low, and the error lands entirely in the TDEE estimate, so
+//     a measured TDEE below the formula usually means the logs are short, not that the burn is low.
+//  2. 3,500 kcal/lb is pure fat. Real loss carries lean mass and water, which release far less per
+//     pound (the projection books lean at ~800 kcal/lb), so this OVERSTATES the deficit and therefore
+//     overstates TDEE while losing — and understates it while gaining. Worst in the first 2 weeks of a
+//     diet, when most of the scale move is glycogen and water, which is why the window is 28 days.
+//  3. A fresh EWMA lags a moving weight, handled below by only trusting the trend slope after 30 days.
+// Confidence is reported, not hidden: 'high' needs 21+ food days, 14+ weigh-ins and 60 % coverage.
 export function adaptiveTdee({ bodyLog = [], foodLog = [], from, to } = {}) {
   const food = (Array.isArray(foodLog) ? foodLog : []).filter(e => e && typeof e.d === 'string' && num(e.kcal) > 0);
   const trendAll = ewmaTrend(bodyLog);
   if (!food.length || !trendAll.length) return null;
   const lastData = [food.reduce((a, e) => (e.d > a ? e.d : a), ''), trendAll[trendAll.length - 1].d].sort()[0];
   const toS = typeof to === 'string' ? to : to instanceof Date ? ds(to) : lastData;
-  const fromS = typeof from === 'string' ? from : from instanceof Date ? ds(from) : ds(addDays(parseDs(toS), -27));
+  const fromS = typeof from === 'string' ? from : from instanceof Date ? ds(from) : ds(addDays(parseDs(toS), -(ADAPTIVE_WINDOW_DAYS - 1)));
   if (fromS > toS) return null;
   const inWin = e => e.d >= fromS && e.d <= toS;
   const foodW = food.filter(inWin);
   const foodDays = new Set(foodW.map(e => e.d)).size;
   const trendW = trendAll.filter(inWin);
-  if (foodDays < 10 || trendW.length < 10) return null;
+  if (foodDays < ADAPTIVE_MIN_DAYS || trendW.length < ADAPTIVE_MIN_DAYS) return null;
   const span = daysBetween(trendW[0].d, trendW[trendW.length - 1].d);
   if (span < 9) return null;
 
@@ -285,7 +403,7 @@ export function adaptiveTdee({ bodyLog = [], foodLog = [], from, to } = {}) {
   // settle before the window (a fresh EWMA under-reads a moving weight for its first few weeks);
   // otherwise the least-squares slope of the raw weigh-ins in the window (unbiased, just noisier).
   const settled = trendW.filter(p => p.t >= 30);
-  const useTrend = settled.length >= 10 && daysBetween(settled[0].d, settled[settled.length - 1].d) >= 9;
+  const useTrend = settled.length >= ADAPTIVE_MIN_DAYS && daysBetween(settled[0].d, settled[settled.length - 1].d) >= 9;
   const lbPerDay = useTrend ? slope(settled, 'trend') : slope(trendW, 'w');
   const days = daysBetween(fromS, toS) + 1;
   const tdee = avgIntake - lbPerDay * KCAL_PER_LB_TREND;
@@ -318,13 +436,17 @@ export const ADDERALL_TIPS = [
   'On days off the medication, eat more to make up for weekday deficits instead of treating it as a cheat day.',
 ];
 
+// Each claim here is one the engine can stand behind; the numbers come from the same constants the
+// model uses (PROTEIN_EVIDENCE, FAT_EVIDENCE, bodycomp.ENERGY_COMPENSATION), not from folklore.
 export const NUTRITION_TIPS = [
-  'Protein first: about 1 g per lb of bodyweight every day (a bit more when cutting), split over 4-5 meals of 30-50 g.',
+  'Protein first: about 1 g per lb of bodyweight every day (a bit more when cutting), split over 4-5 meals of 30-50 g. Lean mass stops improving past about 0.73 g/lb in the research (Morton 2018); 1 g/lb is the top of that range, so you are covered rather than guessing.',
+  'Dietary fat does not make you fat — a calorie surplus does. At the same calories and protein, swapping carbs for fat barely moves body composition. What fat does do is support testosterone and keep meals satisfying, so keep it at 20-35% of calories and do not drop below ~20% for long stretches.',
   'Creatine monohydrate, 5 g every day. Timing does not matter, consistency does.',
   'Getting ripped AND bigger is slow: expect the scale to move little while the mirror, waist and lifts improve.',
   'Judge progress over 2-4 weeks: morning bodyweight average, waist measurement and the progression log.',
   'If the weekly average weight and waist have not changed in 4 weeks and you want to lean out, cut about 200 kcal a day (from rest days first).',
   'Carbs are training fuel: put most of them around lifts and harder cardio.',
+  'Adding cardio burns less than the number on the watch. Roughly a quarter of the calories from extra activity get cancelled out by your resting burn dropping (28% on average across 1,754 adults; Careau 2021), and the watch figure already includes the calories you would have burned sitting still. Cardio still works for fat loss — just count about three-quarters of it, and expect food to decide most of the outcome.',
   'Your marathon background means high cardio burn. On big cardio weeks, eat more or your lifts will stall.',
   'Sleep 7-8+ hours. It does more for recovery and fat loss than any supplement.',
   'Alcohol blunts muscle protein synthesis and sleep. Keep it occasional.',
@@ -337,6 +459,8 @@ export const NUTRITION_TIPS = [
 // doi:10.1371/journal.pone.0236025; no pooled kcal figure), and water retention moves the scale, so trend weight matters.
 export const FEMALE_NUTRITION_TIPS = [
   'Protein first: about 1 g per lb of bodyweight a day (a bit more when cutting), split over 4-5 meals. Women need the same protein per kg as men (Morton 2018).',
+  'Dietary fat does not make you fat — a calorie surplus does. At the same calories and protein, the carb/fat split barely moves body composition. Keep fat at 20-35% of calories for hormones, satiety and vitamin absorption.',
+  'Adding cardio burns less than the number on the watch: about a quarter of the calories from extra activity are cancelled out by your resting burn dropping (Careau 2021), and the watch total already includes the calories you would have burned at rest.',
   'Iron: 18 mg a day before menopause (8 after). Red meat, beans and lentils, spinach plus vitamin C help. Low ferritin is common in women who train; a blood test tells you if you need a supplement.',
   'Don\'t under-fuel training: food minus exercise should stay above ~30 kcal per kg of lean mass a day. Missed or irregular periods are a warning sign, not a sign of progress.',
   'Scale weight can swing 1-3 lb across your cycle from water. Compare trend weight and waist over 2-4 weeks, or the same cycle phase month to month.',

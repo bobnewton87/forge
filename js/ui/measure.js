@@ -237,10 +237,15 @@ function history(meas, log) {
 }
 
 // ---------------- food log + adaptive TDEE ----------------
+// CONTRACT §18: the window and the minimum-days count come from the engine (nutrition.ADAPTIVE_*),
+// not from a number typed here. This screen used to ask for 42 days while the projection calibrated
+// over the engine's 28-day default, so the two could show different "measured TDEE" figures for the
+// same logs. The progress counter below counts over the same window it will actually be judged on.
 function tdeeStatus(store, p, b, log, food) {
-  const now = new Date(), from = ds(addDays(now, -42)), to = ds(now);
+  const now = new Date(), WIN = NU.ADAPTIVE_WINDOW_DAYS, MIN = NU.ADAPTIVE_MIN_DAYS;
+  const from = ds(addDays(now, -(WIN - 1))), to = ds(now);
   const formula = safe(() => maintenanceEstimate(store)?.formula, null) ?? safe(() => BC.tdee({ comp: b?.comp, activity: p.body?.activity || 'desk', sessions: store.getSessions(), from: ds(addDays(now, -14)), to, now })?.total, null);
-  const r = typeof NU.adaptiveTdee === 'function' ? safe(() => NU.adaptiveTdee({ bodyLog: log, foodLog: food, from, to }), null) : null;
+  const r = typeof NU.adaptiveTdee === 'function' ? safe(() => NU.adaptiveTdee({ bodyLog: log, foodLog: food, to }), null) : null;
   if (r && r.tdee) {
     return `<div class="bd-tdee">Your measured TDEE: <b class="num">${Math.round(r.tdee).toLocaleString()} kcal</b>${formula ? ` <span class="muted">(formula said ${Math.round(formula).toLocaleString()})</span>` : ''}
       <div class="tiny muted" style="margin-top:4px">${r.confidence ? `${esc(r.confidence)} confidence` : ''}${r.note ? `${r.confidence ? ' · ' : ''}${esc(r.note)}` : r.days ? ` · ${r.days} days` : ''}</div></div>`;
@@ -248,9 +253,9 @@ function tdeeStatus(store, p, b, log, food) {
   const fd = new Set(food.filter(e => e.d >= from && e.d <= to && e.kcal > 0).map(e => e.d));
   const wd = new Set(log.filter(e => e.d >= from && e.d <= to).map(e => e.d));
   const n = Math.min(fd.size, wd.size);
-  return `<div class="bd-tdee">Need <b>10+ days</b> of weigh-ins and food logs to calibrate your real burn rate. <b class="num">${Math.min(n, 10)}/10</b> so far${formula ? ` · formula estimate ${Math.round(formula).toLocaleString()} kcal` : ''}.
-    <div class="bar"><i style="width:${Math.min(100, n * 10)}%;background:var(--cardio)"></i></div>
-    <div class="tiny muted" style="margin-top:6px">${fd.size} food day${fd.size === 1 ? '' : 's'} and ${wd.size} weigh-in${wd.size === 1 ? '' : 's'} in the last 6 weeks. Rough logs are fine; consistency beats precision.</div></div>`;
+  return `<div class="bd-tdee">Need <b>${MIN}+ days</b> of weigh-ins and food logs to calibrate your real burn rate. <b class="num">${Math.min(n, MIN)}/${MIN}</b> so far${formula ? ` · formula estimate ${Math.round(formula).toLocaleString()} kcal` : ''}.
+    <div class="bar"><i style="width:${Math.min(100, n * 100 / MIN)}%;background:var(--cardio)"></i></div>
+    <div class="tiny muted" style="margin-top:6px">${fd.size} food day${fd.size === 1 ? '' : 's'} and ${wd.size} weigh-in${wd.size === 1 ? '' : 's'} in the last ${WIN} days. Rough logs are fine; consistency beats precision — a measured burn beats every formula, because it already contains your own movement, your cardio and how much your body pushes back.</div></div>`;
 }
 function foodCard(store, p, b, log) {
   const food = safe(() => store.getFoodLog(), []);

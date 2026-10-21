@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dailyTargets, ADDERALL_TIPS, NUTRITION_TIPS } from '../js/engine/nutrition.js';
+import { dailyTargets, ADDERALL_TIPS, NUTRITION_TIPS, cycleMean, REFERENCE_WEEK } from '../js/engine/nutrition.js';
 
 const P = (mode, goal = 'recomp', extra = {}) => ({ bodyweight: 180, goal, nutrition: { mode, calories: null, protein: null, ...extra } });
 
@@ -25,14 +25,40 @@ test('simple mode: same every day, macros add up', () => {
   assert.ok(cut.calories < a.calories); assert.ok(cut.protein >= 198 && cut.protein <= 216);
 });
 
-test('cycling mode: lift > cardio > rest, both highest; ports calcNutri offsets', () => {
+test('cycling mode: lift > cardio > rest, both highest; averages to the target intake', () => {
   const t = d => dailyTargets(P('cycling'), { dayType: d });
   const tdee = Math.round(180 * 15.5);
-  assert.equal(t('lift').calories, Math.round((tdee - 100) / 10) * 10);
-  assert.equal(t('rest').calories, Math.round((tdee - 500) / 10) * 10);
+  // Changed 2026-10-21: the cycling offsets are now centred on the MEAN of the offsets over the week
+  // (nutrition.cycleMean / REFERENCE_WEEK) rather than on the flat 'simple' offset, which was not that
+  // mean. The day-type spread is unchanged; the weekly average now equals the stated target exactly,
+  // so Nutrition and the projection can no longer disagree about how much is being eaten.
+  // Previously t('lift') was tdee-100 and t('rest') tdee-500 — an average ~36 kcal/day above target.
+  const cm = cycleMean('recomp', REFERENCE_WEEK);
+  const avg = tdee - 250;                                     // SIMPLE_DEFICIT.recomp
+  assert.equal(t('lift').calories, Math.round((avg + cm - 100) / 10) * 10);
+  assert.equal(t('rest').calories, Math.round((avg + cm - 500) / 10) * 10);
   assert.ok(t('both').calories > t('lift').calories && t('lift').calories > t('cardio').calories && t('cardio').calories > t('rest').calories);
   assert.ok(t('rest').carbs < t('lift').carbs);
   assert.match(t('rest').note, /Rest day/);
+
+  // The property that matters: over REFERENCE_WEEK the cycled days average to the simple-mode target.
+  const flat = dailyTargets(P('simple'), {}).calories;
+  let days = 0, sum = 0;
+  for (const [dayType, n] of Object.entries(REFERENCE_WEEK)) { days += n; sum += n * t(dayType).calories; }
+  assert.ok(Math.abs(sum / days - flat) <= 10, `cycled avg ${sum / days} vs simple ${flat}`);
+  // ...and for every goal, including a surplus.
+  for (const goal of ['recomp', 'lean_bulk', 'cut', 'weight_loss']) {
+    const g = d => dailyTargets(P('cycling', goal), { dayType: d }).calories;
+    const f = dailyTargets(P('simple', goal), {}).calories;
+    let dd = 0, ss = 0;
+    for (const [dayType, n] of Object.entries(REFERENCE_WEEK)) { dd += n; ss += n * g(dayType); }
+    assert.ok(Math.abs(ss / dd - f) <= 10, `${goal}: cycled avg ${ss / dd} vs simple ${f}`);
+  }
+
+  // A caller that knows the real schedule gets centring on THAT week instead.
+  const allRest = { rest: 7 };
+  const r = dailyTargets(P('cycling'), { dayType: 'rest', week: allRest });
+  assert.equal(r.calories, Math.round(avg / 10) * 10);        // a week of rest days averages to the target
 });
 
 test('user overrides: calories and protein', () => {
