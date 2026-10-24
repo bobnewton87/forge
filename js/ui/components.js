@@ -13,7 +13,7 @@ import { GROUP_ORDER } from '../data/muscles.js';
 // CONTRACT-NOTE (§26): addExerciseSheet / swapSheet read the active issues from ctx.store's profile: the
 //   suggested lists leave out what an issue rules out (with a "N hidden" note naming the issue); search
 //   still finds everything, marking those moves "⚠ loads your …" (an explicit pick is the user's call).
-import { activeIssues, issueFilter, issueLabel } from '../engine/issues.js';
+import { activeIssues, issueFilter, issueLabel, sideOnlyLabel } from '../engine/issues.js';
 import { ds } from '../util.js';
 
 export function esc(s) {
@@ -217,8 +217,9 @@ function exPickList(list, exclude = [], IF = null, hidden = 0) {
   if (!list.length) return (note || '') + '<div class="empty muted">No matching exercises for this equipment.</div>';
   return note + list.slice(0, 40).map(ex => {
     const why = IF && IF.blocked.has(ex.id) ? IF.why(ex.id) : null;
+    const one = IF && IF.side.has(ex.id) ? sideOnlyLabel(IF.side.get(ex.id), ex) : '';
     return `<button type="button" class="tr-pick" data-pick="${esc(ex.id)}" ${exclude.includes(ex.id) ? 'data-dup="1"' : ''}>
-      ${exerciseCard(ex, { compact: true })}${why ? `<span class="badge warn is-loads">⚠ loads your ${esc(issueLabel(why).toLowerCase())}</span>` : ''}<span class="tr-pick-plus">${exclude.includes(ex.id) ? '✓' : '+'}</span></button>`;
+      ${exerciseCard(ex, { compact: true })}${why ? `<span class="badge warn is-loads">⚠ loads your ${esc(issueLabel(why).toLowerCase())}</span>` : one ? `<span class="badge warn is-loads">${esc(one)}</span>` : ''}<span class="tr-pick-plus">${exclude.includes(ex.id) ? '✓' : '+'}</span></button>`;
   }).join('');
 }
 // §26: the active issues of the profile behind this sheet ([] when there's no store, e.g. a test ctx).

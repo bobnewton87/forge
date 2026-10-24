@@ -12,6 +12,8 @@
 import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, cardioTolerance, volumeRoomOptions, unitTargets, maxNote, starredUnits, PRIORITY_LEGEND, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY, GOAL_INFO, GOAL_ORDER, LOSS_RATES, LEAN_PROTECTION, LEAN_PROTECTION_INFO, VOLUME_FLOORS, FLOOR_INFO, FLOOR_EVIDENCE, fmtSets } from '../engine/targets.js';
 import { planRange, weekPlanSummary } from '../engine/planner.js';
 import { resolveStyle } from '../engine/generator.js';
+import { weekUnitView, sessionVolume } from '../engine/recovery.js';
+import { weekUnitPhrase } from '../engine/targets.js';
 import { explainWeek } from '../engine/planner.js';
 import { CARDIO } from '../data/cardio.js';
 import { ds, addDays, weekStart } from '../util.js';
@@ -113,7 +115,7 @@ export function planUpdate({ profile, sessions = [], classSchedule = null, now =
 }
 
 // ---------------------------------------------------------------- setTargets
-let timer = null, waiters = [], lastReason = '';
+let timer = null, waiters = [], lastReason = '', lastLead = null;
 let classCache;
 async function classSchedule() {
   if (classCache !== undefined) return classCache;
@@ -132,7 +134,10 @@ async function runReplan(ctx) {
   const { from, to, list } = planUpdate({ profile, sessions: store.getSessions(), classSchedule: cs, now: new Date() });
   store.replacePlanned(from, to, list);
   const w = cardioWeek(profile, store.getSessions(), { now: new Date() });
-  let msg = `Plan updated for ${lastReason || 'your targets'}`;
+  // §26 D: a caller's own message (e.g. "Swapped to Cable Y-Raise …" after "This hurts") leads the
+  // re-plan toast instead of being overwritten by it 600 ms later.
+  const lead = typeof lastLead === 'function' ? lastLead() : lastLead; lastLead = null;
+  let msg = `${lead ? `${lead}. ` : ''}Plan updated for ${lastReason || 'your targets'}`;
   const ext = extendedToast(list); if (ext) msg += `. ${ext}`;
   if (w.target && w.capacity < w.target - 5) msg += `. This week fits ~${w.capacity} cardio min; tap "Make room" for the rest`;
   toast(ctx, msg);
@@ -140,7 +145,9 @@ async function runReplan(ctx) {
 
 // Saves the patch through applyTargetChange; re-plans upcoming auto days (debounced) when the
 // change affects planning. Resolves after the save, or after the re-plan when one runs.
-export function setTargets(ctx, patch, { replan = true, reason, quiet = false } = {}) {
+// `lead` (string, or a function read when the toast is shown) is put in front of the re-plan toast, so a
+// screen's own message after the save is combined with it rather than overwritten.
+export function setTargets(ctx, patch, { replan = true, reason, quiet = false, lead = null } = {}) {
   const store = ctx.store;
   const before = store.getProfile();
   const after = applyTargetChange(before, patch);
@@ -149,6 +156,7 @@ export function setTargets(ctx, patch, { replan = true, reason, quiet = false } 
   store.saveProfile(after);
   if (!(replan && needsReplan(before, after))) { if (!quiet) toast(ctx, `Saved: ${what}`); return Promise.resolve(); }
   lastReason = what;
+  if (lead) lastLead = lead;
   if (!quiet) toast(ctx, `Saved: ${what}. Updating your plan…`);
   clearTimeout(timer);
   return new Promise(resolve => {
@@ -265,6 +273,19 @@ export function weeklySetsHTML(sum, profile, { only = null, legend = true } = {}
 // This calendar week's summary (Mon-Sun, logged + still planned) for screens that don't already hold one.
 export function weekSummaryFor(sessions, profile, { weekStart: ws = null, now = new Date() } = {}) {
   return safe(() => weekPlanSummary(sessions || [], { weekStart: ws || weekStart(now), profile: profile || {}, now }), null);
+}
+
+// §18.y: one line of text for the muscles a workout trains, with the weekly rows' numbers (weekUnitView:
+// same calendar week, same counter): "This week: Side delts 0 of 18 done · Triceps 4 of 19 done, 3 planned".
+// `label` says what the numbers include (e.g. "before this workout" for an unsaved draft). '' when nothing.
+export function weekUnitsLineHTML(session, sessions, profile, { weekStart: ws = null, now = new Date(), label = 'This week', max = 3 } = {}) {
+  const view = safe(() => weekUnitView(sessions || [], { profile, now, weekStart: ws || now }), null);
+  const credit = safe(() => sessionVolume(session || {}, { planned: true }).units, {});
+  if (!view) return '';
+  const ids = Object.keys(credit).filter(u => view.units[u] && view.units[u].target > 0 && credit[u] >= 0.5)
+    .sort((a, b) => credit[b] - credit[a]).slice(0, max);
+  if (!ids.length) return '';
+  return `<div class="tiny muted wk-textline">${esc(label)}: ${ids.map(u => `<span data-unit="${esc(u)}" data-done="${view.units[u].done}" data-target="${view.units[u].target}">${esc(view.units[u].short)} ${esc(weekUnitPhrase(view.units[u]))}</span>`).join(' · ')}</div>`;
 }
 
 // ---------------------------------------------------------------- weekly minimums sheets

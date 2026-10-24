@@ -27,13 +27,16 @@ import { SCULPT_GOALS } from '../data/sculpt.js';
 import { expandEquipment } from '../data/equipment.js';
 import { cardioOptions, CARDIO, INTENSITIES } from '../data/cardio.js';
 import { getEx } from '../data/exercises.js';
-import { recommend, groupStatus, weekSummary, cardioStatus, streak, sessionVolume } from '../engine/recovery.js';
+import { recommend, groupStatus, weekSummary, cardioStatus, streak, sessionVolume, weekUnitView, leastCoveredUnit } from '../engine/recovery.js';
 import { buildWorkout, estimateMinutes, swapBlock, addExercise, resolveStyle, isStyleId, restyle } from '../engine/generator.js';
 import { styleChipsHTML, openStyleEditor, openStyleInfo } from './styles.js';
 import { contextFor, suggestForDay } from '../engine/planner.js';
 import { renderClassPicker, bindClassPicker } from './classes.js';
-import { resolveTargets, suggestFinisher, fmtSets } from '../engine/targets.js';
-import { targetsSummaryHTML, bindTargetsSummary } from './targets.js';
+import { resolveTargets, suggestFinisher, fmtSets, weekUnitPhrase, cardioWeek } from '../engine/targets.js';
+// CONTRACT-NOTE (§18.y): every weekly number in Today's text (recommendation reasons, builder tiles, the
+//   preview's "This week" line) is per unit from recovery.weekUnitView over the raw store sessions: the same
+//   calendar week and counter as the weekly rows. Tiles show the group's least-covered unit.
+import { targetsSummaryHTML, bindTargetsSummary, weekUnitsLineHTML } from './targets.js';
 // CONTRACT-NOTE (§24): params.date may also be a PAST date (within retro.RETRO_DAYS). The builder
 //   then runs in LOG mode: same build flow, but the primary button logs it on that day (an 'active'
 //   session with startedAt null, which the Workout screen finishes as 'done' stamped on that date)
@@ -52,7 +55,7 @@ import {
 //   active issue, a "Still hurting?" card after 7 days). The preview shows the workout-ceiling line for a
 //   capped build, or the heavy-workout warning with "Trim to N" once the user's edits pass the ceiling or a
 //   muscle's per-session cap (ui/overload.js; data-t="trim" / "trim-m").
-import { issueStripHTML, bindIssueStrip } from './issues.js';
+import { issueStripHTML, bindIssueStrip, sideNoteHTML, sideExplainHTML, withSides } from './issues.js';
 import { loadNoteHTML, rationaleWithoutCap, trimSession } from './overload.js';
 
 const TIMES = [15, 20, 30, 45, 60, 75, 90];
@@ -208,7 +211,7 @@ export function render(ctx, params = {}) {
       <div class="muted small">${log
         ? 'What did you actually do? Build it to match, then log it — it is saved as done on that day, not planned.'
         : "Build it your way, then save it to that day. Re-planning won't overwrite it."}</div></header>`;
-    if (showPreview) p += preview(draft, profile);
+    if (showPreview) p += preview(draft, profile, sessions);
     else { p += recsSection(sessions, profile, loc); p += builderSection(sessions, profile, loc); }
     return p + '</div>';
   }
@@ -217,7 +220,7 @@ export function render(ctx, params = {}) {
   if (active && active.status === 'active') h += resumeCard(active);
   if (!showPreview) h += safe(() => issueStripHTML(ctx), '');
   if (!showPreview) h += todayPlanCard(sessions, profile, active);
-  if (showPreview) h += preview(draft, profile);
+  if (showPreview) h += preview(draft, profile, sessions);
   else {
     h += recsSection(sessions, profile, loc);
     h += builderSection(sessions, profile, loc);
@@ -269,9 +272,16 @@ function cardioNudge(sessions, profile, loc) {
     <button type="button" class="btn btn-sm" data-t="c-nudge" data-m="${sug.minutes}">Add ${sug.minutes}′</button></div>`;
 }
 
+// The weekly rows' numbers for the day being built (raw sessions: logged + still planned from today on).
+// The cardio row rides along on plain Today (targets.cardioWeek is the cardio row's own count).
+function weekView(sessions, profile) {
+  const w = safe(() => weekUnitView(sessions, { profile, now: new Date(), weekStart: refNow() }), null);
+  if (w && !planDate) w.cardio = safe(() => cardioWeek(profile, sessions, { now: new Date() }), null);
+  return w;
+}
 function recsSection(sessions, profile, loc) {
   const ec = engineCtx(sessions);
-  const recs = safe(() => recommend(ec.history, { now: refNow(), profile, minutes: B.minutes, location: loc, upcoming: ec.upcoming }), []).slice(0, 3);
+  const recs = safe(() => recommend(ec.history, { now: refNow(), profile, minutes: B.minutes, location: loc, upcoming: ec.upcoming, week: weekView(sessions, profile) }), []).slice(0, 3);
   const nudge = cardioNudge(sessions, profile, loc);
   if (!recs.length) return nudge;
   return `${nudge}<section class="tr-sec">
@@ -296,15 +306,19 @@ function builderSection(sessions, profile, loc) {
   const groupsSel = B.targets.filter(t => GROUPS[t]);
   const presetActive = id => { const g = PRESETS[id]?.groups || []; return g.length === groupsSel.length && g.every(x => groupsSel.includes(x)); };
 
+  // §18.y: a tile quotes ONE unit (the group's least covered), never a group sum: "Side delts 0/18".
+  const week = weekView(sessions, profile);
   const tiles = GROUP_ORDER.filter(g => GROUPS[g]).map(g => {
     const st = gs[g] || {};
     const col = readinessColor(st.readiness ?? 1, st.need ?? 0);
     const on = B.targets.includes(g);
-    const tgt = st.target?.target ?? st.target?.min ?? GROUPS[g].volume?.target;   // vs TARGET, not the floor
-    return `<button type="button" class="tr-tile ${on ? 'on' : ''}" style="--rc:${col}" data-t="group" data-id="${g}" aria-pressed="${on}">
+    const u = week ? leastCoveredUnit(week, g) : null, x = u ? week.units[u] : null;
+    const multi = x && x.short !== GROUPS[g].name;
+    return `<button type="button" class="tr-tile ${on ? 'on' : ''}" style="--rc:${col}" data-t="group" data-id="${g}" aria-pressed="${on}"${x ? ` title="${esc(`${x.short}: ${weekUnitPhrase(x)} this week`)}"` : ''}>
       <span class="tr-tile-dot"></span>
       <span class="tr-tile-name">${esc(GROUPS[g].name)}</span>
-      <span class="tr-tile-sub">${daysAgo(st.daysSince)} · ${fmtSets(st.sets7d ?? 0)}/${tgt != null ? fmtSets(tgt) : '?'}</span>
+      <span class="tr-tile-sub">${daysAgo(st.daysSince)}</span>
+      ${x ? `<span class="tr-tile-sub" data-unit="${esc(u)}" data-done="${x.done}" data-target="${x.target}">${multi ? `${esc(x.short)} ` : ''}${fmtSets(x.done)}/${fmtSets(x.target)}</span>` : ''}
     </button>`;
   }).join('');
 
@@ -320,6 +334,7 @@ function builderSection(sessions, profile, loc) {
     <div class="tr-chiprow scroll">${PRESET_CHIPS.filter(p => PRESETS[p]).map(p => chip(PRESETS[p].name, { active: presetActive(p), attrs: `data-t="preset" data-id="${p}"`, cls: 'sm' })).join('')}</div>
     <div class="tr-tiles">${tiles}</div>
     <div class="tr-legend"><span style="--rc:var(--good)">Needs work</span><span style="--rc:var(--accent)">Ready</span><span style="--rc:var(--warn)">Almost</span><span style="--rc:var(--bad)">Recovering</span></div>
+    <div class="tiny muted tr-tile-key">n/target = sets done this week of the muscle's target (the least-covered muscle of the group), the same count as the weekly rows.</div>
     ${sculpt.length ? `<div class="tr-label">Sculpt focus</div><div class="tr-chiprow wrap">${sculpt.map(id => chip(`✦ ${SCULPT_GOALS[id].name}`, { active: B.targets.includes(id), attrs: `data-t="sculpt" data-id="${id}"`, cls: 'sm chip-sculpt' })).join('')}</div>` : ''}
     ${styleRow(profile)}
     <div class="tr-label tr-label-row"><span>Cardio finisher</span>
@@ -429,7 +444,7 @@ function rxText(b, ex, units) {
   return `${t.sets || (b.sets || []).length} × ${reps}${ex?.unit === 'seconds' ? 's' : ''}${w}`;
 }
 
-function preview(draft, profile) {
+function preview(draft, profile, sessions = []) {
   const s = draft.session;
   const blocks = s.blocks || [];
   const est = s.estMinutes ?? safe(() => estimateMinutes(blocks), null);
@@ -466,8 +481,10 @@ function preview(draft, profile) {
     ${rebuiltNote ? `<div class="tr-rebuilt">↻ ${esc(rebuiltNote)}</div>` : ''}
     ${styleCompare(s, profile)}
     ${loadNoteHTML(s, profile)}
+    ${safe(() => weekUnitsLineHTML(s, sessions, profile, { weekStart: refNow(), label: planDate ? `That week, before this workout` : 'This week, before this workout' }), '')}
     ${rationaleWithoutCap(s.rationale).length ? `<ul class="tr-rationale">${rationaleWithoutCap(s.rationale).slice(0, 7).map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
     <div class="tr-plan">${items || '<div class="empty muted">No exercises. Add one below.</div>'}</div>
+    ${sideExplainHTML(s)}
     <div class="tr-plan-tools">
       <button type="button" class="btn btn-ghost" data-t="add">+ Add exercise</button>
       ${draft.params ? '<button type="button" class="btn btn-ghost" data-t="shuffle">🔀 Shuffle</button>' : ''}
@@ -517,6 +534,7 @@ function planItem(b, i, n, units) {
   return `<div class="tr-pitem">${arrows}<div class="tr-pmain">
       <button type="button" class="tr-pname" data-t="info" data-i="${i}">${esc(exName(b.exId))}</button>
       <div class="tr-prx">${esc(rxText(b, ex, units))}${t.rest ? ` <span class="muted">· ${t.rest}s rest</span>` : ''}</div>
+      ${sideNoteHTML(b)}
       ${t.note ? `<div class="tr-pnote">${esc(t.note)}</div>` : ''}
     </div>
     <div class="tr-pacts">
@@ -716,7 +734,7 @@ export function bind(root, ctx, params = {}) {
       case 'resume': { const a = store.getActiveSession(); ctx.nav('session', a ? { id: a.id } : {}); break; }
       case 'rec': {
         const ec = engineCtx(store.getSessions());
-        const recs = safe(() => recommend(ec.history, { now: refNow(), profile, minutes: B.minutes, location: loc, upcoming: ec.upcoming }), []);
+        const recs = safe(() => recommend(ec.history, { now: refNow(), profile, minutes: B.minutes, location: loc, upcoming: ec.upcoming, week: weekView(store.getSessions(), profile) }), []);
         const r = recs[i]; if (!r) return;
         build(ctx, r.targets?.length ? r.targets : (r.groups || []), r.label || null);
         break;
@@ -825,7 +843,7 @@ export function bind(root, ctx, params = {}) {
             const out = safe(() => swapBlock(ss, i, id, { sessions: store.getSessions(), now: refNow() }), null);
             if (!out) return ss;
             if (out.blocks[i] && out.blocks[i].group == null && b.group) out.blocks[i].group = b.group;
-            return out;
+            return withSides(ctx, out);   // §26.4: a one-arm pick for a sore side gets its healthy side
           }),
         });
         break;
@@ -836,7 +854,7 @@ export function bind(root, ctx, params = {}) {
         addExerciseSheet(ctx, {
           equipment: l.equipment || [], targets: s.targets || [], sculptGoals: profile.sculptGoals || [],
           exclude: (s.blocks || []).filter(x => x.kind === 'lift').map(x => x.exId),
-          onPick: id => updateDraft(ctx, ss => safe(() => addExercise(ss, id, { sessions: store.getSessions(), now: refNow() }), ss)),
+          onPick: id => updateDraft(ctx, ss => withSides(ctx, safe(() => addExercise(ss, id, { sessions: store.getSessions(), now: refNow() }), ss))),
         });
         break;
       }

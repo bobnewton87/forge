@@ -13,12 +13,12 @@ import { getEx } from '../data/exercises.js';
 import { groupStatus, sessionVolume } from '../engine/recovery.js';
 import { sessionPRs, personalRecords } from '../engine/progression.js';
 import { swapBlock, addExercise, alternatives } from '../engine/generator.js';
-import { activeIssues, issueLabel, issueTier } from '../engine/issues.js';
+import { activeIssues, issueLabel, effectiveTier, issueFilter, sideOnlyLabel } from '../engine/issues.js';
 // CONTRACT-NOTE (§26): the header carries the heavy-workout warning (ui/overload.js) once the workout passes
 //   the ceiling or a muscle's per-session cap, with a one-tap trim that never removes a logged set. The ⋯ menu
 //   has "This hurts": it logs an issue for the exercise's area (ui/issues.js openHurtsSheet) and swaps the
 //   exercise for the best alternative that spares it (logged sets stay; no safe swap → the exercise is skipped).
-import { openHurtsSheet } from './issues.js';
+import { openHurtsSheet, sideNoteHTML, sideExplainHTML, withSides } from './issues.js';
 import { loadNoteHTML, trimSession } from './overload.js';
 import { cardioWeek } from '../engine/targets.js';
 import { retroTimes, retroFloor, canLogPast } from '../engine/retro.js';
@@ -89,7 +89,7 @@ function minutesLeft(s) {
       if (!left) continue;
       const reps = ex?.unit === 'seconds' ? 1 : (t.reps || t.repMin || 10);
       const work = ex?.unit === 'seconds' ? (t.reps || t.repMin || 30) : reps * (ex?.secPerRep || 3);
-      sec += left * (work * (ex?.unilateral ? 2 : 1) + (t.rest || 60));
+      sec += left * (work * (ex?.unilateral && !b.sideOnly ? 2 : 1) + (t.rest || 60));
       if (!b.sets.some(x => x.done)) sec += ex?.setupSec || 30;
     } else if (b.kind === 'cardio' && !b.done) sec += (Number(b.minutes) || 0) * 60;
     else if (b.kind === 'class' && !b.done) sec += (Number(b.duration) || 0) * 60;
@@ -157,6 +157,7 @@ function renderInner(ctx) {
   const retro = !s.startedAt && s.date < ds();      // §24: written up after the fact
   return `${renderHeader(profile)}
     <div class="tr-blocks">${blocks || `<div class="empty muted tr-noblocks">${s.source === 'manual' ? 'Add what you did, set by set.' : 'No exercises yet.'}</div>`}</div>
+    ${sideExplainHTML(s)}
     <div class="tr-plan-tools">
       <button type="button" class="btn btn-ghost" data-s="add-ex">+ Add exercise</button>
       <button type="button" class="btn btn-ghost" data-s="add-cardio">+ Add cardio</button>
@@ -244,6 +245,7 @@ function renderBlock(i, profile) {
       <button type="button" class="tr-icon" data-s="menu" data-i="${i}" aria-label="More">⋯</button>
     </div>
     <div class="tr-rx"><b>${esc(rx)}</b>${t.rest ? `<span class="muted"> · rest ${t.rest}s</span>` : ''}<span class="tr-unit muted">${esc(secs ? 'seconds' : ul)}</span></div>
+    ${sideNoteHTML(b)}
     ${t.note ? `<div class="tr-note">${esc(t.note)}</div>` : ''}
     <div class="tr-sets">${rows}</div>
     <div class="tr-blk-foot">
@@ -394,7 +396,7 @@ function blockMenu(root, i) {
       close();
       if (m === 'info') return showInfo(b.exId);
       if (m === 'swap') return doSwap(root, i);
-      if (m === 'hurts') return openHurtsSheet(CTX, { exId: b.exId, onSaved: () => swapForSafe(root, i) });
+      if (m === 'hurts') return openHurtsSheet(CTX, { exId: b.exId, onSaved: () => swapForSafe(root, i) });   // returns the toast text
       if (m === 'up' || m === 'down') { const j = m === 'up' ? i - 1 : i + 1; [S.blocks[i], S.blocks[j]] = [S.blocks[j], S.blocks[i]]; }
       if (m === 'skip') b.skipped = true;
       if (m === 'remove') { if (b.sets.some(x => x.done) && !confirm('Remove this exercise and its logged sets?')) return; S.blocks.splice(i, 1); }
@@ -439,22 +441,33 @@ function applySwap(i, id) {
     if (out.blocks[i] && out.blocks[i].group == null && b.group) out.blocks[i].group = b.group;
     Object.assign(S, out);
   }
+  S.blocks = withSides(CTX, S).blocks;   // §26.4: the new move gets its healthy side when an issue asks for one
   return true;
 }
 // §26 "This hurts": the issue is already saved (setTargets writes the profile at once), so the best
 // alternative that spares every active issue goes in; with none at this location the exercise is skipped.
 function swapForSafe(root, i) {
-  const b = S && S.blocks[i]; if (!b || !isLift(b)) return;
+  const b = S && S.blocks[i]; if (!b || !isLift(b)) return '';
   const profile = CTX.store.getProfile();
   const issues = safe(() => activeIssues(profile, ds()), []);
   const logged = issues[issues.length - 1];   // the one just logged (newest)
-  // the alternatives that spare every active issue, the ones that load the just-logged area least first
-  const alts = safe(() => alternatives(b.exId, { equipment: sessionEquipment(profile, S), exclude: S.blocks.filter(isLift).map(x => x.exId), limit: 8, issues }), [])
-    .map((e, k) => ({ e, k, t: logged ? issueTier(e, logged) : 0 })).sort((x, y) => x.t - y.t || x.k - y.k).map(x => x.e);
   const what = logged ? `your ${issueLabel(logged).toLowerCase()}` : 'it';
-  if (alts.length && applySwap(i, alts[0].id)) toast(CTX, `Logged. Swapped to ${alts[0].name}, which spares ${what}`);
-  else { b.skipped = true; toast(CTX, `Logged. Nothing here spares ${what}, so this one is skipped (⇄ to pick your own)`); }
+  let msg;
+  // §26.4: a one-arm / one-leg move that leaves the sore side resting stays, healthy side only
+  const keep = safe(() => issueFilter(issues).side.get(b.exId), null);
+  if (keep) { S.blocks = withSides(CTX, S).blocks; msg = `Logged. Kept ${getEx(b.exId)?.name || 'it'} for the ${sideOnlyLabel(keep, getEx(b.exId)).toLowerCase()}`; }
+  else {
+    // the alternatives that spare every active issue; any that load the sore side only lightly (tier ≤ 1) first
+    const alts = safe(() => alternatives(b.exId, { equipment: sessionEquipment(profile, S), exclude: S.blocks.filter(isLift).map(x => x.exId), limit: 8, issues }), [])
+      .map((e, k) => ({ e, k, t: logged && effectiveTier(e, logged) >= 2 ? 1 : 0 })).sort((x, y) => x.t - y.t || x.k - y.k).map(x => x.e);   // light load on the sore side counts as sparing it; same-muscle rank otherwise
+    if (alts.length && applySwap(i, alts[0].id)) {
+      const nb = S.blocks.find(x => isLift(x) && x.exId === alts[0].id);
+      msg = `Logged. Swapped to ${alts[0].name}${nb?.sideOnly ? `, ${sideOnlyLabel(nb.sideOnly, alts[0]).toLowerCase()}` : ''}, which spares ${what}`;
+    } else { b.skipped = true; msg = `Logged. Nothing here spares ${what}, so this one is skipped (⇄ to pick your own)`; }
+  }
+  toast(CTX, msg);
   saveNow(); redrawAll(root);
+  return msg;
 }
 
 function finish(root) {
@@ -604,7 +617,7 @@ export function bind(root, ctx, params = {}) {
           onPick: id => {
             const out = safe(() => addExercise(S, id, { sessions: store.getSessions().filter(x => x.id !== S.id), now: new Date() }), null);
             if (!out) return;
-            Object.assign(S, out); saveNow(); redrawAll(root);
+            Object.assign(S, withSides(ctx, out)); saveNow(); redrawAll(root);
             setTimeout(() => document.querySelector(`[data-blk="${S.blocks.length - 1}"]`)?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }), 50);
           },
         });

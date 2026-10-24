@@ -8,8 +8,11 @@
 //   { exId, onSaved }) (active workout), activeOf(ctx). Styles: is-* classes in css/train.css.
 import {
   AREAS, AREA_ORDER, SEVERITIES, SEVERITY_ORDER, SAFETY_LINE, NOT_A_CLINICIAN, activeIssues, issueLabel, needsCheck,
-  areaOptionsFor, issueFilter, issueTier,
+  areaOptionsFor, issueFilter, issueTier, isLateral, issueLimb, sideOnlyLabel, SIDE_ONLY_INFO, applySides,
 } from '../engine/issues.js';
+// CONTRACT-NOTE (§26.4): sideTag(block) / sideNoteHTML(block) render a healthy-side-only block ("Right arm
+//   only", half credit, the cross-education line with its two sources); withSides(ctx, session) re-applies
+//   the active issues' sides after a swap or an add. The sheets explain what the side choice does.
 import { GROUPS, GROUP_ORDER } from '../data/muscles.js';
 import { getEx } from '../data/exercises.js';
 import { setTargets } from './targets.js';
@@ -19,6 +22,30 @@ import { ds, fmtShort, daysBetween } from '../util.js';
 const SIDES = [['left', 'Left'], ['right', 'Right'], ['both', 'Both']];
 
 export function activeOf(ctx) { return safe(() => activeIssues(ctx.store.getProfile(), ds()), []); }
+
+// ---------------------------------------------------------------- healthy side only (§26.4)
+export function sideTag(b) { return b && b.sideOnly ? sideOnlyLabel(b.sideOnly, getEx(b.exId)) : ''; }
+// On the block: the side and the half-credit convention. The cross-education line is shown once per
+// workout (sideExplainHTML), not repeated on every block.
+export function sideNoteHTML(b) {
+  if (!b || !b.sideOnly) return '';
+  return `<div class="is-sidenote"><b>${esc(sideTag(b))}</b> · ${esc(SIDE_ONLY_INFO.credit)}</div>`;
+}
+export function sideExplainHTML(session) {
+  if (!(session?.blocks || []).some(b => b && b.kind === 'lift' && b.sideOnly)) return '';
+  return `<p class="tiny muted is-sideexplain">${esc(SIDE_ONLY_INFO.crossEd)} (${esc(SIDE_ONLY_INFO.cite)})</p>`;
+}
+// The workout with the active issues' sides applied (after a swap or an add the new block needs its side).
+export function withSides(ctx, s) { return safe(() => applySides(s, activeOf(ctx)), s); }
+// What the side choice does, for the sheets.
+function sideHelp(st) {
+  if (!isLateral(st)) return '';
+  if (st.side !== 'left' && st.side !== 'right') return 'Both sides: every move that loads it follows the rule below, whichever arm or leg does it.';
+  const limb = issueLimb({ ...st }) || 'arm', other = st.side === 'left' ? 'right' : 'left';
+  return limb === 'leg'
+    ? `${st.side[0].toUpperCase() + st.side.slice(1)} side: two-leg moves follow the rule below; seated or lying one-leg machine moves (leg press, extension, curl) stay in for the ${other} leg. Lunges, split squats and step-ups don't: the ${st.side} leg is the stance leg.`
+    : `${st.side[0].toUpperCase() + st.side.slice(1)} side: two-arm moves follow the rule below; one-arm moves that leave the ${st.side} arm resting stay in, for the ${other} arm only.`;
+}
 const since = x => { const d = safe(() => daysBetween(x.started, ds()), 0); return d <= 0 ? 'today' : d === 1 ? 'yesterday' : `${d} days ago`; };
 const sevTag = x => SEVERITIES[x.severity]?.name.toLowerCase() || x.severity;
 
@@ -32,7 +59,8 @@ function effectLine(draft) {
   const ranked = [...ex].sort((a, b) => issueTier(b, draft) - issueTier(a, draft) || kit(a) - kit(b) || a.name.length - b.name.length);
   const eg = [...new Map(ranked.map(e => [e.pattern, e])).values()].slice(0, 3).map(e => e.name);
   const soft = f.penalty.size ? ` and goes easy on ${f.penalty.size} more` : '';
-  return ex.length ? `Forge will leave out ${ex.length} moves${eg.length ? ` (e.g. ${eg.join(', ')})` : ''}${soft}.` : 'Nothing in the library loads it hard enough to leave out.';
+  const one = f.side.size ? ` ${f.side.size} one-${[...f.side.keys()].some(id => ['squat', 'knee_extension', 'knee_flexion'].includes(getEx(id)?.pattern)) ? 'leg' : 'arm'} moves stay in for the ${[...f.side.values()][0]} side only.` : '';
+  return (ex.length ? `Forge will leave out ${ex.length} moves${eg.length ? ` (e.g. ${eg.join(', ')})` : ''}${soft}.` : 'Nothing in the library loads it hard enough to leave out.') + one;
 }
 
 // ---------------------------------------------------------------- Today strip
@@ -94,7 +122,8 @@ export function openIssueSheet(ctx, { issue = null, preset = null, onSaved = nul
     <div class="tr-label">Where</div>
     <div class="tr-chiprow wrap">${AREA_ORDER.map(id => chip(AREAS[id].name, { active: st.area === id, attrs: `data-a="${id}"`, cls: 'sm' })).join('')}</div>
     ${st.area === 'muscle' ? `<div class="tr-label">Which muscle</div><div class="tr-chiprow wrap">${GROUP_ORDER.map(g => chip(GROUPS[g].name, { active: st.group === g, attrs: `data-g="${g}"`, cls: 'sm' })).join('')}</div>` : ''}
-    ${a.sided ? `<div class="tr-label">Side</div><div class="tr-chiprow">${SIDES.map(([v, l]) => chip(l, { active: st.side === v, attrs: `data-sd="${v}"`, cls: 'sm' })).join('')}</div>` : ''}
+    ${isLateral(st) ? `<div class="tr-label">Which side hurts</div><div class="tr-chiprow">${SIDES.map(([v, l]) => chip(l, { active: st.side === v, attrs: `data-sd="${v}"`, cls: 'sm' })).join('')}</div>
+      <p class="tiny muted is-sidehelp">${esc(sideHelp(st))}</p>` : ''}
     <div class="tr-label">How bad</div>
     <div class="list is-sev">${SEVERITY_ORDER.map(v => `<button type="button" class="list-item ${st.severity === v ? 'is-on' : ''}" data-sv="${v}" aria-pressed="${st.severity === v}">
       <span class="ic">${st.severity === v ? '●' : '○'}</span><div class="grow"><div class="t">${esc(SEVERITIES[v].name)} <span class="muted small">· ${esc(SEVERITIES[v].short)}</span></div>
@@ -114,8 +143,8 @@ export function openIssueSheet(ctx, { issue = null, preset = null, onSaved = nul
     const redraw = () => { read(); host.innerHTML = body(); };
     host.addEventListener('click', e => {
       const t = e.target.closest('[data-a],[data-g],[data-sd],[data-sv],[data-is-act]'); if (!t) return;
-      if (t.dataset.a) { st.area = t.dataset.a; if (st.area === 'muscle' && !GROUPS[st.group]) st.group = 'chest'; if (!AREAS[st.area].sided) st.side = 'both'; return redraw(); }
-      if (t.dataset.g) { st.group = t.dataset.g; return redraw(); }
+      if (t.dataset.a) { st.area = t.dataset.a; if (st.area === 'muscle' && !GROUPS[st.group]) st.group = 'chest'; if (!isLateral(st)) st.side = 'both'; return redraw(); }
+      if (t.dataset.g) { st.group = t.dataset.g; if (!isLateral(st)) st.side = 'both'; return redraw(); }
       if (t.dataset.sd) { st.side = t.dataset.sd; return redraw(); }
       if (t.dataset.sv) { st.severity = t.dataset.sv; return redraw(); }
       read();
@@ -124,8 +153,10 @@ export function openIssueSheet(ctx, { issue = null, preset = null, onSaved = nul
       const label = issueLabel(fields);
       close();
       if (act === 'save' && !issue) {
-        setTargets(ctx, { issues: { add: fields } }, { reason: `${label.toLowerCase()} logged (${st.severity})` });   // saves now, re-plans after
-        if (onSaved) onSaved(fields);
+        // saves now, re-plans after; a caller's message (onSaved's return) leads the re-plan toast (§26 D)
+        let lead = '';
+        setTargets(ctx, { issues: { add: fields } }, { reason: `${label.toLowerCase()} logged (${st.severity})`, quiet: !!onSaved, lead: () => lead });
+        if (onSaved) lead = onSaved(fields) || '';
       } else if (act === 'save') setTargets(ctx, { issues: { update: { id: issue.id, ...fields } } }, { reason: `${label.toLowerCase()} updated` });
       else if (act === 'better') resolve(ctx, issue);
       else if (act === 'delete') setTargets(ctx, { issues: { remove: issue.id } }, { reason: `${label.toLowerCase()} removed` });
@@ -142,14 +173,15 @@ export function openHurtsSheet(ctx, { exId, onSaved } = {}) {
   const st = { pick: 0, severity: 'mild', side: 'both' };
   const cur = () => opts[st.pick] || { area: 'muscle', group: 'chest' };
   const body = () => {
-    const o = cur(), sided = AREAS[o.area]?.sided;
+    const o = cur(), sided = isLateral(o);
     const fields = { id: 'is_preview', area: o.area, ...(o.group ? { group: o.group } : {}), side: st.side, severity: st.severity };
     return `<div class="tr-sheet-h"><h3>${esc(ex?.name || 'This exercise')} hurts</h3>
       <div class="tiny muted">${esc(NOT_A_CLINICIAN)}</div></div>
     <div class="tr-label">Where</div>
     <div class="tr-chiprow wrap">${opts.map((x, i) => chip(x.area === 'muscle' ? GROUPS[x.group]?.name || 'Muscle' : AREAS[x.area].name, { active: st.pick === i, attrs: `data-pick="${i}"`, cls: 'sm' })).join('')}
       <button type="button" class="tr-link" data-more>Somewhere else…</button></div>
-    ${sided ? `<div class="tr-label">Side</div><div class="tr-chiprow">${SIDES.map(([v, l]) => chip(l, { active: st.side === v, attrs: `data-sd="${v}"`, cls: 'sm' })).join('')}</div>` : ''}
+    ${sided ? `<div class="tr-label">Which side hurts</div><div class="tr-chiprow">${SIDES.map(([v, l]) => chip(l, { active: st.side === v, attrs: `data-sd="${v}"`, cls: 'sm' })).join('')}</div>
+      <p class="tiny muted is-sidehelp">${esc(sideHelp({ ...o, side: st.side }))}</p>` : ''}
     <div class="tr-label">How bad</div>
     <div class="tr-chiprow">${SEVERITY_ORDER.map(v => chip(SEVERITIES[v].name, { active: st.severity === v, attrs: `data-sv="${v}"`, cls: 'sm' })).join('')}</div>
     <p class="small muted mt">${esc(SEVERITIES[st.severity].short)}: ${esc(SEVERITIES[st.severity].rule)}</p>
@@ -161,15 +193,17 @@ export function openHurtsSheet(ctx, { exId, onSaved } = {}) {
     const host = el.querySelector('[data-is-sheet]') || el;
     host.addEventListener('click', e => {
       const t = e.target.closest('[data-pick],[data-sd],[data-sv],[data-go],[data-more]'); if (!t) return;
-      if (t.dataset.pick != null) { st.pick = Number(t.dataset.pick); if (!AREAS[cur().area]?.sided) st.side = 'both'; host.innerHTML = body(); return; }
+      if (t.dataset.pick != null) { st.pick = Number(t.dataset.pick); if (!isLateral(cur())) st.side = 'both'; host.innerHTML = body(); return; }
       if (t.dataset.sd) { st.side = t.dataset.sd; host.innerHTML = body(); return; }
       if (t.dataset.sv) { st.severity = t.dataset.sv; host.innerHTML = body(); return; }
       if (t.dataset.more != null) { close(); openIssueSheet(ctx, { preset: { area: cur().area, group: cur().group, severity: st.severity, side: st.side, note: ex ? `During ${ex.name}` : '' }, onSaved }); return; }
       const o = cur();
       const fields = { area: o.area, ...(o.group ? { group: o.group } : {}), side: st.side, severity: st.severity, started: ds(), note: ex ? `During ${ex.name}` : '' };
       close();
-      setTargets(ctx, { issues: { add: fields } }, { reason: `${issueLabel(fields).toLowerCase()} logged (${st.severity})` });
-      if (onSaved) onSaved(fields);
+      // the swap's own toast shows at once and then leads the re-plan toast, instead of being overwritten (§26 D)
+      let lead = '';
+      setTargets(ctx, { issues: { add: fields } }, { reason: `${issueLabel(fields).toLowerCase()} logged (${st.severity})`, quiet: true, lead: () => lead });
+      if (onSaved) lead = onSaved(fields) || '';
     });
   });
 }

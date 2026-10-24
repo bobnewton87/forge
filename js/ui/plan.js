@@ -29,7 +29,7 @@ import { summarize, detailSheet } from './history.js';
 //   inside the retro window; already-logged lines keep opening the session detail sheet, which can
 //   edit or delete them. Nothing else about past days changed.
 import { openRetroSheet, canLogPast } from './retro.js';
-import { setTargets, targetsSummaryHTML, bindTargetsSummary, makeRoomHTML, bindMakeRoom, extendedToast, openMinimumsInfo, openVolumeRoomSheet, openExtendSheet, openHitTargetsSheet, weeklySetsHTML, weekRow } from './targets.js';
+import { weekUnitsLineHTML, setTargets, targetsSummaryHTML, bindTargetsSummary, makeRoomHTML, bindMakeRoom, extendedToast, openMinimumsInfo, openVolumeRoomSheet, openExtendSheet, openHitTargetsSheet, weeklySetsHTML, weekRow } from './targets.js';
 import { resolveTargets, volumePolicyOf, CARDIO_STYLES, CARDIO_STYLE_NAMES, fmtSets } from '../engine/targets.js';
 import { UNIT_ORDER } from '../data/muscles.js';
 import { styleChipsHTML } from './styles.js';
@@ -37,6 +37,7 @@ import { resolveStyle } from '../engine/generator.js';
 // CONTRACT-NOTE (§26): the day sheet shows the workout-ceiling line for a capped day, or the heavy-workout
 //   warning with a one-tap trim once edits pass the ceiling or a muscle's per-session cap (ui/overload.js).
 import { loadNoteHTML, rationaleWithoutCap, trimSession } from './overload.js';
+import { sideTag, sideExplainHTML, withSides } from './issues.js';
 // CONTRACT-NOTE (STYLES): availability rows for lift / flex days have a style picker (schedule[day].style;
 //   "Default" = profile.defaultStyle); day cards show a non-default style's short name.
 // CONTRACT-NOTE (INTEGRATOR §18): the coverage card's cardio target reads resolveTargets and its
@@ -276,7 +277,7 @@ function summaryCard(sessions, profile, ws, roomLine = '') {
   const warnings = [...allWarn.filter(isCardio), ...allWarn.filter(w => !isCardio(w))].slice(0, 8);
   const ls = sum.liftSets || {}, cap = sum.capacity || {};
   const lsTot = (Number(ls.done) || 0) + (Number(ls.planned) || 0);
-  const capLine = cap.setsNeeded ? `${fmtNum(lsTot, 0)} working sets${cap.liftMinutes ? ` in ~${cap.liftMinutes} lift min` : ''} · priority minimums want ~${fmtNum(cap.setsNeeded, 0)}` : '';
+  const capLine = cap.setsNeeded ? `${fmtNum(lsTot, 0)} working sets${cap.liftMinutes ? ` in ~${cap.liftMinutes} lift min` : ''} · your priority muscles' minimums add up to ~${fmtNum(cap.setsNeeded, 0)}` : '';
   return `${head}<div class="card pl-sum">
     <div class="pl-sum-head">${ring}<div class="grow"><div class="card-title">${sc == null ? 'This week' : sc >= 80 ? 'Well covered' : sc >= 55 ? 'Mostly covered' : 'Gaps to fill'}</div>
       <div class="muted small">${Number(ss.done) || 0} done · ${Number(ss.planned) || 0} planned${sc != null ? ' · coverage score' : ''}</div></div></div>
@@ -316,7 +317,7 @@ function rx(b, units) {
   const ex = getEx(b.exId); const t = b.target || {};
   const reps = t.repMin && t.repMax && t.repMin !== t.repMax ? `${t.repMin}–${t.repMax}` : (t.reps || t.repMin || '?');
   const w = t.weight != null && ex?.unit !== 'seconds' ? ` @ ${fmtNum(t.weight)} ${unitLabel(ex, units)}` : '';
-  return `${t.sets || (b.sets || []).length || '?'} × ${reps}${ex?.unit === 'seconds' ? 's' : ''}${w}`;
+  return `${t.sets || (b.sets || []).length || '?'} × ${reps}${ex?.unit === 'seconds' ? 's' : ''}${w}${b.sideOnly ? ` · ${sideTag(b)} (half credit)` : ''}`;
 }
 function blocksHtml(s, units, { edit = false } = {}) {
   const blocks = s.blocks || [];
@@ -335,7 +336,8 @@ function blocksHtml(s, units, { edit = false } = {}) {
   }).join('')}</div>`;
 }
 
-function openDay(ctx, date) {
+// Exported for the §18.y text test (renders into ctx.openSheet), otherwise internal.
+export function openDay(ctx, date) {
   const store = ctx.store;
   const profile = store.getProfile();
   const sessions = store.getSessions();
@@ -368,10 +370,11 @@ function openDay(ctx, date) {
       ${has && plan.plan ? `<span class="pl-tag ${plan.plan.auto ? 'auto' : 'custom'}">${plan.plan.auto ? 'Auto' : 'Custom'}</span>` : ''}
       ${cmin ? `<span class="badge cardio">${cmin} min cardio</span>` : ''}
     </div>
-    ${groups.length ? `<div class="pl-chips mt">${groups.map(g => `<span class="pl-mchip">${esc(g.name)} <b>${fmtSets(g.sets)}</b></span>`).join('')}</div>` : ''}
+    ${groups.length ? `<div class="pl-chips mt">${groups.map(g => `<span class="pl-mchip">${esc(g.name)} <b>${fmtSets(g.sets)}</b></span>`).join('')}</div>
+      <div class="tiny muted">Chips: sets in this workout.</div>${has ? safe(() => weekUnitsLineHTML(plan, sessions, profile, { weekStart: date, now: new Date(), label: 'Week incl. this day' }), '') : ''}` : ''}
     ${loadNote}
     ${rationale.length ? `<ul class="pl-why">${rationale.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
-    ${has ? blocksHtml(plan, profile.units, { edit: date >= t }) + (date >= t ? `<button type="button" class="btn btn-sm btn-ghost btn-block pl-exadd" data-exadd>+ Add exercise</button><p class="tiny muted center">Tap a name for form cues &amp; video · ⇄ swap just that exercise</p>` : '') : rest || sch.kind === 'rest' ? '<p class="muted small mt">Rest days let muscles rebuild. You can still plan something below.</p>' : '<p class="muted small mt">Get a suggestion that fits your recovery and weekly targets, or build your own.</p>'}
+    ${has ? sideExplainHTML(plan) + blocksHtml(plan, profile.units, { edit: date >= t }) + (date >= t ? `<button type="button" class="btn btn-sm btn-ghost btn-block pl-exadd" data-exadd>+ Add exercise</button><p class="tiny muted center">Tap a name for form cues &amp; video · ⇄ swap just that exercise</p>` : '') : rest || sch.kind === 'rest' ? '<p class="muted small mt">Rest days let muscles rebuild. You can still plan something below.</p>' : '<p class="muted small mt">Get a suggestion that fits your recovery and weekly targets, or build your own.</p>'}
     ${date >= t ? `<div class="pl-where"><div class="tiny muted bold">Where${has ? ' · tap to re-suggest there' : ''}</div>
       <div class="pl-where-row">${(profile.locations || []).map(l => chip(`${l.icon || ''} ${l.name}`, { active: l.id === loc.id, attrs: `data-sloc="${esc(l.id)}"`, cls: 'sm' })).join('')}</div></div>
     <div class="pl-sheet-quick"><span class="tiny muted bold">Cardio</span>${QUICK_CARDIO.map(m => `<button type="button" class="pl-qc" data-act="qc" data-m="${m}">+${m}′</button>`).join('')}${cmin ? `<span class="muted small">${cmin} min now</span>` : ''}</div>` : ''}
@@ -814,6 +817,7 @@ function editCtx(ctx, date) {
   return { sessions: otherSessions(ctx.store.getSessions(), date), now };
 }
 function saveEdited(ctx, date, s, msg) {
+  s = withSides(ctx, s);   // §26.4: a swapped / added one-arm move gets its healthy side
   const est = safe(() => estimateMinutes(s.blocks || []), null);
   const out = { ...s, estMinutes: est ?? s.estMinutes, minutes: Math.max(Number(s.minutes) || 0, est || 0) || s.minutes,
     plan: { ...(s.plan || {}), auto: false, edited: true, reason: s.plan?.reason && s.plan.reason !== 'Custom' ? s.plan.reason : 'Edited' } };
