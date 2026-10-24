@@ -1,7 +1,7 @@
 # Forge E2E results
 
-- Run: 2026-10-24 15:08:56 · 154s · **182 pass / 0 fail / 0 warn**
-- Git: `0d1da9c CONTRACT §26: workout set ceiling, overload warning, something's hurting` + 0 uncommitted file(s)
+- Run: 2026-10-24 15:53:31 · 153s · **182 pass / 0 fail / 0 warn**
+- Git: `0577bca CONTRACT §18.y and §26.4-26.7: side, cards, text numbers, toast` + 3 uncommitted file(s)
 - Command: `python3 e2e/run.py` (screenshots: `/tmp/claude-1000/forge-shots/qa-*.png`)
 
 | ID | Check | Result | Failing step | Expected | Actual | Screenshot |
@@ -193,7 +193,7 @@
 
 - **S1**: 3D canvas mounted on: none (SVG fallback)
 - **S2**: 3D canvas mounted on: body, projection
-- **S3**: slowest: supplements 206ms, projection 58ms, nutrition 26ms, measure 22ms
+- **S3**: slowest: supplements 223ms, projection 26ms, measure 20ms, nutrition 13ms
 - **C1a**: resolveTargets cardio = 225
 - **C1f**: replan toast: Plan updated for 225 min/wk cardio. Extended Sat 60→65′, Tue 30→55′ a…
 - **C1k**: proposal: Make room for 225 min of cardio A typical week of your availability holds ~65 cardio min alongside lifting (this week: ~0). These changes take it to ~225. Wed cardio 30→60′ Cardio 30′ → Cardio 60′ · …

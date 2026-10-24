@@ -218,3 +218,10 @@ test('planner: a planned week (top-ups included) never programs a move an active
   const e = issueEffects(getEx('db_curl'), [issue('elbow', 'mild'), issue('elbow', 'severe', { id: 'is_e2' })]);
   assert.equal(e.blocked.severity, 'severe');
 });
+
+test('§26: severe differs from moderate by the safety line, shown on the workout itself', () => {
+  const mk = sev => buildWorkout({ targets: ['triceps'], minutes: 45, location: LOC.crunch, profile: prof({ issues: [issue('elbow', sev, { side: 'left' })] }), now: NOW, seed: 3 });
+  assert.ok(mk('severe').rationale.some(r => r.includes(SAFETY_LINE)), 'severe workout carries the safety line');
+  assert.ok(!mk('moderate').rationale.some(r => r.includes(SAFETY_LINE)), 'moderate does not');
+  assert.match(SEVERITIES.severe.rule, /get it checked/);
+});

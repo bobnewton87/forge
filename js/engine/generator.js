@@ -50,7 +50,7 @@ import { recommend, muscleStatus, groupStatus } from './recovery.js';
 import { ds, rng as makeRng, daysBetween, clamp } from '../util.js';
 // generator → targets → generator is the same deliberate cycle recovery already closes; only called at run time.
 import { sessionSetCapOf, starredGroups } from './targets.js';
-import { activeIssues, issueFilter, issueLabel, oneSideLimb, SIDE_ONLY_CREDIT } from './issues.js';
+import { activeIssues, issueFilter, issueLabel, oneSideLimb, SIDE_ONLY_CREDIT, SAFETY_LINE } from './issues.js';
 // CONTRACT-NOTE (§26.4): a move an active one-sided limb issue keeps healthy-side only carries
 //   block.sideOnly = 'left'|'right' (one side's work: no ×2 unilateral time, half weekly credit, half its
 //   value to the fitter). groupAvailability(group, { equipment, issues, exclude }) → { status:'ok'|'limited'|
@@ -1113,6 +1113,7 @@ export function buildWorkout({
     }
     const n = IF.blocked.size;
     if (n) issueLines.push(`Working around ${issues.map(x => `your ${issueLabel(x).toLowerCase()} (${x.severity})`).join(' and ')}: ${n} moves that load ${issues.length > 1 ? 'them' : 'it'} are out${IF.penalty.size ? ', a few more only if nothing else fits' : ''}`);
+    if (issues.some(x => x.severity === 'severe')) issueLines.push(`⚠︎ ${SAFETY_LINE}`);   // what severe adds over moderate
   }
 
   // --- cardio finisher

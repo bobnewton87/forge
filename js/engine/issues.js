@@ -86,7 +86,8 @@ export function sideOnlyLabel(side, ex) {
 export const SEVERITIES = {
   mild: { name: 'Mild', short: 'Twinge — train around it', rule: 'Forge drops the moves that load it hardest and goes easy on the ones that load it some.', exclude: 3, penalty: { 2: 0.35 } },
   moderate: { name: 'Moderate', short: 'Avoid loading it', rule: 'Forge drops every move that loads it. Moves that barely touch it stay in; skip any that still hurt.', exclude: 2, penalty: {} },
-  severe: { name: 'Severe', short: 'Avoid loading it', rule: 'Forge drops every move that loads it. Moves that barely touch it stay in; skip any that still hurt.', exclude: 2, penalty: {} },
+  // Same exclusions as moderate; what severe adds is the safety line, so the picker says that up front.
+  severe: { name: 'Severe', short: 'Get it checked', rule: 'Same moves left out as moderate, plus a reminder on every workout: sharp pain, swelling, numbness or pain at rest means stop and get it checked.', exclude: 2, penalty: {} },
 };
 export const SEVERITY_ORDER = ['mild', 'moderate', 'severe'];
 export const SAFETY_LINE = 'Sharp pain, swelling, numbness or pain at rest: stop and get it checked.';
