@@ -1143,7 +1143,7 @@ export function buildWorkout({
     if (bits.length) rationale.push('Focus: ' + bits.join('; '));
   }
   issueLines.forEach(x => rationale.push(x));
-  if (addedGroups.length) rationale.push(`Added ${addedGroups.map(g => GROUPS[g].name.toLowerCase()).join(' & ')} to fill ${minutes} min without junk volume`);
+  if (addedGroups.length) rationale.push(`Added ${addedGroups.map(g => GROUPS[g].name.toLowerCase()).join(' & ')} ${capped ? 'alongside, rather than more sets of the same muscles' : `to fill ${minutes} min without junk volume`}`);
   if (lifts.length) {
     const nSets = lifts.reduce((s, b) => s + b.target.sets, 0);
     const grouped = new Set(lifts.filter(b => b.group).map(b => b.group)).size;

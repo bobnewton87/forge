@@ -88,7 +88,8 @@ export function issueLabel(x) {
 
 // Pure list update. patch: { add: Issue } | { update: { id, ...fields } } | { resolve: id } |
 // { check: id } (answered "still hurting") | { remove: id }; optional patch.date ('YYYY-MM-DD', default
-// today) stamps started / resolvedAt / checkedAt. Invalid input leaves the list unchanged.
+// today) stamps started / resolvedAt / checkedAt. An update applies its valid fields and ignores the rest;
+// an invalid add or an unknown id leaves the list unchanged.
 export function applyIssuePatch(list, patch = {}) {
   const cur = (Array.isArray(list) ? list : []).map(normalizeIssue).filter(Boolean);
   const date = isDs(patch.date) ? patch.date : todayDs(new Date());
@@ -101,8 +102,14 @@ export function applyIssuePatch(list, patch = {}) {
   }
   const at = id => cur.findIndex(x => x.id === id);
   if (patch.update && at(patch.update.id) >= 0) {
-    const i = at(patch.update.id);
-    const x = normalizeIssue({ ...cur[i], ...patch.update, id: cur[i].id });
+    // field by field, like applyTargetChange: a valid value is applied, an invalid one ignored
+    const i = at(patch.update.id), u = patch.update, next = { ...cur[i] };
+    const ok = {
+      area: v => AREAS[v] && (v !== 'muscle' || GROUPS[u.group] || GROUPS[next.group]), group: v => GROUPS[v], side: v => SIDES.includes(v),
+      severity: v => SEVERITIES[v], started: isDs, note: v => typeof v === 'string', resolvedAt: v => v === null || isDs(v), checkedAt: isDs,
+    };
+    for (const [k, v] of Object.entries(u)) if (ok[k] && ok[k](v)) next[k] = v;
+    const x = normalizeIssue(next);
     if (x) cur[i] = x;
     return cur;
   }
