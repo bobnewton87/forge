@@ -330,7 +330,8 @@ export function addExercise(session, exId, { sessions, now }) → Session
 export function exercisesFor(targetId, equipmentSet, { sculptGoals = [] }) → [Exercise] ranked
 ```
 Generator rules:
-- Fit `minutes` within ±10%. Time per set = reps×secPerRep (×2 if unilateral) + rest. Add
+- Fit `minutes` within ±10% — **unless the workout set ceiling binds (§26): a `capped` session is short on
+  purpose and exempt.** Time per set = reps×secPerRep (×2 if unilateral) + rest. Add
   setupSec per exercise and 3-6 min warm-up (shorter for short sessions).
 - 15-25 min → 2-4 exercises, supersets (antagonists or non-competing), 45-60 s rests.
   45-60 min → 5-8 exercises. 75-90 min → 7-10. Compounds first, isolations later.
@@ -1988,3 +1989,182 @@ sample inside `node --test test/` measures how many sibling files are competing 
 measured 85 ms alone and 340 ms in a full-suite run — which is what made the 260-week budget the suite's
 long-standing flake. `process.cpuUsage()` is not a substitute: it sums V8's background optimiser and GC
 threads and reads 5-8x the wall time.
+
+## 26. Workout set ceiling, overload warning, and "something's hurting" (2026-10-24)
+
+Bob: a 60-minute "Hypertrophy · Time-saver" workout gave him **48 working sets**; he cut it to ~33 himself.
+And: *"log something that's hurting so the app adapts."* Two features, one section.
+
+Ownership (OVERLOAD): `js/data/stress.js`, `js/engine/issues.js`, `js/ui/issues.js`, `js/ui/overload.js`,
+`test/overload-ceiling.test.js`, `test/issues-stress.test.js`; targeted edits in `js/engine/generator.js`,
+`js/engine/planner.js`, `js/engine/targets.js`, `js/ui/today.js`, `js/ui/session.js`, `js/ui/plan.js` (`openDay`
+only), `js/ui/body.js` (render/bind, not the group cards or `groupSheet`), `js/ui/components.js` (swap/add sheets),
+`js/ui/settings.js` (Training defaults), `css/train.css`.
+
+### 26.1 The workout set ceiling
+
+**Why it happened.** The fitter turned minutes into sets: `desiredSets` = budget ÷ `perSet` (Time-saver 75 s,
+Hypertrophy 115 s), `tune()` added sets and exercises until the estimate met the budget, and the
+complement-group loop added whole muscle groups to fill what was left. Per-muscle caps existed but nothing
+capped the workout. Measured before the change at Crunch, auto targets: Time-saver 45′ → 35 sets, 75′ → 60,
+Pump 90′ → 74, Circuit 90′ → 90.
+
+**The setting** (read and written through `js/engine/targets.js`, §18):
+```js
+profile.sessionSetCap                       // number, working sets per workout; absent = default
+targets.LIMITS.sessionSetCap = [12, 50]     // targets.SESSION_CAP_DEFAULT = 30
+targets.sessionSetCapOf(profile) → number   // the resolver every engine calls
+resolveTargets(p).training.sessionSetCap
+applyTargetChange(p, { training: { sessionSetCap: 24 } })   // clamped; null resets to the default
+// needsReplan() and describeChange() ("at most 24 working sets a workout") include it.
+targets.SESSION_CAP_INFO = { short, label, text, evidence:[{ claim, source }] }   // the in-app "why"
+```
+UI: Settings → Training defaults → "Most working sets in one workout" (slider 12–50, `setTargets`, re-plans).
+
+**What counts.** A working set is a row of a non-skipped lift block (`target.sets` when a block has no rows),
+the same rule as §18's set-count semantics; warm-ups are never stored, so never count. `generator.workingSets(s)`.
+
+**Generator contract** (every style: the five built-ins and every custom style):
+- `desiredSets` never aims past the ceiling. The greedy fill, `tune()` (normal and relaxed) and a final
+  enforcement pass refuse any add — a set, an exercise — that would pass it (checked on the materialized plan,
+  because pairs equalize set counts).
+- When the ceiling is what stops it, leftover time goes **first to longer rests, within the style's own
+  `restFlex` allowance** `[lo, hi, hiRelaxed]` (Time-saver up to ×1.2, Hypertrophy ×1.5, custom styles none),
+  **then the workout finishes early.** No complement group is added once the ceiling binds.
+- The session carries `capped = { sets, cap, freedMin, restScale }` (`freedMin` = budget − estimate, ≥ 0) and a
+  rationale line from `generator.capLine()`: *"Capped at 30 working sets: finishes ~14′ early. Past this, extra
+  sets mostly add fatigue (a convention; change it in Settings)."* A capped session is **exempt from the ±10%
+  time fit** (§8) and is never `poolLimited`. `buildWorkout({ setCap })` overrides the profile.
+- Result at the default 30, Crunch, auto targets: Time-saver 60′ → 30 sets, ~44′; Hypertrophy 60′ → ~30 sets,
+  ~60′ (barely changed); Hypertrophy 90′ → 30 sets, ~81′ with rests ×1.5.
+
+**Per-muscle caps, made real.** `generator.muscleSessionCap(group, minutes, starred)` = the generator's own
+per-group cap (8 small / 10 big, ×1.2 at 75+ min) raised to the planner's priority allowance of 12 for a
+starred group, counted on **direct sets** (sets of moves whose prime mover is that group). The baseline
+fitter leaked past its caps — pair equalization bumped a 2-set add to 3, and the relaxed pass ignored caps (a
+45-min Pump chest day had 19 direct chest sets; a 75-min Time-saver chest day 24, both at seed 5). The fitter now refuses any
+add that pushes a muscle past `muscleSessionCap`, and the overload warning uses the same function, so Forge
+never warns about a workout it built itself (pinned by test across styles, places, targets and planned weeks).
+
+**Ordering fix found on the way.** Each group's opener (the staple `scoreEx` forces first) now stays first among
+that group's moves of the same category; a higher-fatigue compound picked later (a rack pull after the row
+that opened back) no longer sorts ahead of it. This is the PLAN-FIX "first exercise is a staple" contract,
+which a seed-dependent test had only been passing by luck.
+
+**Planner** (§12): no planned day passes the ceiling — `liftDay` builds under it and `balanceVolume` never adds a
+set or exercise that would pass it, so a day is lengthened only as far as the sets under the ceiling need.
+Binding reasons stay true of the day (§18):
+- per day: muscle at its own per-session cap → `session`; day at the ceiling, or a legal candidate kept out only
+  by it → **`ceiling`**; then time; then the first real blocker.
+- per week: `ceiling` (*"your 30-set workout ceiling on every lift day"*) only when every lift day holds within a
+  set of it; otherwise **`ceiling_some`** (*"… on 2 of 3 lift days"*, counts from the plan).
+  `TARGET_WHY_TEXT[why](pol, { setCap, ceilDays, liftDays })`.
+- `weekPlanSummary`: `minimums.binding` can be `'ceiling'`; the shortfall warning says *"(every lift day is at your
+  30-set workout ceiling: add a lift day)"*; `capacity` gains `{ setCap, liftDays, maxSets }`; the priority
+  capacity warning names the ceiling when it is what binds. `decideFlex` values a lift day at
+  `min(minutes × 0.33, ceiling)` sets.
+- Consequence: with very high targets (all sliders 2×) four 30-set days no longer reach ≥60% of targets; the week
+  says so (`ceiling`) instead of lengthening every day to 90′.
+
+**Overload warning for workouts the user builds or edits** (advice only, never blocks):
+```js
+generator.sessionLoad(session, profile) → { sets, cap, over, excess, muscles:[{ group, name, sets, cap }], heavy }
+generator.trimToCap(session, cap | null, { profile, sessions, now, muscles }) → { session, removed:[{ exId, from, to }] }
+```
+`trimToCap` reuses the fitter's need measure (desired sets per region from recovery need × priority × sculpt
+goals) and its drop ordering (a pattern duplicate before a lone fly, compounds protected a little):
+(1) sets above each exercise's default for the style come off the least-needed exercises first; (2) then whole
+least-needed exercises go while the excess covers them (2+ exercises kept); (3) then single sets down to 2.
+`muscles:true` then trims any muscle still past its cap. Logged sets are never removed; a superset left with one
+member becomes a straight set with its own rest. UI (`js/ui/overload.js`): Today's preview, Plan's day sheet and
+the live workout header show *"Heavy workout: 48 working sets, your ceiling is 30."* + **Trim to 30**, or the
+per-muscle line + **Trim triceps to 12**, or — for an unedited capped build — the capped line.
+
+**Honesty labels.** The ceiling is a **convention**, labelled so in Settings and in every warning. Per the
+weekly-volume audit §8.5, per-session caps are a fatigue / set-quality / time heuristic, not a measured
+hypertrophy ceiling: Pelland et al. 2025 (Sports Med 56:481, doi:10.1007/s40279-025-02344-w) report
+diminishing returns but no per-session plateau, and the honest argument is Calzavara & Barroso 2026 (J Strength
+Cond Res, doi:10.1519/JSC.0000000000005665): nine weekly quad sets in one session or three grew the quads the
+same, with 58–76% more volume load when spread. **The number 30 has no source**; at Hypertrophy's ~115 s a set
+it is about an hour of work, so it leaves the default 60-minute Hypertrophy workout essentially unchanged and
+stops the denser styles turning spare minutes into extra sets. The per-muscle numbers (8 / 10 / 12) are the
+same convention (§18 amendment, audit §8.5: "the specific 8 / 10 / 12 split has no source").
+
+### 26.2 "Something's hurting"
+
+**Shape and storage.**
+```js
+profile.issues = [{ id:'is_<ms>', area, group?, side:'left'|'right'|'both', severity:'mild'|'moderate'|'severe',
+                    started:'YYYY-MM-DD', note, resolvedAt:'YYYY-MM-DD'|null, checkedAt?:'YYYY-MM-DD' }]
+// area: shoulder | elbow | wrist (wrist/forearm) | neck | upper_back | lower_back | hip | knee | ankle (ankle/foot)
+//       | muscle (+ group = a muscles.GROUPS id). side only for sided areas (else 'both').
+```
+Stored **on the profile**: the least invasive correct option. The profile is already one account-scoped key
+(`fg_profile` / `fga_<id>_profile`, §19), so issues follow account switching, test-mode personas (blank until
+logged), backups (`exportAll` / `importAll`) and cloud sync with no change to `js/store.js`. Known limit, as for
+every profile field: two devices editing the profile before either syncs → the later write wins the whole key.
+Resolved issues stay (with `resolvedAt`) for the record; only active ones affect anything.
+
+**One write path** (§18): `applyTargetChange(p, { issues: patch })` → `issues.applyIssuePatch`, patch =
+`{ add } | { update:{ id, … } } | { resolve:id } | { check:id } | { remove:id }` (+ optional `date`). An update
+applies its valid fields and ignores the rest. `resolveTargets(p).issues` lists the active ones. `needsReplan`
+fires on add / update / resolve / remove (area, muscle or severity changed), not on `check` ("still hurting")
+or a note edit, so logging an issue re-plans the upcoming auto days through the usual `setTargets`.
+
+**Severity → effect** (`issues.SEVERITIES`):
+| Severity | Shown as | Exercise choice |
+|---|---|---|
+| mild | "Twinge — train around it" | tier 3 (loads it hardest) excluded; tier 2 kept at a ×0.35 score penalty |
+| moderate | "Avoid loading it" | tiers 2 and 3 excluded |
+| severe | "Avoid loading it" + *"Sharp pain, swelling, numbness or pain at rest: stop and get it checked."* | tiers 2 and 3 excluded |
+
+Every sheet carries `issues.NOT_A_CLINICIAN`: *"Forge is not a clinician: logging this only changes which exercises
+it picks. It does not diagnose or treat anything."* No diagnosis words, no treatment advice (pinned by test).
+`side` is recorded and shown but does not change selection (a unilateral move is programmed for both sides).
+
+**The stress map** (`js/data/stress.js`). `stressOf(ex) → { shoulder, elbow, wrist, neck, upper_back, lower_back,
+hip, knee, ankle }` each 0–3: 0 none · 1 incidental · 2 clearly loads it · 3 loads it hardest. Derived **by rule**
+from pattern, muscles, equipment and id keywords (dips, close-grip, skull / overhead extensions, preacher and
+reverse curls, upright rows, bent-over rows, free-weight hinges, jumps, push-ups on the hands, hanging work …)
+plus muscle-credit floors (a lower-back prime mover loads the lower back) and a ~20-entry override list; not
+hand-annotated per exercise, so a new exercise gets a map. A muscle issue uses the exercise's own credit to that
+group (≥0.75 → 3, ≥0.5 → 2, >0 → 1). **The tiers are a coaching convention** (which joints a pattern loads,
+conservative where a move is commonly reported to aggravate an area), not measured joint forces. Pinned cases:
+elbow drops skull crushers / close-grip bench / dips, never the leg press; lower back (moderate) drops
+deadlifts, RDLs and bent-over rows but keeps supported work (machine press, chest-supported rows, leg press);
+knee drops squats, lunges and leg extensions even at mild.
+
+**Where it is honoured.** `issues.issueFilter(active) → { blocked, penalty, why(exId) }` is read by: the
+generator's pool (blocked out, mild penalty in the score); `alternatives()` and `exercisesFor()` (`issues`
+option); the planner's top-up adds and swaps (merged into its avoid set); the swap / add sheets (hidden from
+the suggestions with "N more hidden: they load your left elbow"; search still finds them, marked "⚠ loads your
+…", because an explicit pick is the user's call). `addExercise` / `swapBlock` stay unconditional (they apply a
+pick the user already made). When an issue leaves nothing for a requested group here, the rationale says so —
+*"Biceps: every biceps exercise here loads your left elbow (moderate), so it is left out today"* — and if no
+requested group is left, its complement groups that the issue spares are trained instead (*"So this works back &
+shoulders instead, which spare it"*); if none, *"Nothing here trains that without loading it…"*. Never a silent
+empty workout. A fill-in group is never one the issue leaves nothing for.
+
+**UI** (`js/ui/issues.js`). Today: a low-key "🩹 Something hurting?" link and one chip per active issue (tap →
+edit sheet with **Feels better**, which resolves it); an issue logged or last confirmed ≥7 days ago
+(`issues.CHECK_DAYS`) shows one **"Still hurting?"** card (Still hurting → `checkedAt`, asks again in a week;
+Feels better → resolved). Body: the same list ("Working around" / "Aches & pains"). Live workout: ⋯ → **This
+hurts** → the areas that exercise loads, hardest first (`issues.areaOptionsFor`), side, severity → logs the issue
+and swaps to the alternative that spares every active issue and loads the logged area least (logged sets stay
+with the old exercise; no safe swap here → the exercise is skipped, said in a toast).
+
+**Known gaps.** `recovery.recommend` (Today's "What should I train?") is not issue-aware; the generator
+substitutes when a recommended group is fully excluded, and says so. The tiers are not graded by side or range of
+motion.
+
+### 26.3 Tests
+`test/overload-ceiling.test.js` (resolver bounds and labels; the 60-min Time-saver case; every built-in and
+custom style; rests before finishing early; the planner never past the ceiling and never tripping its own warning;
+`sessionLoad` / `trimToCap`). `test/issues-stress.test.js` (the map, the model, the one write path, honesty copy,
+generator / alternatives / exercisesFor / planner exclusions, blocked-group rationale). Existing tests amended:
+`engineb-generator` and `styles-engine` time fits exempt capped sessions (which must sit at or under the ceiling,
+not be `poolLimited`, and say so); `plan-minimums.checkWeek` accepts a ceiling-bound shortfall (every lift day at
+the ceiling, binding `'ceiling'`) and checks `ceiling` / `ceiling_some` claims against the plan;
+`volume-cohesion`: the "two 30-min days run to 90′" fixture raises the ceiling to 50 to keep testing the time
+story, a new 30-set fixture checks the ceiling story, and "≥60% of targets" allows a ceiling-bound week only if
+its summary names the ceiling.
