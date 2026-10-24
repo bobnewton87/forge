@@ -63,28 +63,6 @@ button.pl-line:active { background: var(--card2); }
 .pl-sum-head { display: flex; align-items: center; gap: 14px; margin-bottom: 10px; }
 .pl-ring { width: 56px; height: 56px; }
 .pl-ring .rv { font-size: 17px; }
-.pl-legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--muted); font-weight: 600; margin: 4px 0 10px; }
-.pl-legend span { display: inline-flex; align-items: center; gap: 5px; }
-.pl-legend i { display: inline-block; width: 12px; height: 7px; border-radius: 3px; }
-.pl-legend i.d, .pl-track i.d { background: var(--accent); }
-.pl-legend i.p, .pl-track i.p { background: repeating-linear-gradient(135deg, rgba(255, 107, 61, .55) 0 4px, rgba(255, 107, 61, .28) 4px 8px); }
-.pl-legend i.t { width: 2px; height: 11px; background: var(--text); opacity: .6; }
-.pl-bars { display: flex; flex-direction: column; gap: 9px; }
-.pl-bar-row { font-size: 13px; }
-.pl-bar-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; font-weight: 650; }
-.pl-bar-top .num b { font-weight: 800; }
-.pl-track { position: relative; height: 8px; border-radius: 4px; background: var(--card2); overflow: visible; }
-.pl-track i { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
-.pl-track i.d { left: 0; }
-.pl-track .tick { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text); opacity: .55; border-radius: 1px; }
-.pl-bar-row.ok .pl-track i.d { background: var(--good); }
-.pl-bar-row.ok .pl-track i.p { background: repeating-linear-gradient(135deg, rgba(61, 220, 151, .55) 0 4px, rgba(61, 220, 151, .25) 4px 8px); }
-.pl-bar-row.over .pl-track i.d { background: var(--good); }
-.pl-bar-row.under .pl-bar-top .num b { color: var(--warn); }
-.pl-bar-row.over .pl-bar-top .num b { color: var(--accent2); }
-.pl-bar-row.cardio { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
-.pl-bar-row.cardio .pl-track i.d { background: var(--cardio); }
-.pl-bar-row.cardio .pl-track i.p { background: repeating-linear-gradient(135deg, rgba(76, 195, 255, .55) 0 4px, rgba(76, 195, 255, .25) 4px 8px); }
 .pl-cap { margin-top: 12px; line-height: 1.4; }
 .pl-notes { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 4px; }
 .pl-notes summary { list-style: none; cursor: pointer; min-height: 40px; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--muted); }

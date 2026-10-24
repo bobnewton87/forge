@@ -326,12 +326,12 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border-radius: 
 .ring { position: relative; width: 64px; height: 64px; flex: none; }
 .ring svg { transform: rotate(-90deg); }
 .ring .rv { position: absolute; inset: 0; display: grid; place-items: center; font-weight: 800; font-size: 15px; }
-.gcard { display: block; width: 100%; text-align: left; padding: 12px 14px; margin-bottom: 8px; }
-.gcard .gname { font-weight: 750; font-size: 16px; }
-.gcard .gmeta { font-size: 12px; color: var(--muted); margin-top: 1px; }
-.gcard .gsets { font-size: 14px; font-weight: 750; font-variant-numeric: tabular-nums; }
-.gcard .bar { margin-top: 9px; }
-.gcard.goal { border-color: rgba(255,107,61,.35); }
+.gcards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 8px; }
+.gcard { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; box-sizing: border-box; text-align: left; padding: 10px 12px; margin: 0; min-height: 58px; }
+.gcard .grow { display: flex; flex-direction: column; min-width: 0; }
+.gcard-ic { font-size: 20px; flex: none; }
+.gcard .gname { font-weight: 750; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gcard .gmeta { font-size: 11.5px; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .star { color: var(--accent2); font-size: 12px; }
 .bodymap { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .bodymap figure { text-align: center; }

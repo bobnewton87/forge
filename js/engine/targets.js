@@ -633,7 +633,7 @@ export function unitTargets(profile) {
   return v;
 }
 const unitCache = new WeakMap();
-// ★ = a muscle Forge is pushing above a normal dose. ONE rule for every screen: one of Bob's stated
+// Priority (it was a ★ until 2026-10-24) = a muscle Forge is pushing above a normal dose. ONE rule for every screen: one of Bob's stated
 // priorities (tier 'priority', unless its slider is turned down), a slider raised above 1×, or a sculpt
 // goal adding sets. Tracked-only muscles never star. → Set of unit ids.
 export function starredUnits(profile) {
@@ -644,12 +644,12 @@ export function starredUnits(profile) {
   }
   return out;
 }
-// Group ★ (Body tab cards): any counted unit of the group is starred.
+// Group priority (Settings sliders): any counted unit of the group is starred.
 export function starredGroups(profile) {
   const s = starredUnits(profile);
   return new Set([...s].map(id => VOLUME_UNITS[id]?.group).filter(Boolean));
 }
-export const STAR_LEGEND = '★ = priority: one of your priorities, a raised slider or a sculpt goal';
+export const PRIORITY_LEGEND = 'Priority = one of your priorities, a raised slider or a sculpt goal';
 // Why a target stops at the max even when sliders or sculpt goals ask for more (Bob 2026-10-20: "if the
 // max number of sets doesn't go up we need an info on why"). id = unit id, x = its unitTargets() row.
 // → null for muscles without a target, else { asked, capped, atMax, tag, text }.

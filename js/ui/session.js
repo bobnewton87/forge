@@ -7,7 +7,7 @@
 //   endedAt onto that session's own date so every reader attributes it to the right day and week.
 // Every change is saved right away (typing is debounced 400 ms and flushed on pagehide).
 import { ds, fmtShort, fmtDay } from '../util.js';
-import { GROUPS } from '../data/muscles.js';
+import { GROUPS, UNIT_ORDER } from '../data/muscles.js';
 import { CARDIO, INTENSITIES, estimateCalories } from '../data/cardio.js';
 import { getEx } from '../data/exercises.js';
 import { groupStatus, sessionVolume } from '../engine/recovery.js';
@@ -15,10 +15,10 @@ import { sessionPRs, personalRecords } from '../engine/progression.js';
 import { swapBlock, addExercise } from '../engine/generator.js';
 import { cardioWeek } from '../engine/targets.js';
 import { retroTimes, retroFloor, canLogPast } from '../engine/retro.js';
-import { targetBar } from './targets.js';
+import { weeklySetsHTML, weekSummaryFor } from './targets.js';
 // CONTRACT-NOTE (INTEGRATOR §18): the finish summary shows this week's cardio vs the weekly target
 //   (targets.cardioWeek) when the session had cardio or the week is behind. "Your week now" bars
-//   compare weekly sets with the TARGET (targets.targetBar).
+//   show weekly sets vs target with the shared rows (targets.weeklySetsHTML), same as Plan and Body.
 import {
   esc, fmtNum, exName, unitLabel, safe, debounce, fmtDuration, openSheet, closeSheet, toast, startRest, stopRest,
   muscleBar, addExerciseSheet, swapSheet, cardioFormHtml, bindCardioForm, readCardioForm, cardioName, exerciseInfoHtml,
@@ -471,8 +471,9 @@ export function summaryHtml(s, sessions, profile) {
   }
   const dur = s.startedAt && s.endedAt ? new Date(s.endedAt) - new Date(s.startedAt) : 0;
   const groups = Object.entries(vol.groups || {}).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
-  const gs = safe(() => groupStatus(sessions, { now: new Date(), profile }), {});
-  const weekGroups = [...new Set([...(s.targets || []).filter(t => GROUPS[t]), ...groups.map(g => g[0])])].filter(g => gs[g]).slice(0, 8);
+  // The muscles this workout trained, in the shared weekly rows (this calendar week, logged + planned).
+  const trained = UNIT_ORDER.filter(u => (vol.units?.[u] || 0) > 0);
+  const weekRows = trained.length ? safe(() => weeklySetsHTML(weekSummaryFor(sessions, profile), profile, { only: trained }), '') : '';
   return `<div class="tr-summary">
     <div class="tr-sum-hero"><div class="tr-sum-ic">🔥</div><h2>Workout done</h2><div class="muted">${esc(s.title || '')}</div></div>
     <div class="tr-sum-stats">
@@ -483,8 +484,8 @@ export function summaryHtml(s, sessions, profile) {
     </div>
     ${prs.length ? `<div class="section-title">🏆 New PRs</div><div class="tr-prs">${prs.map(r => `<div class="tr-pr"><b>${esc(exName(r.exId))}</b><span>${fmtNum(r.w)}×${r.r}${r.previous ? ` <span class="muted">(was ${fmtNum(r.previous.w)}×${r.previous.r})</span>` : ''}</span></div>`).join('')}</div>` : ''}
     ${groups.length ? `<div class="section-title">This session</div><div class="tr-sum-groups">${groups.map(([g, v]) => `<span class="badge">${esc(GROUPS[g]?.name || g)} <b>${fmtNum(v)}</b></span>`).join('')}</div>` : ''}
-    ${weekGroups.length ? `<div class="section-title">Your week now</div>${weekGroups.map(g => targetBar(GROUPS[g]?.name || g, gs[g].sets7d || 0, gs[g].target)).join('')}
-    <p class="tiny muted">Sets this week, counted the same way as Plan › Week coverage and Body.</p>` : ''}
+    ${weekRows ? `<div class="section-title">Your week now</div>${weekRows}
+    <p class="tiny muted">The same rows as Plan › Week coverage and Body.</p>` : ''}
     ${cardioWeekLine(s, sessions, profile, vol)}
     <button type="button" class="btn btn-primary tr-big" data-sum-close>Nice</button>
   </div>`;

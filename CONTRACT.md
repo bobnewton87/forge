@@ -796,6 +796,28 @@ fractional, sets and recommends 12–20 *direct*), `MAX_WHY.delt_side` claimed k
 ever varied side-delt volume, the floors are "the bottom of the effective range" rather than a minimum effective dose
 (Pelland's MED is 4), and the per-session caps are a fatigue/time heuristic, not a measured hypertrophy ceiling.
 
+### 18.x One weekly row on every screen (2026-10-24)
+Bob: "any screen where they're showing weekly sets versus target, I want it all to be the same." There is now ONE
+component, `js/ui/targets.js`:
+- `weekRow(label, { done, total, target, max }, { unit: 'sets' | 'min', id, sub, note, cls })`. The track's full width
+  **is the target**. Faded fill = this week's plan (`total` = done + still planned), solid fill = done. The solid fill
+  turns **green only when done reaches the target** (`WEEK_HIT_EPS` 0.05, so a value that prints as the target counts).
+  Text: `N done · N planned · N target`. Planned past the target fills the bar and stops there. No ticks (min, target,
+  max), no stars, no band colours. A plan past the weekly max adds one warning line (sets only, never cardio).
+  Rows carry `data-unit / data-done / data-total / data-target` for tests.
+- `weeklySetsHTML(sum, profile, { only, legend })` renders the rows from `planner.weekPlanSummary` (the one counter),
+  one per unit with a min or target, sub-units indented, the max "why" note where a target sits at its max, and the
+  tracked-only line. `weekSummaryFor(sessions, profile, { now })` = this calendar week's summary.
+- Used by Plan › Week coverage (plus the cardio row, in minutes), Body › Weekly sets vs target, a muscle's sheet
+  (`only` = that group's units) and the workout summary's "Your week now" (`only` = units the workout trained). The
+  Body cardio card's bar is the same row in minutes.
+- Body's group cards are recovery tiles (readiness + days since) with **no set count**: a second, group-level count
+  is what made Body and Plan impossible to compare. Per-head numbers in a muscle's sheet are plain "sets logged in the
+  last 7 days", labelled, not bars against targets.
+- "★" is gone from weekly sets. Where priority still matters (Settings sliders, "Why these numbers?") it is a
+  `priority` tag; `PRIORITY_LEGEND` replaces `STAR_LEGEND`. `setsBand` stays for engine status and the Why table.
+- Guarded by `test/weekly-rows.test.js` and e2e V1 (Plan, Body and the muscle sheet print the identical row).
+
 ## 16c. Segment lengths per side (2026-10-20)
 Bob: "add various elbow-to-shoulder lengths for both sides, knee-to-ankle and knee-to-hip, to capture asymmetries and make
 the 3D model more accurate, smooth and accurate in rendering, specifically head to neck but everywhere."

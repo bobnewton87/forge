@@ -452,12 +452,10 @@ def log_workout(t, loc, sets=2):
 def plan_cardio(app):
     """(total, target, warnings[]) from Plan's week-coverage cardio row."""
     return app.page.evaluate("""() => {
-      const row = document.querySelector('.pl-bar-row.cardio') || [...document.querySelectorAll('#content *')].find(e => /cardio/i.test(e.textContent || '') && /\\/\\s*\\d+\\s*min/.test(e.textContent || '') && e.children.length < 6);
+      const row = document.querySelector('.pl-sum .wk-row.cardio');
       const warn = [...document.querySelectorAll('.pl-notes li, .pl-sum li, .pl-warn, [class*=warn] li')].map(e => e.textContent.trim());
       if (!row) return [null, null, warn];
-      const t = row.textContent.replace(/\\s+/g, ' ');
-      const m = t.match(/([\\d,]+)\\s*\\/\\s*([\\d,]+)\\s*min/);
-      return m ? [parseFloat(m[1].replace(/,/g, '')), parseFloat(m[2].replace(/,/g, '')), warn] : [null, null, warn];
+      return [parseFloat(row.dataset.total), parseFloat(row.dataset.target), warn];
     }""")
 
 
@@ -785,7 +783,7 @@ def t_plan(t, ctx):
             msg or app.toasts())
     n = app.count('.pl-line.planned')
     t.check(n >= min(3, left), 'planned day cards this week', f'≥{min(3, left)} planned cards ({left} trainable day(s) left this week)', n)
-    t.check(app.has('.pl-sum .pl-bar-row'), 'week coverage card', 'coverage bars', short(app.text('.pl-sum'), 100))
+    t.check(app.has('.pl-sum .wk-row'), 'week coverage card', 'coverage bars', short(app.text('.pl-sum'), 100))
     msg = run_plan(app, 'plan-4')
     t.check(msg and (re.search(r'Planned \d+', msg) or re.search(r'Extended .* weekly set targets', msg)), 'Plan next 4 weeks', 'toast "Planned N sessions" or "Extended …"', msg)
     end = (today() + dt.timedelta(days=21)).isoformat()
@@ -2053,9 +2051,8 @@ def t_retro_past_day(t, ctx):
             app.click('[data-a="prev"]'); app.page.wait_for_timeout(250)
 
     def cardio_done():
-        """Minutes already DONE in the coverage card's cardio row (the solid part of 'x/y min')."""
-        return app.page.evaluate("""() => { const r = document.querySelector('.pl-bar-row.cardio'); if (!r) return null;
-          const m = (r.innerText || '').replace(/\\s+/g, ' ').match(/([\\d,]+)\\s*\\/\\s*([\\d,]+)\\s*min/); return m ? parseFloat(m[1].replace(/,/g, '')) : null; }""")
+        """Minutes already DONE in the coverage card's cardio row (the solid fill; data-done)."""
+        return app.page.evaluate("""() => { const r = document.querySelector('.pl-sum .wk-row.cardio'); return r ? parseFloat(r.dataset.done) : null; }""")
 
     e0 = len(app.errors)
     app.load(bobir(app), 'plan')
@@ -2415,17 +2412,20 @@ def t_volume_cohesion(t, ctx):
     t.check(abs(want['group'] - want['target']) < 0.051, 'a group target is the sum of its counted units',
             f"groupTargets.triceps == unitTargets.triceps ({want['target']})", want['group'])
 
-    if not app.has('.pl-bar-row'):
+    if not app.has('.pl-sum .wk-row'):
         run_plan(app)
         app.page.wait_for_timeout(400)
-    t.check(app.has('.pl-bar-row'), 'Plan week coverage', 'per-muscle bars', short(app.text('.pl-sum'), 160))
-    plan_row = app.page.evaluate(r"""() => { const r = [...document.querySelectorAll('.pl-bar-row')]
-        .find(x => /Triceps/.test(x.querySelector('.pl-bar-top span')?.innerText || ''));
-      return r ? { num: (r.querySelector('.num')?.innerText || '').replace(/\s+/g, ' '), title: r.getAttribute('title') || '' } : null; }""")
-    t.check(plan_row, 'Plan has a Triceps row', '.pl-bar-row for Triceps', short(app.text('.pl-bars'), 200))
-    p_sets, p_target = nums(plan_row['num'])
+    t.check(app.has('.pl-sum .wk-row'), 'Plan week coverage', 'per-muscle bars', short(app.text('.pl-sum'), 160))
+    row_js = r"""(scope) => { const root = scope ? document.querySelector(scope) : document; const r = root && root.querySelector('.wk-row[data-unit="triceps"]');
+      return r ? { num: (r.querySelector('.wk-num')?.innerText || '').replace(/\s+/g, ' '), title: r.getAttribute('title') || '',
+                   done: parseFloat(r.dataset.done), total: parseFloat(r.dataset.total), target: parseFloat(r.dataset.target) } : null; }"""
+    plan_row = app.page.evaluate(row_js, '.pl-sum')
+    t.check(plan_row, 'Plan has a Triceps row', '.wk-row[data-unit=triceps]', short(app.text('.pl-sum'), 200))
+    p_sets, p_target = plan_row['total'], plan_row['target']
     t.sub('V1a', 'Plan week coverage shows the shared target', p_target is not None and abs(p_target - want['target']) < 0.051,
-          'Plan > Week coverage > Triceps', f"/ {want['fmt']} target", plan_row['num'])
+          'Plan > Week coverage > Triceps', f"{want['fmt']} target", plan_row['num'])
+    t.check(re.search(r'[\d.]+ done · [\d.]+ planned · [\d.]+ target', plan_row['num']), 'the row prints done, planned and target',
+            'N done · N planned · N target', plan_row['num'])
     t.check(f"min {want['min']}" in plan_row['title'] and f"max {want['max']}" in plan_row['title'],
             'the row tooltip quotes the shared min/max', f"min {want['min']} ... max {want['max']}", short(plan_row['title'], 120))
 
@@ -2447,34 +2447,26 @@ def t_volume_cohesion(t, ctx):
     app.page.evaluate('() => document.querySelector("#sheet-root > .sheet-backdrop")?.click()')
     app.page.wait_for_timeout(150)
 
-    # Body: the group card, then the group sheet's per-muscle bar.
+    # Body: the SAME component (Weekly sets vs target), then a muscle's sheet, which shows the same rows.
     app.tab('body')
-    t.check(app.has('.gcard[data-group="triceps"]'), 'Body group card', '.gcard[data-group=triceps]', short(app.text(), 160))
-    card = app.page.evaluate(r"""() => { const c = document.querySelector('.gcard[data-group="triceps"]');
-      return { sets: (c.querySelector('.gsets')?.innerText || '').replace(/\s+/g, ' '),
-               lines: [...c.querySelectorAll('.tiny.muted')].map(x => x.innerText).join(' | ') }; }""")
-    b_sets, b_target = nums(card['sets'])
-    t.sub('V1c', 'Body group card shows the SAME sets as Plan', b_sets is not None and p_sets is not None and abs(b_sets - p_sets) < 0.051,
-          'Body > Weekly sets vs target > Triceps', f'{p_sets} sets (this week, logged + planned)', card['sets'])
-    t.sub('V1d', 'Body group card shows the SAME target as Plan', b_target is not None and abs(b_target - want['target']) < 0.051,
-          'Body > Triceps > /N target', want['fmt'], card['sets'])
-    t.check('Last 7 days' in card['lines'], 'the rolling 7-day figure is labelled, not shown against the weekly target',
-            '"Last 7 days: N sets logged"', short(card['lines'], 140))
-    pn = re.search(r'[\d.]+', plan_row['num']); bn = re.search(r'[\d.]+', card['sets'])
-    t.sub('V1e', 'both screens print the number identically (one rounding rule)', bool(pn and bn) and pn.group(0) == bn.group(0),
-          'Plan vs Body', pn and pn.group(0), bn and bn.group(0))
+    b_row = app.page.evaluate(row_js, '#content')
+    t.check(b_row, 'Body weekly sets', '.wk-row[data-unit=triceps] on Body', short(app.text(), 160))
+    b_row = b_row or {}
+    t.sub('V1c', 'Body shows the SAME planned sets as Plan', b_row.get('total') is not None and p_sets is not None and abs(b_row['total'] - p_sets) < 0.051,
+          'Body > Weekly sets vs target > Triceps', f'{p_sets} planned (this week, logged + planned)', b_row.get('num'))
+    t.sub('V1d', 'Body shows the SAME target as Plan', b_row.get('target') is not None and abs(b_row['target'] - want['target']) < 0.051,
+          'Body > Triceps > N target', want['fmt'], b_row.get('num'))
+    t.sub('V1e', 'both screens print the row identically (one component, one rounding rule)', b_row.get('num') == plan_row['num'],
+          'Plan vs Body', plan_row['num'], b_row.get('num'))
+    t.check(app.has('.gcard[data-group="triceps"]'), 'Body recovery tile', '.gcard[data-group=triceps]', short(app.text(), 160))
+    tile = app.page.evaluate("""() => (document.querySelector('.gcard[data-group="triceps"]')?.innerText || '').replace(/\\s+/g, ' ')""")
+    t.check(not re.search(r'\d+\s*/\s*\d+|target', tile), 'the recovery tile carries no second set count', 'name + readiness + days since', tile)
 
     app.click('.gcard[data-group="triceps"]')
-    t.check(app.wait_sheet('.tgb'), 'Body group sheet', 'per-muscle target bars', short(app.text(app.sheet()), 200))
-    gsheet = app.page.evaluate(r"""() => { const s = document.querySelector('#sheet-root > .sheet:last-child');
-      const bar = [...s.querySelectorAll('.tgb')].find(x => /Triceps/.test(x.querySelector('.tgb-top span')?.innerText || ''));
-      return { num: bar ? (bar.querySelector('.num')?.innerText || '').replace(/\s+/g, ' ') : '',
-               head: s.innerText.split('\n').slice(0, 6).join(' | ') }; }""")
-    s_sets, s_target = nums(gsheet['num'])
-    t.sub('V1f', 'Body group sheet agrees with the card and with Plan',
-          s_sets is not None and p_sets is not None and abs(s_sets - p_sets) < 0.051 and abs(s_target - want['target']) < 0.051,
-          'Body > Triceps sheet > Weekly sets vs target', f"{p_sets} / {want['fmt']}", gsheet['num'])
-    t.check('sets this week' in gsheet['head'], 'the sheet header quotes the same week', 'N/T sets this week', short(gsheet['head'], 140))
+    t.check(app.wait_sheet('.wk-row'), 'Body group sheet', 'the shared weekly rows', short(app.text(app.sheet()), 200))
+    s_row = app.page.evaluate(row_js, '#sheet-root > .sheet:last-child') or {}
+    t.sub('V1f', 'Body group sheet prints the same row as Plan', s_row.get('num') == plan_row['num'],
+          'Body > Triceps sheet > Weekly sets vs target', plan_row['num'], s_row.get('num'))
 @test('M1', 'Projection: per-muscle growth card + goal-aware nutrition lab (CONTRACT §11)')
 def t_muscle_specificity(t, ctx):
     """§11: the projection must be SPECIFIC per muscle, and the lab's green band must change with the goal.

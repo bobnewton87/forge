@@ -9,10 +9,10 @@ import { GROUPS, GROUP_ORDER, VOLUME_UNITS, UNIT_ORDER } from '../data/muscles.j
 import { EQUIPMENT } from '../data/equipment.js';
 import { esc } from './components.js';
 import { ds } from '../util.js';
-import { setTargets, openTargetsSheet } from './targets.js';
+import { setTargets, openTargetsSheet, ensureTargetStyles } from './targets.js';
 import { styleChipsHTML, customStylesListHTML, openStyleEditor, openStyleInfo, deleteStyle } from './styles.js';
 import { buildWorkout } from '../engine/generator.js';
-import { resolveTargets, unitTargets, maxNote, starredGroups, STAR_LEGEND, LIMITS, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY, GOAL_INFO, GOAL_ORDER, priorityLimits } from '../engine/targets.js';
+import { resolveTargets, unitTargets, maxNote, starredGroups, PRIORITY_LEGEND, LIMITS, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY, GOAL_INFO, GOAL_ORDER, priorityLimits } from '../engine/targets.js';
 import { accountsSectionHTML, bindAccountsSection } from './accounts.js';
 // CONTRACT-NOTE (INTEGRATOR §18): goal, sculpt focus, muscle priority, default length/style, the
 //   weekly cardio target and adherence all read resolveTargets and write through setTargets (planning
@@ -123,6 +123,7 @@ function renderSettings(ctx) {
   const T = resolveTargets(p);
   const PL = priorityLimits(p);   // §23: [0, 2] under the weight-loss goal, [0.5, 2] otherwise
   const starG = starredGroups(p);
+  ensureTargetStyles();   // the shared priority tag (.wk-prio)
   const cmax = Math.max(600, T.cardio.minPerWeek);
   // §23: the weight-loss goal gets its own line here plus a shortcut into the shared targets sheet, which
   // owns goal weight, rate and lean protection (one editor, CONTRACT §18).
@@ -140,8 +141,8 @@ function renderSettings(ctx) {
   </div>
 
   <div class="section-title" id="sec-priority">Muscle priority</div>
-  <div class="card"><p class="small muted mb">Scales each group's weekly set target. 1.0 = standard, lower = maintenance. Sliders move the target, not the max: tap a line to see why each max is where it is. ${esc(STAR_LEGEND)}.${PL[0] === 0 ? ' <b style="color:var(--warn)">Your goal is losing weight, so sliders go all the way to 0× (no planned sets for that muscle). Below 0.5× you are training under the volume that keeps muscle.</b>' : ''}</p>
-    ${GROUP_ORDER.filter(g => GROUPS[g]).map(g => { const v = gp[g] ?? 1; return `<div style="min-height:44px"><div class="row" style="gap:12px"><span style="width:96px;font-weight:650;font-size:15px">${esc(GROUPS[g].name)}${starG.has(g) ? ' <span class="star">★</span>' : ''}</span>
+  <div class="card"><p class="small muted mb">Scales each group's weekly set target. 1.0 = standard, lower = maintenance. Sliders move the target, not the max: tap a line to see why each max is where it is. ${esc(PRIORITY_LEGEND)}.${PL[0] === 0 ? ' <b style="color:var(--warn)">Your goal is losing weight, so sliders go all the way to 0× (no planned sets for that muscle). Below 0.5× you are training under the volume that keeps muscle.</b>' : ''}</p>
+    ${GROUP_ORDER.filter(g => GROUPS[g]).map(g => { const v = gp[g] ?? 1; return `<div style="min-height:44px"><div class="row" style="gap:12px"><span style="width:96px;font-weight:650;font-size:15px">${esc(GROUPS[g].name)}${starG.has(g) ? '<br><span class="wk-prio">priority</span>' : ''}</span>
       <input type="range" min="${PL[0]}" max="${PL[1]}" step="0.05" value="${v}" data-prio="${g}" style="--pct:${prioPct(v, PL)}%" class="grow" aria-label="${esc(GROUPS[g].name)} priority"><span class="num bold" style="width:44px;text-align:right" data-prio-v="${g}">×${Number(v).toFixed(2)}</span></div>
       ${(() => { const n = prioNote(p, g); return `<details class="st-maxd" data-prio-d="${g}"${n.capped ? ' open' : ''}><summary class="tiny muted" data-prio-t="${g}">${esc(prioLine(p, g))}</summary><div class="tiny muted" data-prio-n="${g}">${esc(n.text)}</div></details>`; })()}</div>`; }).join('')}
     <button class="btn btn-sm btn-ghost mt" data-prio-reset>Reset to Forge defaults</button></div>

@@ -9,14 +9,14 @@
 //   ("Why these numbers?"), openVolumeRoomSheet(ctx, short), openExtendSheet(ctx, { extended, onApply }),
 //   extendedToast(list), REPLAN_DAYS, ensureTargetStyles(). Styles are injected
 //   at runtime (a <style id="tg-css">) because INTEGRATOR owns no CSS file.
-import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, cardioTolerance, volumeRoomOptions, unitTargets, maxNote, starredUnits, STAR_LEGEND, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY, GOAL_INFO, GOAL_ORDER, LOSS_RATES, LEAN_PROTECTION, LEAN_PROTECTION_INFO, VOLUME_FLOORS, FLOOR_INFO, FLOOR_EVIDENCE, fmtSets } from '../engine/targets.js';
-import { planRange } from '../engine/planner.js';
+import { resolveTargets, applyTargetChange, needsReplan, describeChange, cardioWeek, makeRoomProposal, cardioTolerance, volumeRoomOptions, unitTargets, maxNote, starredUnits, PRIORITY_LEGEND, MINIMUMS_EVIDENCE, LIMITS, CARDIO_CHIPS, STYLES, GOALS, VOLUME_MODES, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY, GOAL_INFO, GOAL_ORDER, LOSS_RATES, LEAN_PROTECTION, LEAN_PROTECTION_INFO, VOLUME_FLOORS, FLOOR_INFO, FLOOR_EVIDENCE, fmtSets } from '../engine/targets.js';
+import { planRange, weekPlanSummary } from '../engine/planner.js';
 import { resolveStyle } from '../engine/generator.js';
 import { explainWeek } from '../engine/planner.js';
 import { CARDIO } from '../data/cardio.js';
 import { ds, addDays, weekStart } from '../util.js';
 import { esc } from './components.js';
-import { MAX_WHY } from '../data/muscles.js';
+import { MAX_WHY, UNIT_ORDER } from '../data/muscles.js';
 
 export const REPLAN_DAYS = 28;
 const styleShort = (id, p) => { const d = resolveStyle(id, p); return d.short || d.name; };
@@ -48,13 +48,6 @@ const CSS = `
 .tg-stepv b{font-size:30px;font-weight:850;line-height:1.05;color:var(--cardio)}
 .tg-stepv span{font-size:12px;color:var(--muted);font-weight:650}
 .tg-chips{margin:10px 0 12px;justify-content:center}
-.tg-track{position:relative;height:10px;border-radius:5px;background:var(--card2);margin-top:4px}
-.tg-track i{position:absolute;top:0;bottom:0;border-radius:5px}
-.tg-track i.d,.tg-legend i.d{background:var(--cardio)}
-.tg-track i.p,.tg-legend i.p{background:repeating-linear-gradient(135deg,var(--cardio) 0 4px,transparent 4px 8px);opacity:.75}
-.tg-track .tick{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--text);opacity:.6;border-radius:1px}
-.tg-legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center}
-.tg-legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .tg-sheet h2{margin:0 0 4px}
 .tg-sec{border-top:1px solid var(--line);padding:14px 0 10px;margin-top:10px}
 .tg-sec.focus .tg-sec-h{color:var(--accent)}
@@ -70,23 +63,25 @@ const CSS = `
 .tg-xtab{overflow-x:auto;margin-top:8px}.tg-xtab table{width:100%;border-collapse:collapse;font-size:12px}
 .tg-xtab th{text-align:left;color:var(--muted);font-weight:650;padding:4px 6px;border-bottom:1px solid var(--line)}
 .tg-xtab td{padding:5px 6px;border-bottom:1px solid var(--line);vertical-align:top}
-.tg-xtab tr.toward td b{color:var(--warn)}.tg-xtab tr.under td b{color:var(--bad)}.tg-xtab tr.over td b{color:var(--accent2)}.tg-xtab tr.ok td b{color:var(--good)}
-.tgb{margin:8px 0 10px}.tgb-top{display:flex;justify-content:space-between;font-size:13px;font-weight:650;margin-bottom:4px}
-.tgb-track{position:relative;height:8px;border-radius:4px;background:var(--card2)}
-.tgb-track i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--good)}
-.tgb.under .tgb-track i{background:var(--bad)}.tgb.toward .tgb-track i{background:var(--warn)}.tgb.over .tgb-track i{background:var(--accent2)}
-.tgb.under .tgb-top b{color:var(--bad)}.tgb.toward .tgb-top b{color:var(--warn)}.tgb.over .tgb-top b{color:var(--accent2)}
-.tgb-track .tk{position:absolute;top:-3px;bottom:-3px;width:2px;border-radius:1px}
-.tgb-track .tk.min{background:var(--text);opacity:.55}.tgb-track .tk.tgt{border-left:2px dashed var(--accent2);width:0}.tgb-track .tk.max{background:var(--muted);opacity:.5;width:3px}
-.pl-bar-row.toward .pl-track i.d{background:var(--warn)}.pl-bar-row.toward .pl-bar-top .num b{color:var(--warn)}
-.pl-bar-row.under .pl-track i.d{background:var(--bad)}.pl-bar-row.under .pl-bar-top .num b{color:var(--bad)}
-.pl-bar-row.over .pl-track i.d{background:var(--accent2)}
-.pl-track .tick.max{background:var(--muted);opacity:.5;width:3px}
+.tg-xtab tr.over td b{color:var(--warn)}.tg-xtab tr.ok td b{color:var(--good)}
+.wk-legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:11.5px;color:var(--muted);font-weight:600;margin:2px 0 10px}
+.wk-legend span{display:inline-flex;align-items:center;gap:5px}.wk-legend i{display:inline-block;width:14px;height:8px;border-radius:3px}
+.wk-legend i.d,.wk-track i.d{background:var(--accent)}.wk-legend i.p,.wk-track i.p{background:var(--accent);opacity:.38}.wk-legend b.ok{color:var(--good)}
+.wk-rows{display:flex;flex-direction:column;gap:11px}
+.wk-row{font-size:13px}
+.wk-top{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:2px 10px;margin-bottom:5px}
+.wk-name{font-weight:700}
+.wk-num{font-size:12px;color:var(--muted);font-weight:600;white-space:nowrap}.wk-num b.d{color:var(--text);font-size:13.5px;font-weight:800}.wk-num .p,.wk-num .t{color:var(--text)}
+.wk-track{position:relative;height:10px;border-radius:5px;background:var(--card2);overflow:hidden}
+.wk-track i{position:absolute;left:0;top:0;bottom:0;border-radius:5px}
+.wk-row.hit .wk-track i.d,.wk-row.hit .wk-track i.p{background:var(--good)}.wk-row.hit .wk-num b.d{color:var(--good)}
+.wk-row.sub{padding-left:14px}.wk-row.sub .wk-name{font-size:12px;color:var(--muted);font-weight:650}.wk-row.sub .wk-track{height:7px}
+.wk-warn{color:var(--warn);font-size:11.5px;margin-top:4px;line-height:1.35}
+.wk-maxd{margin-top:3px}.wk-maxd summary{cursor:pointer}
+.wk-tracked{margin-top:8px}
+.wk-prio{font-size:10.5px;font-weight:700;color:var(--accent2);border:1px solid rgba(255,182,72,.45);border-radius:999px;padding:0 6px;vertical-align:1px;text-transform:none;letter-spacing:0}
+.wk-row.cardio{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
 .tg-unit{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
-.pl-track .tick.tgt,.pl-legend i.t.tgt{background:none;border-left:2px dashed var(--accent2);width:0}
-.pl-legend i.t.tgt{display:inline-block;height:10px}
-.pl-sub .pl-bar-top span:first-child{padding-left:14px;font-size:12px;color:var(--muted)}
-.pl-below-tgt .pl-track i.d{background:var(--warn)}
 .pl-cstyle{display:flex;align-items:center;gap:8px;margin-top:10px}.pl-cstyle .tabs{flex:1;margin:0}
 .pl-ext{background:var(--card2);border:1px solid var(--accent);color:var(--accent);font-weight:750;border-radius:999px;padding:1px 7px;font-size:11px;margin-left:6px;cursor:pointer}
 .pl-mins{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;font-size:13px}
@@ -210,8 +205,9 @@ export function openMakeRoomSheet(ctx) {
 }
 
 // ---------------------------------------------------------------- weekly sets vs TARGET
-// Band of a weekly set count: < min 'under' (red) · min…target 'toward' (amber) · target…max 'ok'
-// (green) · > max 'over' (orange). t = { min, target, max } (target falls back to min).
+// Band of a weekly set count: < min 'under' · min…target 'toward' · target…max 'ok' · > max 'over'.
+// t = { min, target, max } (target falls back to min). Engine status and the Why table use it; the bars
+// below no longer colour by band.
 export function setsBand(sets, t = {}) {
   const min = Number(t.min) || 0, target = Number(t.target ?? t.min) || 0, max = Number(t.max) || Math.max(target, min) || 0;
   if (max && sets > max + 0.25) return 'over';
@@ -220,18 +216,55 @@ export function setsBand(sets, t = {}) {
   return 'ok';
 }
 export const BAND_LABEL = { under: 'below minimum', toward: 'toward target', ok: 'on target', over: 'over max' };
-// Bar comparing weekly sets with the target: fill coloured by band, solid tick = minimum, dashed tick =
-// target, end marker = max (in the tooltip too). Text reads "14 / 15 target".
-export function targetBar(label, sets, t = {}, { sub = '' } = {}) {
+
+// One weekly row, the SAME on every screen that shows weekly sets vs target: Plan, Body, a muscle's
+// sheet, the workout summary (Bob 2026-10-24: "any screen where they're showing weekly sets versus
+// target, I want it all to be the same"). The track's full width IS the target. Faded fill = this
+// week's plan (done + still to do), solid fill = done, and the solid fill turns green once done reaches
+// the target. Three numbers: done · planned · target. No ticks, no stars, no band colours; a plan past
+// the weekly max adds one warning line. r = { done, total, target, max }, total = done + still planned.
+export const WEEK_HIT_EPS = 0.05;   // 14.96 prints as "15" (fmtSets), so it counts as hit
+export function weekRow(label, r = {}, { unit = 'sets', id = '', sub = false, note = '', cls = '', title = '' } = {}) {
   ensureStyles();
-  const min = Number(t.min) || 0, target = Number(t.target ?? t.min) || 0, max = Number(t.max) || Math.max(target, min, 1);
-  const band = setsBand(sets, t), scale = Math.max(max, sets, 1);
-  const pct = v => Math.min(100, (v / scale) * 100);
-  const f = fmtSets;   // §18: one set-count formatter for every screen (targets.fmtSets)
-  return `<div class="tgb ${band}" title="${esc(`${label}: ${f(sets)} sets · min ${f(min)} · target ${f(target)} · max ${f(max)} (${BAND_LABEL[band]})`)}">
-    <div class="tgb-top"><span>${esc(label)}</span><span class="num"><b>${f(sets)}</b><span class="muted"> / ${f(target)} target</span></span></div>
-    <div class="tgb-track"><i style="width:${pct(sets)}%"></i>${min > 0 ? `<span class="tk min" style="left:${pct(min)}%"></span>` : ''}<span class="tk tgt" style="left:${pct(target)}%"></span><span class="tk max" style="left:${pct(max)}%"></span></div>
-    ${sub ? `<div class="tiny muted">${sub}</div>` : ''}</div>`;
+  const done = Math.max(0, Number(r.done) || 0), total = Math.max(done, Number(r.total) || 0);
+  const target = Math.max(0, Number(r.target) || 0), max = Number(r.max) || 0;
+  const f = unit === 'min' ? (v => `${Math.round(v).toLocaleString()}′`) : fmtSets;
+  const pct = v => (target > 0 ? Math.min(100, (v / target) * 100) : v > 0 ? 100 : 0);
+  const hit = target > 0 && done >= target - WEEK_HIT_EPS;
+  const over = unit === 'sets' && max > 0 && total > max + 0.25;
+  return `<div class="wk-row${hit ? ' hit' : ''}${sub ? ' sub' : ''}${over ? ' over' : ''}${cls ? ' ' + cls : ''}"${id ? ` data-unit="${esc(id)}"` : ''} data-done="${fmtNum1(done)}" data-total="${fmtNum1(total)}" data-target="${fmtNum1(target)}"${title ? ` title="${esc(title)}"` : ''}>
+    <div class="wk-top"><span class="wk-name">${esc(label)}</span><span class="wk-num num"><b class="d">${hit ? '✓ ' : ''}${f(done)}</b> done · <span class="p">${f(total)}</span> planned · <span class="t">${target > 0 ? f(target) : 'no'}</span> target</span></div>
+    <div class="wk-track" role="img" aria-label="${esc(`${label}: ${f(done)} done, ${f(total)} planned, target ${f(target)}`)}"><i class="p" style="width:${pct(total).toFixed(1)}%"></i><i class="d" style="width:${pct(done).toFixed(1)}%"></i></div>
+    ${over ? `<div class="wk-warn">Planned past the ${f(max)}-set weekly max: past it, extra sets add fatigue, not growth.</div>` : ''}${note}
+  </div>`;
+}
+const fmtNum1 = v => String(Math.round((Number(v) || 0) * 10) / 10);
+export function weekLegendHTML() {
+  ensureStyles();
+  return `<div class="wk-legend"><span><i class="d"></i>Done</span><span><i class="p"></i>Planned (incl. done)</span><span>Full bar = target · <b class="ok">green</b> = hit</span></div>`;
+}
+const shortUnitName = n => String(n || '').replace(/ \(.*\)$/, '');
+// The week's per-muscle rows from planner.weekPlanSummary (the one counter, CONTRACT §18). opts.only =
+// unit ids to show (the workout summary shows the muscles it trained); the full card adds the tracked line.
+export function weeklySetsHTML(sum, profile, { only = null, legend = true } = {}) {
+  ensureStyles();
+  const units = sum && sum.units && typeof sum.units === 'object' ? sum.units : {};
+  const ids = UNIT_ORDER.filter(u => units[u] && (units[u].min > 0 || units[u].target > 0) && (!only || only.includes(u)));
+  if (!ids.length) return '';
+  const U = safe(() => unitTargets(profile || {}), {});
+  const rows = ids.map(u => {
+    const x = units[u];
+    const n = U[u] && safe(() => maxNote(u, U[u]), null);
+    const note = n && n.atMax ? `<details class="wk-maxd"><summary class="tiny muted">Target at the max of ${fmtSets(x.max)}${n.capped ? ` (your settings ask ${fmtSets(n.asked)})` : ''} · why ⓘ</summary><div class="tiny muted">${esc(n.text)}</div></details>` : '';
+    return weekRow(shortUnitName(x.name), { done: x.done, total: x.total, target: x.target || x.min, max: x.max }, { id: u, sub: !!x.sub, note,
+      title: `${x.name}: ${fmtSets(x.done)} done · ${fmtSets(x.total)} planned · target ${fmtSets(x.target)} · min ${fmtSets(x.min)} · max ${fmtSets(x.max)}` });
+  }).join('');
+  const tracked = only ? '' : UNIT_ORDER.filter(u => units[u] && !(units[u].min > 0 || units[u].target > 0)).map(u => `${shortUnitName(units[u].name)} ${fmtSets(units[u].total)}`).join(' · ');
+  return `${legend ? weekLegendHTML() : ''}<div class="wk-rows">${rows}</div>${tracked ? `<div class="tiny muted wk-tracked">Tracked, not counted: ${esc(tracked)}</div>` : ''}`;
+}
+// This calendar week's summary (Mon-Sun, logged + still planned) for screens that don't already hold one.
+export function weekSummaryFor(sessions, profile, { weekStart: ws = null, now = new Date() } = {}) {
+  return safe(() => weekPlanSummary(sessions || [], { weekStart: ws || weekStart(now), profile: profile || {}, now }), null);
 }
 
 // ---------------------------------------------------------------- weekly minimums sheets
@@ -278,12 +311,12 @@ export function openMinimumsInfo(ctx) {
     <p class="tiny muted">Switch the floors back to "Grow" in Targets → Adherence &amp; goal, or pick any goal other than Lose weight, and the evidence floors come straight back.</p></div>` : '';
   const deriv = x => `${x.base}${x.slider !== 1 ? ` × ${x.slider} (slider)` : ''}${x.extra ? ` + ${x.extra} (sculpt goals)` : ''}${x.base * x.slider + x.extra > x.max + 0.05 ? `, capped at ${x.max}` : ''}`;
   ctx.openSheet(`<div class="tg-sheet"><h2>Why these numbers?</h2>
-    <p class="muted small">Weekly sets are compared with your <b>target</b>. Each muscle also has a <b>minimum</b> (the evidence floor, always planned) and a <b>max</b> Forge never plans past. The max is a ceiling on what the body can use and is the same whatever your priorities: 20 sets a week for most muscles (the top of the 12-20 range; more than 20 added nothing for biceps or quads, Baz-Valle et al. 2022), 24 for triceps (more than 20 helped them) and side delts, 22 for back (two muscles), 10 for lower back (fatigue guard). Priorities, sliders and sculpt goals move only the target, so a muscle you prioritize can sit at its max while its slider keeps rising: past the max, studies found extra sets add fatigue, not growth. ${esc(STAR_LEGEND)}.</p>
+    <p class="muted small">Weekly sets are compared with your <b>target</b>. Each muscle also has a <b>minimum</b> (the evidence floor, always planned) and a <b>max</b> Forge never plans past. The max is a ceiling on what the body can use and is the same whatever your priorities: 20 sets a week for most muscles (the top of the 12-20 range; more than 20 added nothing for biceps or quads, Baz-Valle et al. 2022), 24 for triceps (more than 20 helped them) and side delts, 22 for back (two muscles), 10 for lower back (fatigue guard). Priorities, sliders and sculpt goals move only the target, so a muscle you prioritize can sit at its max while its slider keeps rising: past the max, studies found extra sets add fatigue, not growth. ${esc(PRIORITY_LEGEND)}.</p>
     ${belowFloor}
     ${table}
     <div class="label mt">Each muscle</div>
-    <div class="tg-units">${rows.map(([id, x]) => `<div class="tg-unit"><div class="row between"><b>${stars.has(id) ? '<span class="star">★</span> ' : ''}${esc(x.name)}</b><span class="num small">target <b>${x.target}</b> · min ${x.min} · max ${x.max}</span></div>
-      <div class="tiny muted">Floor ${x.min}${x.growthMin != null && x.growthMin !== x.min ? ` <span style="color:var(--warn)">(growth floor ${x.growthMin}, lowered on purpose)</span>` : ''}: ${esc(FLOOR_WHY[x.tier] || FLOOR_WHY.normal)}. Target = ${esc(deriv(x))}. Max ${esc(MAX_WHY[id] || String(x.max))}.${stars.has(id) ? ` ★ ${esc(starWhy(x))}.` : ''}${(() => { const n = maxNote(id, x); return n && n.atMax ? ` <b>${n.capped ? `Your settings ask ${f(n.asked)}, but the target stops at the max.` : 'At the max: raising the slider adds no sets.'}</b>` : ''; })()}</div></div>`).join('')}</div>
+    <div class="tg-units">${rows.map(([id, x]) => `<div class="tg-unit"><div class="row between"><b>${esc(x.name)}${stars.has(id) ? ' <span class="wk-prio">priority</span>' : ''}</b><span class="num small">target <b>${x.target}</b> · min ${x.min} · max ${x.max}</span></div>
+      <div class="tiny muted">Floor ${x.min}${x.growthMin != null && x.growthMin !== x.min ? ` <span style="color:var(--warn)">(growth floor ${x.growthMin}, lowered on purpose)</span>` : ''}: ${esc(FLOOR_WHY[x.tier] || FLOOR_WHY.normal)}. Target = ${esc(deriv(x))}. Max ${esc(MAX_WHY[id] || String(x.max))}.${stars.has(id) ? ` Priority: ${esc(starWhy(x))}.` : ''}${(() => { const n = maxNote(id, x); return n && n.atMax ? ` <b>${n.capped ? `Your settings ask ${f(n.asked)}, but the target stops at the max.` : 'At the max: raising the slider adds no sets.'}</b>` : ''; })()}</div></div>`).join('')}</div>
     ${tracked ? `<p class="tiny muted">${esc(tracked)}: tracked, not counted (pressing covers front delts; traps and lower back don't count toward back).</p>` : ''}
     <div class="label mt">The evidence</div>
     <ul class="tip-list mt">${MINIMUMS_EVIDENCE.map(e => `<li>${esc(e.claim)} <span class="tiny muted">(${esc(e.source)})</span></li>`).join('')}</ul>
@@ -372,7 +405,6 @@ export function cardioTargetHTML(ctx) {
   const t = resolveTargets(p, { sessions });
   const w = t.cardio.week;
   const target = t.cardio.minPerWeek;
-  const scale = Math.max(target, w.total, 1);
   const left = Math.max(0, target - w.done);
   return `<div class="card tg-cardio" data-tg-cardio>
     <div class="row between"><div class="card-title">🫀 Weekly cardio target</div><button type="button" class="link small" data-tg-plan>Plan ›</button></div>
@@ -383,8 +415,7 @@ export function cardioTargetHTML(ctx) {
     <div class="chips tg-chips">${CARDIO_CHIPS.map(v => `<button type="button" class="chip sm ${v === target ? 'active' : ''}" data-tg-cset="${v}">${v}</button>`).join('')}</div>
     <div class="tabs tg-seg" role="group" aria-label="Cardio style">${CARDIO_STYLES.map(v => `<button type="button" class="${v === t.cardio.style ? 'active' : ''}" data-tg-cstyle="${v}">${esc(CARDIO_STYLE_NAMES[v])}</button>`).join('')}</div>
     <p class="tiny muted" style="margin:-2px 0 10px">${esc(CARDIO_STYLE_WHY)}</p>
-    <div class="tg-track" aria-hidden="true"><i class="d" style="width:${(w.done / scale) * 100}%"></i><i class="p" style="left:${(w.done / scale) * 100}%;width:${(w.planned / scale) * 100}%"></i><span class="tick" style="left:${(target / scale) * 100}%"></span></div>
-    <div class="tg-legend small"><span><i class="d"></i>${w.done} done</span><span><i class="p"></i>${w.planned} planned</span><span class="muted">target ${target} · this week</span></div>
+    ${weekRow('This week', { done: w.done, total: w.total, target }, { unit: 'min' })}
     <p class="small muted" style="margin:8px 0 0">${target === 0 ? 'No cardio target: the planner leans toward lifting.' : w.total >= target ? 'This week\'s plan covers your target.' : `${left} min to go this week${w.planned ? `, ${Math.max(0, target - w.total)} not planned yet` : ''}.`}</p>
     ${safe(() => makeRoomHTML(ctx), '')}
   </div>`;

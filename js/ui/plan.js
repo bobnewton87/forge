@@ -29,8 +29,8 @@ import { summarize, detailSheet } from './history.js';
 //   inside the retro window; already-logged lines keep opening the session detail sheet, which can
 //   edit or delete them. Nothing else about past days changed.
 import { openRetroSheet, canLogPast } from './retro.js';
-import { setTargets, targetsSummaryHTML, bindTargetsSummary, makeRoomHTML, bindMakeRoom, extendedToast, openMinimumsInfo, openVolumeRoomSheet, openExtendSheet, openHitTargetsSheet } from './targets.js';
-import { resolveTargets, volumePolicyOf, CARDIO_STYLES, CARDIO_STYLE_NAMES, starredUnits, unitTargets, maxNote, STAR_LEGEND, fmtSets } from '../engine/targets.js';
+import { setTargets, targetsSummaryHTML, bindTargetsSummary, makeRoomHTML, bindMakeRoom, extendedToast, openMinimumsInfo, openVolumeRoomSheet, openExtendSheet, openHitTargetsSheet, weeklySetsHTML, weekRow } from './targets.js';
+import { resolveTargets, volumePolicyOf, CARDIO_STYLES, CARDIO_STYLE_NAMES, fmtSets } from '../engine/targets.js';
 import { UNIT_ORDER } from '../data/muscles.js';
 import { styleChipsHTML } from './styles.js';
 import { resolveStyle } from '../engine/generator.js';
@@ -254,28 +254,11 @@ function summaryCard(sessions, profile, ws, roomLine = '') {
   if (!ids.length) {
     return `${head}<div class="card pl-sum"><div class="empty" style="padding:18px 10px"><p>Plan your week to see how it covers your muscle and cardio targets.</p></div></div>`;
   }
-  // One row per enforcement unit (weekly-volume audit): bar = done + planned, solid tick = minimum
-  // (evidence floor), dashed tick = your target. Tracked-only muscles go in a muted line.
-  const stars = safe(() => starredUnits(profile), new Set());
-  const U = safe(() => unitTargets(profile), {});
-  const rows = ids.map(u => {
-    const x = units[u];
-    const done = Number(x.done) || 0, planned = Number(x.planned) || 0, total = Number(x.total) || 0;
-    const scale = Math.max(x.max, total, 1);
-    const st = x.status || 'ok';   // under (red) · toward (amber) · ok (green) · over (orange), vs target
-    return `<div class="pl-bar-row ${st}${x.sub ? ' pl-sub' : ''}" title="${esc(`${x.name}: ${fmtSets(total)} sets · min ${fmtSets(x.min)} · target ${fmtSets(x.target)} · max ${fmtSets(x.max)}`)}">
-      <div class="pl-bar-top"><span>${stars.has(u) ? '<span class="star">★</span> ' : ''}${esc(x.name)}</span>
-        <span class="num"><b>${fmtSets(total)}</b><span class="muted"> / ${fmtSets(x.target)} target</span></span></div>
-      <div class="pl-track"><i class="d" style="width:${(done / scale) * 100}%"></i><i class="p" style="left:${(done / scale) * 100}%;width:${(planned / scale) * 100}%"></i>
-        ${x.min > 0 ? `<span class="tick" style="left:${(x.min / scale) * 100}%"></span>` : ''}<span class="tick tgt" style="left:${(x.target / scale) * 100}%"></span><span class="tick max" style="left:${(x.max / scale) * 100 - 0.5}%"></span></div>
-      ${(() => { const n = U[u] && maxNote(u, U[u]); return n && n.atMax ? `<details class="pl-maxd"><summary class="tiny muted">Target at the max of ${x.max}${n.capped ? ` (your settings ask ${fmtNum(n.asked, 1)})` : ''} · why ⓘ</summary><div class="tiny muted">${esc(n.text)}</div></details>` : ''; })()}
-    </div>`;
-  }).join('');
-  const tracked = UNIT_ORDER.filter(u => units[u] && !(units[u].min > 0 || units[u].target > 0)).map(u => `${units[u].name} ${fmtSets(units[u].total)}`).join(' · ');
+  // The shared weekly rows (targets.weeklySetsHTML): the same component as Body, a muscle's sheet and
+  // the workout summary. Bar = target; faded = planned (done included), solid = done, green once hit.
   const tgt = resolveTargets(profile).cardio.minPerWeek;
   const cm = sum.cardioMinutes && typeof sum.cardioMinutes === 'object' ? sum.cardioMinutes : { done: Number(sum.cardioMinutes) || 0, planned: 0, target: tgt };
   const ctarget = Number.isFinite(Number(cm.target)) ? Number(cm.target) : tgt;
-  const cscale = Math.max(ctarget, (cm.done || 0) + (cm.planned || 0), 1);
   const score = Math.round(Number(sum.score));
   const sc = isNaN(score) ? null : score;
   const scol = sc == null ? 'var(--muted)' : sc >= 80 ? 'var(--good)' : sc >= 55 ? 'var(--warn)' : 'var(--bad)';
@@ -294,14 +277,8 @@ function summaryCard(sessions, profile, ws, roomLine = '') {
   return `${head}<div class="card pl-sum">
     <div class="pl-sum-head">${ring}<div class="grow"><div class="card-title">${sc == null ? 'This week' : sc >= 80 ? 'Well covered' : sc >= 55 ? 'Mostly covered' : 'Gaps to fill'}</div>
       <div class="muted small">${Number(ss.done) || 0} done · ${Number(ss.planned) || 0} planned${sc != null ? ' · coverage score' : ''}</div></div></div>
-    <div class="pl-legend"><span><i class="d"></i>Done</span><span><i class="p"></i>Planned</span><span><i class="t tgt"></i>Target</span><span><i class="t"></i>Min</span><span class="muted">bar end = max</span></div>
-    <div class="tiny muted" style="margin:-2px 0 6px">${esc(STAR_LEGEND)}</div>
-    <div class="pl-bars">${rows}</div>
-    ${tracked ? `<div class="tiny muted" style="margin-top:6px">Tracked, not counted: ${esc(tracked)}</div>` : ''}
-    <div class="pl-bar-row cardio">
-      <div class="pl-bar-top"><span>🏃 Cardio</span><span class="num"><b>${fmtNum((cm.done || 0) + (cm.planned || 0), 0)}</b><span class="muted">/${ctarget} min</span></span></div>
-      <div class="pl-track"><i class="d" style="width:${((cm.done || 0) / cscale) * 100}%"></i><i class="p" style="left:${((cm.done || 0) / cscale) * 100}%;width:${((cm.planned || 0) / cscale) * 100}%"></i><span class="tick" style="left:${(ctarget / cscale) * 100}%"></span></div>
-    </div>
+    ${weeklySetsHTML(sum, profile)}
+    ${weekRow('🏃 Cardio', { done: cm.done || 0, total: (cm.done || 0) + (cm.planned || 0), target: ctarget }, { unit: 'min', cls: 'cardio' })}
     <div class="pl-ctarget"><span class="muted small">Weekly cardio target</span>
       <span class="pl-step" role="group" aria-label="Weekly cardio target"><button type="button" data-a="ct-dec" aria-label="Lower cardio target" ${ctarget <= 0 ? 'disabled' : ''}>−</button><b>${ctarget}′</b><button type="button" data-a="ct-inc" aria-label="Raise cardio target" ${ctarget >= 900 ? 'disabled' : ''}>+</button></span></div>
     ${cardioStyleSeg(profile)}
