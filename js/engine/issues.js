@@ -12,6 +12,12 @@
 //   targets.applyTargetChange({ issues: patch }) → applyIssuePatch here. Exports: AREAS, AREA_ORDER,
 //   SEVERITIES, SEVERITY_ORDER, SAFETY_LINE, NOT_A_CLINICIAN, CHECK_DAYS, normalizeIssue, activeIssues,
 //   issueKey, issueLabel, applyIssuePatch, needsCheck, issueTier, issueEffects, issueFilter, areaOptionsFor.
+// CONTRACT-NOTE (§26.4, 2026-10-24): SIDE. A one-sided issue on a limb (shoulder / elbow / wrist / hip / knee /
+//   ankle, or the muscle groups in LIMB_GROUPS) keeps the severity rules for bilateral moves, but a one-limb
+//   move it would exclude or penalise (oneSideLimb(ex) matches the issue's limb) is kept as "healthy side
+//   only": issueFilter().side maps exId → 'left'|'right', the generator writes block.sideOnly, and each such
+//   set counts SIDE_ONLY_CREDIT (0.5) toward weekly volume. Extra exports: LIMB_GROUPS, SIDE_ONLY_CREDIT,
+//   SIDE_ONLY_INFO, issueLimb, isLateral, oneSideLimb, sideOnlyLabel, effectiveTier, applySides.
 import { GROUPS } from '../data/muscles.js';
 import { EXERCISES, getEx } from '../data/exercises.js';
 import { stressOf, muscleStress, AREAS_STRESS } from '../data/stress.js';
@@ -30,6 +36,51 @@ export const AREAS = {
 };
 export const AREA_ORDER = ['shoulder', 'elbow', 'wrist', 'neck', 'upper_back', 'lower_back', 'hip', 'knee', 'ankle', 'muscle'];
 export const SIDES = ['left', 'right', 'both'];
+
+// ---------------------------------------------------------------- side (§26.4)
+// Which limb an area or a muscle group belongs to. Only these have a left and a right that a one-limb
+// move can spare; neck, back, chest and core issues ignore the side.
+const ARM_AREAS = new Set(['shoulder', 'elbow', 'wrist']), LEG_AREAS = new Set(['hip', 'knee', 'ankle']);
+export const LIMB_GROUPS = { shoulders: 'arm', biceps: 'arm', triceps: 'arm', forearms: 'arm', quads: 'leg', hamstrings: 'leg', glutes: 'leg', calves: 'leg' };
+export function isLateral(x) { return !!x && (ARM_AREAS.has(x.area) || LEG_AREAS.has(x.area) || (x.area === 'muscle' && !!LIMB_GROUPS[x.group])); }
+// 'arm' | 'leg' for a one-sided issue on a limb, else null (side 'both', or an area with no sides).
+export function issueLimb(x) {
+  if (!x || (x.side !== 'left' && x.side !== 'right')) return null;
+  return ARM_AREAS.has(x.area) ? 'arm' : LEG_AREAS.has(x.area) ? 'leg' : x.area === 'muscle' ? LIMB_GROUPS[x.group] || null : null;
+}
+// A one-limb move whose OTHER limb is genuinely unloaded → 'arm' | 'leg', else null. Derived from the
+// exercise's own `unilateral` flag and pattern: one-arm DB / cable / machine work counts, unless the free
+// hand braces or bears weight (a bench-supported row, a kickback off a bench, holding a post to lean
+// away, an archer push-up); for legs only seated or lying one-leg machine-style work counts (leg press,
+// leg extension, leg curl, and their band versions done seated / lying). Split squats, lunges, step-ups,
+// single-leg RDLs, hip thrusts, standing calf raises and standing cable kickbacks do not: the other leg
+// is the stance leg or held up under load.
+const ARM_PATTERNS = new Set(['horizontal_push', 'horizontal_pull', 'vertical_push', 'vertical_pull', 'fly', 'lateral_raise', 'rear_delt', 'elbow_flexion', 'elbow_extension', 'wrist', 'carry', 'shrug']);
+const BRACED = new Set(['db_row', 'kroc_row', 'db_lat_row', 'kb_row', 'kb_gorilla_row', 'meadows_row', 'door_row', 'db_kickback', 'pushup_archer', 'db_lateral_lean', 'cable_egyptian', 'wall_lateral_iso']);
+export function oneSideLimb(ex) {
+  if (!ex || !ex.unilateral || BRACED.has(ex.id)) return null;
+  if (ARM_PATTERNS.has(ex.pattern)) return 'arm';
+  const eq = ex.equipment || [];
+  if (['squat', 'knee_extension', 'knee_flexion'].includes(ex.pattern) && (eq.some(q => q === 'leg_press' || q === 'leg_ext' || q === 'leg_curl') || /^band_leg_(ext|curl)$/.test(ex.id))) return 'leg';
+  return null;
+}
+// Weekly volume credit of a healthy-side-only set: one side of the pair. A convention, not a measurement.
+export const SIDE_ONLY_CREDIT = 0.5;
+// Verified against the PubMed records (abstracts) of both sources, 2026-10-24.
+export const SIDE_ONLY_INFO = {
+  credit: 'Counts as half a set for the week: one side of the pair (a convention).',
+  crossEd: 'Training the free side may help the other side hold its strength (cross-education): in small studies a casted wrist kept its strength when the free arm trained. That is strength, not muscle size, and it was tested on casts, not injuries.',
+  evidence: [
+    { claim: 'Wrist in a cast for 3 weeks (10 per group): when the free arm trained, the casted arm kept its strength (13.9 to 14.2 N·m); with the cast alone it fell (12.2 to 10.4 N·m).', source: 'Farthing, Krentz & Magnus 2009, J Appl Physiol 106:830, doi:10.1152/japplphysiol.91331.2008' },
+    { claim: 'Across 31 randomized trials (785 people), training one limb raised the untrained limb\u2019s strength 11.9% on average, with a high risk of bias across the studies.', source: 'Manca et al. 2017, Eur J Appl Physiol 117:2335, doi:10.1007/s00421-017-3720-z' },
+  ],
+  cite: 'cross-education: Farthing 2009, Manca 2017',
+};
+// "Right arm only" for a block (or an exercise + side).
+export function sideOnlyLabel(side, ex) {
+  if (side !== 'left' && side !== 'right') return '';
+  return `${side === 'left' ? 'Left' : 'Right'} ${oneSideLimb(ex) || 'side'} only`;
+}
 
 // exclude: the lowest stress tier that is dropped; penalty: tier → score multiplier for what stays.
 export const SEVERITIES = {
@@ -55,7 +106,8 @@ export function normalizeIssue(x) {
   const out = {
     id: typeof x.id === 'string' && /^is_[A-Za-z0-9_]{1,40}$/.test(x.id) ? x.id : null,
     area: x.area,
-    side: AREAS[x.area].sided && SIDES.includes(x.side) ? x.side : 'both',
+    // a side only means something where there is a left and a right (a muscle issue: limb groups only)
+    side: AREAS[x.area].sided && (x.area !== 'muscle' || LIMB_GROUPS[x.group]) && SIDES.includes(x.side) ? x.side : 'both',
     severity: SEVERITIES[x.severity] ? x.severity : 'mild',
     started: isDs(x.started) ? x.started : null,
     note: String(x.note ?? '').replace(/\s+/g, ' ').trim().slice(0, 200),
@@ -74,8 +126,8 @@ export function activeIssues(profile, today = new Date()) {
     .sort((a, b) => (a.started || '').localeCompare(b.started || '') || a.id.localeCompare(b.id));
 }
 
-// What changes the plan (the planner re-plans when this changes): area, muscle, severity.
-export function issueKey(x) { return `${x.id}|${x.area}|${x.group || ''}|${x.severity}`; }
+// What changes the plan (the planner re-plans when this changes): area, muscle, side, severity.
+export function issueKey(x) { return `${x.id}|${x.area}|${x.group || ''}|${x.side || 'both'}|${x.severity}`; }
 
 // "Left elbow", "Lower back", "Biceps (right)".
 export function issueLabel(x) {
@@ -132,34 +184,73 @@ export function issueTier(ex, issue) {
   return issue.area === 'muscle' ? muscleStress(ex, issue.group) : (stressOf(ex)[issue.area] || 0);
 }
 
-// What the active issues do to one exercise: { blocked: Issue|null, penalty: 0..1, by: Issue|null }.
+// What the active issues do to one exercise: { blocked: Issue|null, penalty: 0..1, by: Issue|null,
+// side: 'left'|'right'|null, sideBy: [Issue] }. A one-limb move that a one-sided limb issue would exclude
+// or penalise is kept for the healthy side instead (`side`); two issues that leave no healthy side block it.
 export function issueEffects(ex, issues = []) {
-  let blocked = null, penalty = 1, by = null;
+  let blocked = null, penalty = 1, by = null, side = null;
+  const sideBy = [], limb = oneSideLimb(ex);
+  const block = x => { if (!blocked || SEVERITY_ORDER.indexOf(x.severity) > SEVERITY_ORDER.indexOf(blocked.severity)) blocked = x; };
   for (const x of issues) {
     const tier = issueTier(ex, x), sev = SEVERITIES[x.severity] || SEVERITIES.mild;
-    if (tier >= sev.exclude) { if (!blocked || SEVERITY_ORDER.indexOf(x.severity) > SEVERITY_ORDER.indexOf(blocked.severity)) blocked = x; continue; }
+    const hit = tier >= sev.exclude ? 'block' : sev.penalty[tier] ? 'penalty' : null;
+    if (!hit) continue;
+    if (limb && issueLimb(x) === limb) {
+      const healthy = x.side === 'left' ? 'right' : 'left';
+      if (side && side !== healthy) block(x); else { side = healthy; sideBy.push(x); }
+      continue;
+    }
+    if (hit === 'block') { block(x); continue; }
     const p = sev.penalty[tier];
-    if (p && p < penalty) { penalty = p; by = x; }
+    if (p < penalty) { penalty = p; by = x; }
   }
-  return { blocked, penalty, by };
+  if (blocked) side = null;
+  return { blocked, penalty, by, side, sideBy };
+}
+// How hard `ex` loads the issue's area FOR THE SORE SIDE: 0 when it is kept healthy-side only.
+export function effectiveTier(ex, issue) {
+  const r = issueEffects(ex, [issue]);
+  return r.side ? 0 : issueTier(ex, issue);
 }
 
 // The whole library at once (memoized per issue set): { blocked:Set<exId>, penalty:Map<exId,mult>,
-// why(exId) → Issue|null, any:boolean }. Every engine and UI that picks exercises reads this.
+// side:Map<exId,'left'|'right'>, why(exId) → Issue|null, any:boolean }. Every engine and UI that picks
+// exercises reads this.
 const filterCache = new Map();
 export function issueFilter(issues = []) {
   const list = (issues || []).filter(Boolean);
   const key = list.map(issueKey).join(',');
   if (filterCache.has(key)) return filterCache.get(key);
-  const blocked = new Set(), penalty = new Map(), why = new Map();
+  const blocked = new Set(), penalty = new Map(), side = new Map(), why = new Map();
   if (list.length) for (const e of EXERCISES) {
     const r = issueEffects(e, list);
-    if (r.blocked) { blocked.add(e.id); why.set(e.id, r.blocked); } else if (r.penalty < 1) { penalty.set(e.id, r.penalty); why.set(e.id, r.by); }
+    if (r.blocked) { blocked.add(e.id); why.set(e.id, r.blocked); continue; }
+    if (r.side) { side.set(e.id, r.side); why.set(e.id, r.sideBy[0]); }
+    if (r.penalty < 1) { penalty.set(e.id, r.penalty); if (!why.has(e.id)) why.set(e.id, r.by); }
   }
-  const out = { blocked, penalty, why: id => why.get(id) || null, any: list.length > 0, issues: list };
+  const out = { blocked, penalty, side, why: id => why.get(id) || null, any: list.length > 0, issues: list };
   if (filterCache.size > 32) filterCache.clear();
   filterCache.set(key, out);
   return out;
+}
+
+// Set block.sideOnly on every lift block the active issues keep healthy-side only, and clear it where no
+// issue asks for it any more. Pure → a new session. Moves the issues block outright are left as they are
+// (an explicit pick is the user's call).
+export function applySides(session, issues = []) {
+  if (!session || !Array.isArray(session.blocks)) return session;
+  const f = issueFilter(issues);
+  let changed = false;
+  const blocks = session.blocks.map(b => {
+    if (!b || b.kind !== 'lift') return b;
+    const want = f.side.get(b.exId) || null;
+    if ((b.sideOnly || null) === want) return b;
+    changed = true;
+    const nb = { ...b };
+    if (want) nb.sideOnly = want; else delete nb.sideOnly;
+    return nb;
+  });
+  return changed ? { ...session, blocks } : session;
 }
 
 // For the "Hurts" action: the areas this exercise loads, hardest first ([{ area, group?, tier }]),

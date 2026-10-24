@@ -50,7 +50,12 @@ import { recommend, muscleStatus, groupStatus } from './recovery.js';
 import { ds, rng as makeRng, daysBetween, clamp } from '../util.js';
 // generator → targets → generator is the same deliberate cycle recovery already closes; only called at run time.
 import { sessionSetCapOf, starredGroups } from './targets.js';
-import { activeIssues, issueFilter, issueLabel } from './issues.js';
+import { activeIssues, issueFilter, issueLabel, oneSideLimb, SIDE_ONLY_CREDIT } from './issues.js';
+// CONTRACT-NOTE (§26.4): a move an active one-sided limb issue keeps healthy-side only carries
+//   block.sideOnly = 'left'|'right' (one side's work: no ×2 unilateral time, half weekly credit, half its
+//   value to the fitter). groupAvailability(group, { equipment, issues, exclude }) → { status:'ok'|'limited'|
+//   'side'|'out'|'none', total, free, side, blocked, sideOf, by } is the one place that says what an issue
+//   leaves of a muscle group here; buildWorkout and recovery.recommend (Today's cards) both read it.
 
 // ---------------------------------------------------------------- time model constants
 export const TIME = {
@@ -385,7 +390,7 @@ function liftSeconds(blocks) {
     const t = b.target || {};
     const sets = t.sets ?? (b.sets || []).length;
     const reps = t.reps ?? midReps(t);
-    const work = reps * (ex.secPerRep ?? TIME.defaultSecPerRep) * (ex.unilateral ? 2 : 1);
+    const work = reps * (ex.secPerRep ?? TIME.defaultSecPerRep) * (ex.unilateral && !b.sideOnly ? 2 : 1);   // one side only: one side's work
     sec += (ex.setupSec ?? TIME.defaultSetupSec) + sets * (work + (t.rest ?? 60));
   }
   return sec;
@@ -505,9 +510,10 @@ function makeCtx(opts) {
     staples[g] = favFirst.length ? favFirst : (STAPLES[g] || []).filter(id => poolIds.has(id));
   }
   // §26: a mild issue keeps the moves that load its area only moderately, at a strong penalty.
-  const quality = new Map(pool.map(e => [e.id, eqQuality(e, eq) * (IF.penalty.get(e.id) ?? 1)]));
+  // §26.4: a healthy-side-only move is worth half a set for the week, so half its value here too.
+  const quality = new Map(pool.map(e => [e.id, eqQuality(e, eq) * (IF.penalty.get(e.id) ?? 1) * (IF.side.has(e.id) ? SIDE_ONLY_CREDIT : 1)]));
   return { minutes, style, def, profile, sessions, now, eq, weights, pool, recent, favs, activeTags, targetTags,
-    rand: makeRng(seed), cache: new Map(), mstat, req, reqRegions, staples, quality,
+    rand: makeRng(seed), cache: new Map(), mstat, req, reqRegions, staples, quality, side: IF.side,
     setCap: Number.isFinite(setCap) && setCap > 0 ? setCap : Infinity, capHit: false,
     starred: safe(() => starredGroups(profile || {}), new Set()) };
 }
@@ -723,8 +729,12 @@ function materialize(plan, ctx, { equalize = true } = {}) {
     const group = u.length > 1 ? String.fromCharCode(65 + letter++) : null;
     const rest = u.length > 1 ? pairRest(u.map(x => x.ex), ctx.def, ctx.minutes, plan.restScale) : Math.max(20, r5(soloRest(u[0].ex, ctx.def) * plan.restScale));
     const trans = ctx.def.pairing === 'circuit' ? TIME.circuitTransitionSec : TIME.transitionSec;
-    u.forEach((x, j) => blocks.push(liftBlock(x.ex, ctx.def, equalize ? sets : x.sets, (u.length > 1 && j < u.length - 1) ? trans : rest,
-      group, ctx.sessions, ctx.now, ctx.cache)));
+    u.forEach((x, j) => {
+      const b = liftBlock(x.ex, ctx.def, equalize ? sets : x.sets, (u.length > 1 && j < u.length - 1) ? trans : rest, group, ctx.sessions, ctx.now, ctx.cache);
+      const side = x.side || ctx.side?.get(x.ex.id);   // §26.4 healthy side only
+      if (side) b.sideOnly = side;
+      blocks.push(b);
+    });
   }
   return { blocks, units };
 }
@@ -1004,6 +1014,37 @@ export function trimToCap(session, cap, { profile = {}, sessions = [], now = new
   return { session: s, removed };
 }
 
+// What the active issues leave of one muscle group at this equipment (its moves = the moves whose prime
+// mover is that group, as the fitter picks them: no back squats, no conditioning, nothing avoided).
+//   ok      some move trains it on both sides and most moves are untouched
+//   limited some move trains it on both sides, but half or more of its moves are out or one-side only
+//   side    every move left is healthy-side only (sideOf names the side)
+//   out     nothing left
+//   none    no move for it here at all, issues or not
+export function groupAvailability(group, { equipment = null, issues = [], exclude = [] } = {}) {
+  const eq = toEqSet(equipment);
+  const IF = issueFilter(issues || []);
+  const avoid = new Set(exclude || []);
+  const moves = EXERCISES.filter(e => e && e.muscles && primaryGroup(e) === group && !avoid.has(e.id) && !isBackSquat(e) && (!eq || canDo(e, eq)) && e.pattern !== 'conditioning');
+  const free = moves.filter(e => !IF.blocked.has(e.id) && !IF.side.has(e.id));
+  const side = moves.filter(e => IF.side.has(e.id));
+  const blocked = moves.filter(e => IF.blocked.has(e.id));
+  const status = !moves.length ? 'none' : free.length ? (blocked.length + side.length >= moves.length * 0.5 && IF.any ? 'limited' : 'ok') : side.length ? 'side' : 'out';
+  const tally = new Map(); for (const e of [...blocked, ...side]) { const x = IF.why(e.id); if (x) tally.set(x, (tally.get(x) || 0) + 1); }
+  const by = [...tally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+  return { group, status, total: moves.length, free: free.map(e => e.id), side: side.map(e => e.id), blocked: blocked.map(e => e.id),
+    sideOf: side.length ? IF.side.get(side[0].id) : null, limb: side.length ? oneSideLimb(side[0]) : null, by };
+}
+// The sentence a card and a workout both use for a group an issue changes (null when it changes nothing).
+export function availabilityLine(a) {
+  if (!a || !a.by) return null;
+  const who = `${issueLabel(a.by)} (${a.by.severity})`, g = (GROUPS[a.group]?.name || a.group).toLowerCase();
+  if (a.status === 'out') return `${who}: no ${g} move here spares it, so ${g} ${g.endsWith('s') ? 'are' : 'is'} left out`;
+  if (a.status === 'side') return `${who}: ${g} work is ${a.sideOf}-${a.limb} only`;
+  if (a.status === 'limited') return `${who}: fewer ${g} options (${a.free.length} of ${a.total} moves train both sides)`;
+  return null;
+}
+
 // ---------------------------------------------------------------- buildWorkout
 export function buildWorkout({
   targets = [], minutes = 45, location, profile, sessions = [], now = new Date(),
@@ -1045,26 +1086,24 @@ export function buildWorkout({
   //     and the rationale says so (never an empty result without a reason). If nothing requested is
   //     left, its complement groups stand in, and that is said too.
   const issueLines = [];
-  const avoid0 = new Set([...(exclude || []), ...(profile.avoidExercises || [])]);
-  const movesFor = (g, blockedToo) => EXERCISES.filter(e => e && e.muscles && primaryGroup(e) === g && !avoid0.has(e.id) && !isBackSquat(e) && canDo(e, eq)
-    && e.pattern !== 'conditioning' && (blockedToo || !IF.blocked.has(e.id)));
+  const avoid0 = [...(exclude || []), ...(profile.avoidExercises || [])];
+  const avail = g => groupAvailability(g, { equipment: eq, issues, exclude: avoid0 });
   // a group an issue leaves nothing for here is never added as a fill-in either
-  const spared = g => !IF.any || movesFor(g, false).length > 0;
+  const spared = g => !IF.any || !['out'].includes(avail(g).status);
   if (IF.any) {
-    const blockedBy = g => {   // the issue that rules out most of this group's moves
-      const n = new Map(); for (const e of movesFor(g, true)) { const x = IF.why(e.id); if (x) n.set(x, (n.get(x) || 0) + 1); }
-      return [...n.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || issues[0];
-    };
-    const dead = res.groups.filter(g => movesFor(g, true).length && !movesFor(g, false).length);
+    const A = Object.fromEntries(res.groups.map(g => [g, avail(g)]));
+    const dead = res.groups.filter(g => A[g].status === 'out');
     for (const g of dead) {
-      const x = blockedBy(g);
+      const x = A[g].by || issues[0];
       issueLines.push(`${GROUPS[g].name}: every ${GROUPS[g].name.toLowerCase()} exercise here loads your ${issueLabel(x).toLowerCase()} (${x.severity}), so it is left out today`);
       for (const r of Object.keys(res.regionW)) if (regionGroup(r) === g) delete res.regionW[r];
     }
+    // the same sentence Today's card shows for a group that is now one side only (availabilityLine)
+    for (const g of res.groups.filter(g => A[g].status === 'side')) issueLines.push(availabilityLine(A[g]));
     if (dead.length) {
       res.groups = res.groups.filter(g => !dead.includes(g));
       if (!Object.keys(res.regionW).length) {
-        const sub = [...new Set(dead.flatMap(g => COMPLEMENT[g] || []))].filter(g => GROUPS[g] && !dead.includes(g) && movesFor(g, false).length).slice(0, 2);
+        const sub = [...new Set(dead.flatMap(g => COMPLEMENT[g] || []))].filter(g => GROUPS[g] && !dead.includes(g) && spared(g) && avail(g).status !== 'none').slice(0, 2);
         for (const g of sub) for (const r of GROUPS[g].regions) res.regionW[r] = 1;
         res.groups = [...sub];
         res.labels = sub.map(g => GROUPS[g].name);
@@ -1133,16 +1172,15 @@ export function buildWorkout({
   const lifts = blocks.filter(b => b.kind === 'lift');
   const exs = lifts.map(b => getEx(b.exId)).filter(Boolean);
   if (!autoLabel && res.groups.length) {
+    // §18.y: no weekly set numbers in a stored rationale (they go stale, and a group sum is not what the
+    // weekly rows show). The live per-unit numbers are drawn where the workout is shown (Today's preview,
+    // Plan's day sheet) from recovery.weekUnitView.
     const gs = safe(() => groupStatus(sessions, { now, profile, upcoming }), {});
     const bits = res.groups.filter(g => gs[g]).sort((a, b) => (gs[b].need ?? 0) - (gs[a].need ?? 0)).slice(0, 2).map(g => {
-      const s = gs[g]; const tgt = s.target?.target ?? s.target?.min ?? s.target;   // compare with the TARGET
-      const sets = Number.isFinite(s.sets7d) ? Math.round(s.sets7d * 10) / 10 : null;
-      const parts = [];
-      if (sets != null && tgt) parts.push(`${sets}/${Math.round(tgt)} target sets this week${Array.isArray(upcoming) ? ' incl. planned' : ''}`);
-      if (Number.isFinite(s.daysSince)) parts.push(`${s.daysSince}d since last`);
-      return GROUPS[g].name + (parts.length ? ` (${parts.join(', ')})` : '');
+      const s = gs[g];
+      return GROUPS[g].name + (Number.isFinite(s.daysSince) ? ` (${s.daysSince}d since last)` : ' (not trained yet)');
     });
-    if (bits.length) rationale.push('Focus: ' + bits.join('; '));
+    if (bits.length) rationale.push('Focus: ' + bits.join('; ') + ', the furthest behind this week');
   }
   issueLines.forEach(x => rationale.push(x));
   if (addedGroups.length) rationale.push(`Added ${addedGroups.map(g => GROUPS[g].name.toLowerCase()).join(' & ')} ${capped ? 'alongside, rather than more sets of the same muscles' : `to fill ${minutes} min without junk volume`}`);
@@ -1154,6 +1192,12 @@ export function buildWorkout({
     if (!def.round) how += ` · ~${def.restCompound}/${def.restIsolation} s rest per muscle`;
     rationale.push(`${minutes} min: ${exs.length} exercises, ${nSets} working sets, ${how}`);
     if (capped) rationale.push(capLine(capped));
+    // §26.4: say which moves are one side only, and what that does to the weekly count
+    const so = lifts.filter(b => b.sideOnly);
+    if (so.length) {
+      const by = issueFilter(issues).why(so[0].exId);
+      rationale.push(`${so.length === 1 ? `${getEx(so[0].exId)?.name || 'One move'} is` : `${so.length} moves are`} ${so[0].sideOnly}-${oneSideLimb(getEx(so[0].exId)) || 'side'} only${by ? ` (your ${issueLabel(by).toLowerCase()})` : ''}: each set counts half for the week, one side of the pair (a convention)`);
+    }
   }
   // key exercises tied to sculpt goals
   const goalForTag = tag => Object.values(SCULPT_GOALS).find(g => (g.emphasisTag || g.id) === tag);
@@ -1193,7 +1237,7 @@ export function buildWorkout({
   return {
     id: 's_' + now.getTime(), date: ds(now), status: 'planned', startedAt: null, endedAt: null,
     location: location.id || 'home', minutes, title, targets: tgts, source: 'generated',
-    blocks, rationale: rationale.slice(0, 6 + Math.min(2, issueLines.length) + (capped ? 1 : 0)), notes: '',
+    blocks, rationale: rationale.slice(0, 6 + Math.min(2, issueLines.length) + (capped ? 1 : 0) + (lifts.some(b => b.sideOnly) ? 1 : 0)), notes: '',
     estMinutes: Math.round(estSec / 60), style, seed, poolLimited, capped,
     ...(def.custom ? { styleDef: def.cfg, styleName: def.name } : {}),
   };
@@ -1228,7 +1272,7 @@ export function restyle(session, style, { profile, sessions = [], now = new Date
   const def = resolveStyle(style, profile);
   const all = s.blocks || [];
   // (a style with fixed sets per exercise uses those)
-  const items = all.filter(b => b.kind === 'lift' && getEx(b.exId)).map(b => ({ ex: getEx(b.exId), sets: def.setsPerExercise || (b.target?.sets ?? (b.sets || []).length ?? 3) }));
+  const items = all.filter(b => b.kind === 'lift' && getEx(b.exId)).map(b => ({ ex: getEx(b.exId), sets: def.setsPerExercise || (b.target?.sets ?? (b.sets || []).length ?? 3), ...(b.sideOnly ? { side: b.sideOnly } : {}) }));
   const ctx = { def, minutes: s.minutes || 45, req: null, sessions, now, cache: new Map() };
   const lifts = items.length ? materialize({ items, restScale: 1 }, ctx, { equalize: false }).blocks : [];
   s.blocks = [...lifts, ...all.filter(b => b.kind !== 'lift')];

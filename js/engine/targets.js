@@ -609,6 +609,14 @@ export function fmtSets(x) {
   const v = Math.round((Number(x) || 0) * 10) / 10;
   return Number.isInteger(v) ? String(v) : v.toFixed(1);
 }
+// §18.y: a unit's short name for text ("Back (lats + upper back)" → "Back", "Upper chest (incline)" → "Upper chest").
+export function unitShort(u) { return String(VOLUME_UNITS[u]?.name || u).replace(/ \(.*\)$/, ''); }
+// §18.y: the ONE way text quotes a unit's week (x = a recovery.weekUnitView unit, the weekly rows' numbers):
+// "4 of 18 done, 6 planned". Says which number it is; never a group sum.
+export function weekUnitPhrase(x) {
+  if (!x) return '';
+  return `${fmtSets(x.done)} of ${fmtSets(x.target)} done${x.planned >= 0.05 ? `, ${fmtSets(x.planned)} planned` : ''}`;
+}
 // A sculpt goal's extraWeeklySets split over its regions. The split is normalised over the regions
 // that actually feed a unit WITH A TARGET, so the whole amount the user asked for lands somewhere:
 // before this, "Traps / Yoke" lost 1.43 of its 2 sets to the tracked traps unit (target 0, clamped

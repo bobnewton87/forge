@@ -123,7 +123,7 @@ test('issues: add / update / resolve / check / remove are pure, and only active 
   assert.equal(list[0].resolvedAt, '2026-10-24');
   assert.equal(activeIssues({ issues: list }, '2026-10-24').length, 0, 'resolved issues stay for the record but are not active');
   assert.equal(applyIssuePatch(list, { remove: id }).length, 1);
-  assert.equal(issueKey(list[0]), `${id}|knee||moderate`);
+  assert.equal(issueKey(list[0]), `${id}|knee||right|moderate`, 'the side is part of the key: it changes exercise choice (§26.4)');
 });
 
 test('issues: written only through targets.applyTargetChange; a new or resolved issue re-plans, a check does not', () => {
@@ -165,7 +165,8 @@ test('generator: a moderate knee issue keeps every knee-loading move out of a le
   const p = prof({ issues: [issue('knee', 'moderate', { side: 'right' })] });
   for (const loc of [LOC.crunch, LOC.home]) for (const minutes of [30, 45, 60]) for (const seed of [1, 2]) {
     const s = buildWorkout({ targets: ['legs'], minutes, location: loc, profile: p, now: NOW, seed });
-    for (const id of liftIds(s)) assert.ok(issueTier(getEx(id), p.issues[0]) < 2, `${loc.id} ${minutes}: ${id} loads the knee`);
+    // §26.4: a one-leg machine move may stay for the LEFT leg only (the right knee is the sore one)
+    for (const b of s.blocks.filter(x => x.kind === 'lift')) assert.ok(issueTier(getEx(b.exId), p.issues[0]) < 2 || b.sideOnly === 'left', `${loc.id} ${minutes}: ${b.exId} loads the right knee`);
     assert.ok(s.rationale.some(r => /right knee \(moderate\)/.test(r)), s.rationale.join(' | '));
     assert.ok(liftIds(s).length >= 2, 'still a workout (hinges, hip thrusts, calves)');
   }

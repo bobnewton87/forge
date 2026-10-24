@@ -18,7 +18,8 @@
 //   override the schedule for that day (e.g. "only 30 min at home today"). It treats every planned
 //   session before `date` as history and ignores sessions already on `date`. Returns null for rest.
 // CONTRACT-NOTE: weekPlanSummary also returns `regions` (priority regions only, same shape as
-//   groups), `liftSets` ({done, planned}), and `capacity` ({liftMinutes, setsNeeded}). Planned
+//   groups), `liftSets` ({done, planned}), and `capacity` ({liftMinutes, setsNeeded = the priority
+//   units' minimums summed, §18.y}). Planned
 //   sessions dated before today(now) count as missed (neither done nor planned).
 // CONTRACT-NOTE: session ids are 's_plan_<date>_<n>', n starting at 1 and bumped past any id
 //   already present in `sessions`.
@@ -56,16 +57,16 @@
 //   'ceiling_some' ("… on 2 of 3 lift days"); weekPlanSummary.minimums.binding can be 'ceiling', and
 //   capacity gains { setCap, liftDays, maxSets }. Active profile.issues (§26) are excluded from every
 //   exercise the top-up adds or swaps in.
-import { recommend, groupStatus, muscleStatus, sessionVolume, unitVolume, unitSets, PUSH_PATTERNS, PULL_PATTERNS } from './recovery.js';
+import { recommend, groupStatus, muscleStatus, sessionVolume, unitVolume, unitSets, weekUnitView, PUSH_PATTERNS, PULL_PATTERNS } from './recovery.js';
 import { buildWorkout, estimateMinutes, addExercise, exercisesFor, swapBlock, alternatives, isStyleId, workingSets } from './generator.js';
-import { activeIssues, issueFilter } from './issues.js';
+import { activeIssues, issueFilter, SIDE_ONLY_CREDIT } from './issues.js';
 import { getEx } from '../data/exercises.js';
 import { CARDIO, INTENSITIES, cardioOptions } from '../data/cardio.js';
 import { classify } from '../classes/classify.js';
 import { GROUPS, GROUP_ORDER, REGIONS, VOLUME_UNITS, UNIT_ORDER, COUNTED_UNITS, unitWeight, unitCredits } from '../data/muscles.js';
 import { DEFAULT_LOCATIONS, expandEquipment } from '../data/equipment.js';
 import { ds, parseDs, addDays, weekStart as weekStartOf, clamp, rng } from '../util.js';
-import { cardioPrefs, finisherCap, cardioCapacity, weekCardioCapacity, cardioTolerance, makeRoomProposal, volumePolicyOf, unitTargets, sessionSetCapOf } from './targets.js';
+import { cardioPrefs, finisherCap, cardioCapacity, weekCardioCapacity, cardioTolerance, makeRoomProposal, volumePolicyOf, unitTargets, sessionSetCapOf, unitShort as unitShortName } from './targets.js';
 
 const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const PRIORITY_GROUPS = ['triceps', 'shoulders', 'core', 'back', 'chest'];
@@ -341,7 +342,8 @@ function liftDay(ctx, date, slot, st, R, why = null) {
     for (const c of cands) {
       if (groups.length >= maxGroupsFor(minutes)) break;
       groups.push(c.g); targets.push(c.g); nudged.push(c.g);
-      reasons.push(`Added ${gName(c.g).toLowerCase()}: ${fmt((st.proj[c.g] || 0) + (st.after[c.g] || 0))}/${Math.round(T[c.g].target.min)} sets this week incl. planned`);
+      // §18.y: no weekly numbers in stored text (a group sum, and stale after the top-up passes)
+      reasons.push(`Added ${gName(c.g).toLowerCase()}: behind its weekly minimum with the lift days left`);
       break;   // one nudge per day keeps sessions focused
     }
     // Legs are maintenance-only, but not zero: after ~8 days without quads, add them once.
@@ -623,7 +625,7 @@ function balanceWeek(ctx, out, ws, we) {
       const w = buildWorkout({ targets, minutes: old.minutes, location: loc, profile: ctx.profile, sessions: hist, now, seed: old.seed, cardio, style: styleKept(ctx, old) });
       const repl = {
         ...w, id: old.id, date: old.date, status: 'planned', startedAt: null, endedAt: null, location: old.location, minutes: old.minutes,
-        rationale: [old.rationale[0], `Added ${gName(g).toLowerCase()} to close this week's gap (${fmt(totals[g] || 0)}/${Math.round(T[g].target.min)} sets)`, ...(w.rationale || [])].slice(0, 7),
+        rationale: [old.rationale[0], `Added ${gName(g).toLowerCase()} to close this week's gap toward its weekly minimum`, ...(w.rationale || [])].slice(0, 7),
         plan: { ...old.plan, groups: [...old.plan.groups, g], nudged: [...old.plan.nudged, g], reason: old.plan.reason + `; + ${gName(g).toLowerCase()} for weekly balance` },
       };
       const sim = simulateDone(repl);
@@ -737,9 +739,11 @@ function groupCredits(ex) {
   return out;
 }
 const setsOf = b => Math.max(Number(b.target?.sets) || 0, (b.sets || []).length);
+// §26.4: a healthy-side-only block credits half a set per set (recovery.sessionVolume does the same).
+const kOf = b => (b && (b.sideOnly === 'left' || b.sideOnly === 'right') ? SIDE_ONLY_CREDIT : 1);
 function plannedGroupVol(s, g) {
   let v = 0;
-  for (const b of s.blocks || []) if (b.kind === 'lift') v += setsOf(b) * groupW(getEx(b.exId), g);
+  for (const b of s.blocks || []) if (b.kind === 'lift') v += setsOf(b) * kOf(b) * groupW(getEx(b.exId), g);
   return v;
 }
 function setSets(b, n) {
@@ -761,7 +765,7 @@ const PUSH_PULL_TOL = 1.1;   // pull ≥ push within ±10% (practitioner heurist
 const unitCap = (uid, raise) => (raise && VOLUME_UNITS[uid]?.tier === 'priority' ? PRIORITY_CAP : VOLUME_UNITS[uid]?.big ? 10 : 8);
 function plannedUnitVol(s, uid) {
   let v = 0;
-  for (const b of s.blocks || []) if (b.kind === 'lift') v += setsOf(b) * unitWeight(getEx(b.exId), uid);
+  for (const b of s.blocks || []) if (b.kind === 'lift') v += setsOf(b) * kOf(b) * unitWeight(getEx(b.exId), uid);
   return v;
 }
 // Units credited by a session as if done (planned: every prescribed set; done: counted sets), classes
@@ -799,7 +803,9 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
   const pol = ctx.volumePolicy || volumePolicyOf(ctx.profile);
   const UT = unitTargets(ctx.profile);
   // §26: active issues rule exercises out of every top-up add and swap, like the user's avoid list.
-  const avoid = new Set([...(ctx.profile?.avoidExercises || []), ...issueFilter(activeIssues(ctx.profile, ctx.today)).blocked]);
+  // (a move kept healthy-side only is not added or swapped in by the top-up either: half credit, one side)
+  const IFp = issueFilter(activeIssues(ctx.profile, ctx.today));
+  const avoid = new Set([...(ctx.profile?.avoidExercises || []), ...IFp.blocked, ...IFp.side.keys()]);
   const setCap = sessionSetCapOf(ctx.profile);
   const sculptGoals = ctx.profile?.sculptGoals || [];
   const eligible = s => s.date >= ws && s.date <= we && s.date >= ctx.today && s.plan?.auto !== false && s.plan?.kind === 'lift' && (s.blocks || []).some(b => b.kind === 'lift');
@@ -920,7 +926,8 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
   };
   recount();
   // incremental week totals after adding n sets of ex (same credit rules as weekUnitTotals)
-  const bump = (ex, n) => {
+  const bump = (ex, n, b = null) => {
+    n *= kOf(b);
     for (const [u, w] of Object.entries(unitCredits(ex))) tot.units[u] = (tot.units[u] || 0) + n * w;
     if (PUSH_PATTERNS.has(ex.pattern)) tot.push += n; else if (PULL_PATTERNS.has(ex.pattern)) tot.pull += n;
   };
@@ -935,7 +942,7 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
         .sort((a, b) => groupW(b.ex, over) - groupW(a.ex, over) || setsOf(b.b) - setsOf(a.b))[0];
       if (!idx) break;
       w.s.blocks = w.s.blocks.map((x, j) => (j === idx.i ? clone(x) : x)); setSets(w.s.blocks[idx.i], setsOf(idx.b) - 1);
-      bump(idx.ex, -1); w.changed = true; w.added.trim = (w.added.trim || 0) - 1;
+      bump(idx.ex, -1, idx.b); w.changed = true; w.added.trim = (w.added.trim || 0) - 1;
     }
   }
   let phase = 'min';
@@ -975,20 +982,21 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
       // The cheap minute check stays first (blockOf walks days and readiness); when it is the thing in
       // the way we confirm ONCE per day, with blockOf, that the set would otherwise have been legal.
       for (const x of blocks) {
+        const k1 = kOf(x.b);   // one more set of a one-side-only block is half a set of credit
         if (daySets + 1 > setCap) {
-          if (!ceilOnly && !blockOf(w, x.ex, 1, uid, phase !== 'min' || uid === '__pull')) ceilOnly = true;
+          if (!ceilOnly && !blockOf(w, x.ex, k1, uid, phase !== 'min' || uid === '__pull')) ceilOnly = true;
           continue;
         }
         const trial = w.s.blocks.map((b, i) => (i === x.i ? clone(b) : b));
         setSets(trial[x.i], setsOf(x.b) + 1);
         if (estimateMinutes(trial) > lim) {
           note('time');
-          if (!timeOnly && !blockOf(w, x.ex, 1, uid, phase !== 'min' || uid === '__pull')) timeOnly = true;
+          if (!timeOnly && !blockOf(w, x.ex, k1, uid, phase !== 'min' || uid === '__pull')) timeOnly = true;
           continue;
         }
-        const r = blockOf(w, x.ex, 1, uid, phase !== 'min' || uid === '__pull');
+        const r = blockOf(w, x.ex, k1, uid, phase !== 'min' || uid === '__pull');
         if (r) { note(r); continue; }
-        found = { w, score: base, apply: () => { w.s.blocks = trial; bump(x.ex, 1); return credit(x.ex, uid); } };
+        found = { w, score: base, apply: () => { w.s.blocks = trial; bump(x.ex, 1, x.b); return k1 * credit(x.ex, uid); } };
         break;
       }
       if (!found) {
@@ -1057,7 +1065,7 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
         if (setsOf(b) <= 2) continue;
         if (!floorsHold(c.ex, 1)) continue;
         c.w.s.blocks = c.w.s.blocks.map((x, j) => (j === c.i ? clone(x) : x)); setSets(c.w.s.blocks[c.i], setsOf(b) - 1);
-        bump(c.ex, -1);
+        bump(c.ex, -1, b);
         c.w.added.push_trim = (c.w.added.push_trim || 0) - 1; c.w.changed = more = true;
       }
       if (more || deficit('__pull') <= 0.5) continue;
@@ -1070,7 +1078,7 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
         const n = setsOf(b);
         if (!floorsHold(c.ex, n) || c.w.s.blocks.filter(y => y.kind === 'lift').length <= 2) continue;
         c.w.s.blocks = c.w.s.blocks.filter((_, j) => j !== c.i);
-        bump(c.ex, -n);
+        bump(c.ex, -n, b);
         c.w.added.push_trim = (c.w.added.push_trim || 0) - n; c.w.changed = more = true;
         break;
       }
@@ -1100,14 +1108,14 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
   const trimOne = u => {
     const cs = contributors(u).sort((a, b) => (b.iso - a.iso) || b.c - a.c || setsOf(b.w.s.blocks[b.i]) - setsOf(a.w.s.blocks[a.i]));
     for (const x of cs) {
-      const n = setsOf(x.w.s.blocks[x.i]);
+      const blk = x.w.s.blocks[x.i], n = setsOf(blk);
       if (n > 2 && othersOK(x.ex, 1, u) && pullOK(x.ex, 1)) {
         x.w.s.blocks = x.w.s.blocks.map((y, j) => (j === x.i ? clone(y) : y)); setSets(x.w.s.blocks[x.i], n - 1);
-        bump(x.ex, -1); x.w.added.target_trim = (x.w.added.target_trim || 0) - 1; x.w.changed = true; return true;
+        bump(x.ex, -1, blk); x.w.added.target_trim = (x.w.added.target_trim || 0) - 1; x.w.changed = true; return true;
       }
       if (x.iso && x.c >= 0.8 && othersOK(x.ex, n, u) && pullOK(x.ex, n) && x.w.s.blocks.filter(y => y.kind === 'lift').length > 2) {
         x.w.s.blocks = x.w.s.blocks.filter((_, j) => j !== x.i);
-        bump(x.ex, -n); x.w.added.target_trim = (x.w.added.target_trim || 0) - n; x.w.changed = true; return true;
+        bump(x.ex, -n, blk); x.w.added.target_trim = (x.w.added.target_trim || 0) - n; x.w.changed = true; return true;
       }
     }
     return false;
@@ -1133,9 +1141,10 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
           });
         });
       if (!alt) continue;
+      const ob = x.w.s.blocks[x.i];
       const ns = swapBlock(x.w.s, x.i, alt.id, { sessions: ctx.history, now: noonOf(x.w.s.date) });
       if (estimateMinutes(ns.blocks) > x.w.limitT + 1) continue;
-      bump(x.ex, -n); bump(alt, setsOf(ns.blocks[x.i]));
+      bump(x.ex, -n, ob); bump(alt, setsOf(ns.blocks[x.i]));
       x.w.s = { ...x.w.s, blocks: ns.blocks }; x.w.added.incidental_swap = (x.w.added.incidental_swap || 0) + 1; x.w.changed = true;
       return true;
     }
@@ -1181,7 +1190,7 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
     ps.sort((a, b) => (a.ex.pattern === 'fly' ? 0 : 1) - (b.ex.pattern === 'fly' ? 0 : 1) || setsOf(b.w.s.blocks[b.i]) - setsOf(a.w.s.blocks[a.i]));
     const x = ps[0]; if (!x) return false;
     x.w.s.blocks = x.w.s.blocks.map((y, j) => (j === x.i ? clone(y) : y)); setSets(x.w.s.blocks[x.i], setsOf(x.w.s.blocks[x.i]) - 1);
-    bump(x.ex, -1); x.w.added.max_trim = (x.w.added.max_trim || 0) - 1; x.w.changed = true;
+    bump(x.ex, -1, x.w.s.blocks[x.i]); x.w.added.max_trim = (x.w.added.max_trim || 0) - 1; x.w.changed = true;
     return true;
   };
   for (let guard = 300; guard-- > 0;) {
@@ -1194,12 +1203,12 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
       const b = x.w.s.blocks[x.i]; const n = setsOf(b);
       if (n > 2 && keepsFloors(x.ex)) {
         x.w.s.blocks = x.w.s.blocks.map((y, j) => (j === x.i ? clone(y) : y)); setSets(x.w.s.blocks[x.i], n - 1);
-        bump(x.ex, -1); x.w.added.max_trim = (x.w.added.max_trim || 0) - 1; x.w.changed = done = true; break;
+        bump(x.ex, -1, b); x.w.added.max_trim = (x.w.added.max_trim || 0) - 1; x.w.changed = done = true; break;
       }
       // drop a whole exercise aimed at this muscle (isolations first by sort order) if floors hold
       if (x.c >= 0.8 && keepsFloors(x.ex, n) && x.w.s.blocks.filter(y => y.kind === 'lift').length > 2) {
         x.w.s.blocks = x.w.s.blocks.filter((_, j) => j !== x.i);
-        bump(x.ex, -n); x.w.added.max_trim = (x.w.added.max_trim || 0) - n; x.w.changed = done = true; break;
+        bump(x.ex, -n, b); x.w.added.max_trim = (x.w.added.max_trim || 0) - n; x.w.changed = done = true; break;
       }
     }
     if (!done) {   // swap a compound for an alternative that loads u less, keeping the other floors
@@ -1213,7 +1222,7 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
               && (tot.units[u] || 0) - n * x.c + n * unitWeight(e, u) < (tot.units[u] || 0); });
         if (!alt) continue;
         const ns = swapBlock(x.w.s, x.i, alt.id, { sessions: ctx.history, now: noonOf(x.w.s.date) });
-        bump(x.ex, -n); bump(alt, setsOf(ns.blocks[x.i]));
+        bump(x.ex, -n, b); bump(alt, setsOf(ns.blocks[x.i]));
         x.w.s = { ...x.w.s, blocks: ns.blocks }; x.w.added.max_swap = (x.w.added.max_swap || 0) + 1; x.w.changed = done = true; break;
       }
     }
@@ -1439,9 +1448,11 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
   // Enforcement units (VOLUME_UNITS): min / target / max per the weekly-volume audit.
   const UT = UT0, uw = uw0, uDone = uDone0;
   const units = {};
+  // §18.y: the unit numbers ARE recovery.weekUnitView's (the one week view every text quotes).
+  const WV = weekUnitView(sessions, { profile, now, weekStart: ws }).units;
   for (const u of UNIT_ORDER) {
-    const t = UT[u], total = r1(uw.units[u] || 0), done = r1(Math.min(total, uDone.units[u] || 0));
-    units[u] = { name: t.name, group: t.group, tier: t.tier, sub: t.sub, done, planned: r1(total - done), total, min: t.min, target: t.target, max: t.max, base: t.base, slider: t.slider, extra: t.extra,
+    const t = UT[u], { total, done, planned: plannedU } = WV[u];
+    units[u] = { name: t.name, group: t.group, tier: t.tier, sub: t.sub, done, planned: plannedU, total, min: t.min, target: t.target, max: t.max, base: t.base, slider: t.slider, extra: t.extra,
       // bands vs TARGET: < min 'under' (red) · min…target 'toward' (amber) · target…max 'ok' (green) · > max 'over' (orange)
       status: total > t.max + 0.25 ? 'over' : total < t.min - 0.25 ? 'under' : total < t.target - 0.25 ? 'toward' : 'ok',
       pctTarget: t.target > 0 ? Math.round(Math.min(1, total / t.target) * 100) / 100 : 1 };
@@ -1457,7 +1468,7 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
   const short = UNIT_ORDER.filter(u => units[u].min > 0 && units[u].status === 'under' && units[u].min - units[u].total >= 0.25)
     .map(u => ({ unit: u, group: units[u].group, name: units[u].name, total: units[u].total, min: units[u].min, short: r1(units[u].min - units[u].total) }));
   const why = !short.length ? '' : ceilingBound ? ` (every lift day is at your ${setCap}-set workout ceiling: add a lift day)` : timeBound ? ` (every lift day is at your ${pol.mode === 'extend' ? pol.maxMinutes + '′ cap' : 'slot time'})` : pol.mode !== 'extend' ? ' (workouts are kept to your slot times)' : ' (recovery spacing: add a lift day)';
-  for (const x of short) warnings.push(`${x.name}${x.group !== x.unit && !/^(chest|back)/.test(x.unit) ? ` (${gName(x.group).toLowerCase()})` : ''} ${fmt(x.total)}/${fmt(x.min)} sets: short ${fmt(x.short)}${why}`);
+  for (const x of short) warnings.push(`${x.name}${x.group !== x.unit && !/^(chest|back)/.test(x.unit) ? ` (${gName(x.group).toLowerCase()})` : ''}: ${fmt(x.total)} of ${fmt(x.min)} minimum (done + planned) sets: short ${fmt(x.short)}${why}`);
   const tUnits = UNIT_ORDER.filter(u => units[u].target > 0 && !units[u].sub);
   const tMet = tUnits.filter(u => units[u].total >= units[u].target - 0.25);
   const tShortSets = tUnits.reduce((n, u) => n + Math.max(0, units[u].target - units[u].total), 0);
@@ -1490,13 +1501,17 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
   if (!pushPull.ok) warnings.push(`Pushing outweighs pulling (${uw.push} press/fly vs ${uw.pull} row/pulldown sets): add rows or pulldowns`);
   // (per-head region warnings retired: side/rear delts and upper chest are units now)
   for (const u of UNIT_ORDER) if (units[u].status === 'over') warnings.push(`${units[u].name} ${fmt(units[u].total)} sets: over the ${fmt(units[u].max)}-set weekly max (diminishing returns, more recovery cost)`);
-  const setsNeeded = Math.round(prio.reduce((a, g) => a + (T.groups[g]?.target.min || 0), 0));
+  // §18.y: the priority MUSCLES' minimums (units with tier 'priority'), not a sum of group minimums.
+  const setsNeeded = Math.round(UNIT_ORDER.filter(u => UT0[u]?.tier === 'priority' && !UT0[u].sub).reduce((a, u) => a + (UT0[u].min || 0), 0));
   // §26: the most working sets this week's lift days can hold under the workout set ceiling.
   const nLiftDays = (sessions || []).filter(s => s && s.date >= from && s.date <= to && !isRestPlan(s) && (s.status !== 'planned' || s.date >= today) && (s.blocks || []).some(b => b.kind === 'lift')).length;
+  // §18.y: name the priority MUSCLES (units) that are short, with their own numbers, never a group sum.
+  const shortPrio = underPrio.flatMap(g => (COUNTED_UNITS[g] || []).filter(u => units[u] && units[u].min > 0 && units[u].total < units[u].min - 0.25));
   if (underPrio.length >= 2) {
+    const list = shortPrio.length ? shortPrio.slice(0, 4).map(u => `${unitShortName(u)} ${fmt(units[u].total)} of ${fmt(units[u].min)}`).join(', ') : underPrio.map(gName).join(', ');
     warnings.push(ceilingBound
-      ? `Not enough lift days to hit every priority minimum: ${liftDays.length} planned lift day${liftDays.length === 1 ? '' : 's'} at your ${setCap}-set workout ceiling yield ~${Math.round(lDone + lPlan)} working sets, while the priority groups alone want ~${setsNeeded} group-sets. Add a lift day, or raise the ceiling in Settings (past it, extra sets mostly add fatigue).`
-      : `Not enough lifting time to hit every priority minimum: ~${Math.round(liftMinutes)} lift min this week yields ~${Math.round(lDone + lPlan)} working sets, while the priority groups alone want ~${setsNeeded} group-sets. Add a lift day or more minutes, or accept a slower week.`);
+      ? `Not enough lift days for every priority minimum (done + planned: ${list}): ${liftDays.length} planned lift day${liftDays.length === 1 ? '' : 's'} at your ${setCap}-set workout ceiling. Add a lift day, or raise the ceiling in Settings (past it, extra sets mostly add fatigue).`
+      : `Not enough lifting time for every priority minimum (done + planned: ${list}): ~${Math.round(liftMinutes)} lift min this week yields ~${Math.round(lDone + lPlan)} working sets. Add a lift day or more minutes, or accept a slower week.`);
   }
   // Back-to-back heavy hits on the same (slow-recovering) group.
   const dates = Object.keys(byDay).sort();

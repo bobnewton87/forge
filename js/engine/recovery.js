@@ -32,8 +32,13 @@
 import { REGIONS, GROUPS, GROUP_ORDER, PRESETS, VOLUME_UNITS, UNIT_ORDER, COUNTED_UNITS, unitCredits } from '../data/muscles.js';
 import { SCULPT_GOALS } from '../data/sculpt.js';
 import { getEx } from '../data/exercises.js';
-import { unitTargets, volumeFactors, sculptExtraByRegion } from './targets.js';
+import { unitTargets, volumeFactors, sculptExtraByRegion, unitShort, weekUnitPhrase } from './targets.js';
+// recovery → generator → recovery is the same deliberate run-time-only cycle as targets (§18): used in recommend().
+import { groupAvailability, availabilityLine } from './generator.js';
+import { DEFAULT_LOCATIONS, expandEquipment } from '../data/equipment.js';
+import { activeIssues } from './issues.js';
 import { ds, parseDs, daysBetween, addDays, weekStart, clamp } from '../util.js';
+import { SIDE_ONLY_CREDIT } from './issues.js';
 
 const MEANINGFUL = 1;      // effective sets on a day that count as "trained"
 const ADDON_ONLY = new Set(['forearms', 'calves']);   // never a whole session on their own
@@ -72,15 +77,18 @@ function classUnitCredit(muscles, uid) {
 // Everything one session contributes. Lift sets only count when done && r>0 (planned: the prescription).
 // `units` is the per-enforcement-unit fractional credit (a set credits a unit once, at the largest
 // weight over the unit's regions) - the ONE counter the planner, Plan, Body and the Why sheet all use.
+// §26.4: a healthy-side-only block (b.sideOnly) credits SIDE_ONLY_CREDIT per set (one side of the pair,
+// a convention). It is still one working set (liftSets).
 export function sessionVolume(s, { planned = false } = {}) {
   const regions = {}, groups = {}, units = {};
   let liftSets = 0, cardioMin = 0, push = 0, pull = 0;
   for (const b of s?.blocks || []) {
     if (b.kind === 'lift') {
       const ex = getEx(b.exId);
-      const n = blockSets(b, { planned });
-      if (!n) continue;
-      liftSets += n;
+      const sets = blockSets(b, { planned });
+      if (!sets) continue;
+      liftSets += sets;
+      const n = b.sideOnly === 'left' || b.sideOnly === 'right' ? sets * SIDE_ONLY_CREDIT : sets;
       if (!ex) continue;
       const gmax = {};
       for (const [r, w] of Object.entries(ex.muscles || {})) {
@@ -109,6 +117,40 @@ export function sessionVolume(s, { planned = false } = {}) {
     }
   }
   return { regions, groups, units, liftSets, cardioMin, push, pull };
+}
+// §18.y ONE WEEK VIEW for text. Every number a screen prints in words about a muscle's week comes from
+// here: per enforcement unit (never a group sum), this CALENDAR week of `weekStart` (default: now's week),
+// logged work + what is still planned from `now`'s day on, against the one target table. It is exactly what
+// planner.weekPlanSummary().units (Plan's, Body's and the summary's weekly rows) holds; a test pins them.
+// Pass the raw store sessions (planned ones included), not a simulated history.
+// → { from, to, today, units: { [u]: { id, name, short, group, sub, tier, done, planned, total, min, target, max } } }
+export function weekUnitView(sessions, { profile, now = new Date(), weekStart: wsIn = null } = {}) {
+  const asDate = d => (d instanceof Date ? d : typeof d === 'string' && /^\d{4}-\d\d-\d\d$/.test(d) ? parseDs(d) : toDate(d));
+  now = asDate(now);
+  const ws = weekStart(wsIn ? asDate(wsIn) : now);
+  const from = ds(ws), to = ds(addDays(ws, 6)), today = ds(now);
+  const live = (sessions || []).filter(s => !(s && s.status === 'planned' && s.plan?.kind === 'rest'));
+  const tot = unitSets(live, { from, to, today, includePlanned: true }).units;
+  const dn = unitSets((sessions || []).filter(s => s && s.status !== 'planned'), { from, to, today, includePlanned: true }).units;
+  const UT = unitTargets(profile || {});
+  const units = {};
+  for (const u of UNIT_ORDER) {
+    const t = UT[u]; if (!t) continue;
+    const total = r1(tot[u] || 0), done = r1(Math.min(total, dn[u] || 0));
+    units[u] = { id: u, name: t.name, short: unitShort(u), group: t.group, sub: !!t.sub, tier: t.tier, done, planned: r1(total - done), total, min: t.min, target: t.target, max: t.max };
+  }
+  return { from, to, today, units };
+}
+// The group's least-covered unit with a target (done + planned against the target; sub-units included):
+// what a half-width tile or a one-line reason quotes instead of a group sum. null when none has a target.
+export function leastCoveredUnit(view, group) {
+  let best = null, bs = Infinity;
+  for (const x of Object.values(view?.units || {})) {
+    if (x.group !== group || !(x.target > 0)) continue;
+    const sc = x.total / x.target + (x.sub ? 0.001 : 0);   // a parent before its sub-unit on a tie
+    if (sc < bs || (sc === bs && x.done < best.done)) { bs = sc; best = x; }
+  }
+  return best ? best.id : null;
 }
 export const PUSH_PATTERNS = new Set(['horizontal_push', 'vertical_push', 'fly']);
 export const PULL_PATTERNS = new Set(['horizontal_pull', 'vertical_pull']);
@@ -377,12 +419,13 @@ export function cardioStatus(sessions, { now = new Date(), profile } = {}) {
   const daysSince = last ? daysBetween(last, today) : null;
   let suggestion;
   if (!target) suggestion = 'No weekly cardio target set.';
-  else if (minutes7d >= target) suggestion = `Cardio target met (${minutes7d}/${target} min this week). Easy Zone 2 only if you feel like it.`;
+  // (a rolling window, so it says "last 7 days"; the calendar-week cardio row is targets.cardioWeek)
+  else if (minutes7d >= target) suggestion = `Cardio target met (${minutes7d} of ${target} min in the last 7 days). Easy Zone 2 only if you feel like it.`;
   else {
     const gap = target - minutes7d;
     const sess = clamp(Math.round(gap / 5) * 5, 15, 45);
     const since = daysSince == null ? 'No cardio logged yet. ' : daysSince >= 3 ? `${daysSince} days since your last cardio. ` : '';
-    const short = minutes7d > 0 ? `${gap} min short of ${target} this week` : `0/${target} min this week`;
+    const short = minutes7d > 0 ? `${gap} min short of ${target} in the last 7 days` : `0 of ${target} min in the last 7 days`;
     suggestion = `${since}${short}: add ${sess} min of Zone 2 (bike, incline walk or easy run)${gap > 45 ? ' or a cardio class' : ''}.`;
   }
   return { minutes7d, target, daysSince, sessions7d, behind: target > 0 && minutes7d < target, suggestion };
@@ -430,23 +473,40 @@ function maxGroupsFor(minutes) { return minutes <= 25 ? 2 : minutes <= 40 ? 3 : 
 
 function daysText(d, sets = 0) { return d == null ? (sets > 0 ? 'no direct work yet' : 'not trained yet') : d === 0 ? 'trained today' : d === 1 ? '1 day since' : `${d} days since`; }
 
-function groupReason(gid, st) {
-  const name = groupName(gid);
-  const wk = st.planned != null ? 'sets this week incl. planned' : 'sets this week';
-  const goal = t => t.target ?? t.min;   // reasons compare with the TARGET ("Triceps: 8/19 sets this week")
-  const behind = goal(st.target) - st.sets7d;
-  // Name a specific region when it lags clearly behind the rest of its group.
-  let focus = null;
-  for (const r of Object.values(st.regions)) {
-    if (r.target.min >= 2 && r.need >= st.need + 0.15 && (!focus || r.need > focus.need)) focus = r;
+// One reason line for a group. §18.y: weekly numbers are PER UNIT and come from `week` (weekUnitView over
+// the raw sessions: the weekly rows' numbers), naming the group's least-covered unit ("Side delts: not
+// trained yet · 0 of 18 done this week"). Without a week view (the planner's stored rationale, which
+// would go stale) the line names the unit but quotes no numbers.
+function groupReason(gid, st, week) {
+  const days = daysText(st.daysSince, st.sets7d);
+  if (week) {
+    const u = leastCoveredUnit(week, gid), x = u ? week.units[u] : null;
+    if (x) return `${x.short}: ${days} · ${weekUnitPhrase(x)} this week${x.tier === 'priority' && x.total < x.target - 1.5 ? ' (priority)' : ''}`;
+    return `${groupName(gid)}: ${days}`;
   }
-  if (focus) return `${regionName(focus.region)}: ${daysText(focus.daysSince, focus.sets7d)}, ${fmtSets(focus.sets7d)}/${Math.round(goal(focus.target))} ${wk}`;
-  if (st.planned != null) return `${name}: ${fmtSets(st.sets7d)}/${Math.round(goal(st.target))} ${wk}${behind >= 2 && st.priority >= 1.1 ? ' (priority)' : ''}`;
-  if (st.priority >= 1.1 && behind >= 2) return `${name} ${isPlural(name) ? 'are' : 'is'} a priority and ${fmtSets(behind)} sets behind`;
-  return `${name}: ${daysText(st.daysSince, st.sets7d)}, ${fmtSets(st.sets7d)}/${Math.round(goal(st.target))} ${wk}`;
+  // number-free: the unit furthest behind by the group's own per-unit split
+  const us = Object.entries(st.units || {}).filter(([, x]) => x.target > 0).sort((a, b) => a[1].sets / a[1].target - b[1].sets / b[1].target);
+  const name = us.length > 1 ? unitShort(us[0][0]) : groupName(gid);
+  const behind = us.length && us[0][1].sets < us[0][1].target - 1.5;
+  return `${name}: ${days}${behind ? `, behind its weekly target${st.priority >= 1.1 ? ' (priority)' : ''}` : ''}`;
 }
 
-export function recommend(sessions, { now = new Date(), profile, minutes, location, upcoming = null } = {}) {
+// §26 B: what the active issues leave of each group at this location (generator.groupAvailability, the
+// same function buildWorkout reads, so a card can't promise what Build won't do). Factor on its value:
+// a group with nothing left is worth nothing, one-side-only work half (half credit), fewer options a bit less.
+const AVAIL_FACTOR = { ok: 1, none: 1, limited: 0.8, side: 0.5, out: 0 };
+function locEquipment(location, profile) {
+  const loc = location && typeof location === 'object' ? location
+    : (profile?.locations || []).find(l => l.id === location) || DEFAULT_LOCATIONS.find(l => l.id === location) || null;
+  return loc ? expandEquipment(loc.equipment || []) : null;
+}
+
+// CONTRACT-NOTE (§26 B, §18.y): optional `week` (weekUnitView over the raw store sessions) makes the reasons
+//   quote per-unit numbers that match the weekly rows; without it reasons carry no set numbers. Active
+//   profile.issues down-rank or drop a card (AVAIL_FACTOR via generator.groupAvailability at `location`'s
+//   equipment); its reasons lead with what the issue changes (generator.availabilityLine), and each card
+//   carries `issueNotes: [{ group, status, side, limb, issue }]` for the UI and the agreement test.
+export function recommend(sessions, { now = new Date(), profile, minutes, location, upcoming = null, week = null } = {}) {
   now = toDate(now);
   minutes = Number(minutes) || profile?.defaultMinutes || 45;
   const entries = prep(sessions, now);
@@ -460,12 +520,16 @@ export function recommend(sessions, { now = new Date(), profile, minutes, locati
     cardio.minutes7d = m; cardio.behind = cardio.target > 0 && m < cardio.target; cardio.planMode = true;
   }
 
+  const issues = activeIssues(profile || {}, now);
+  const eq = issues.length ? locEquipment(location, profile) : null;
+  const avail = {};
+  if (issues.length) for (const g of Object.keys(gs)) avail[g] = groupAvailability(g, { equipment: eq, issues, exclude: profile?.avoidExercises || [] });
   const value = g => {
     const st = gs[g]; if (!st) return 0;
     const rf = st.readiness >= 0.5 ? 0.6 + 0.4 * st.readiness : st.readiness * 0.5;
     const ar = st.aheadReadiness ?? 1;      // plan mode: protect the next planned hit
     const af = ar >= 0.5 ? 0.7 + 0.3 * ar : ar * 0.5;
-    return st.need * rf * af;
+    return st.need * rf * af * (avail[g] ? AVAIL_FACTOR[avail[g].status] : 1);
   };
   const size = g => (SMALL.has(g) ? 0.6 : 1);
   const ideal = clamp(minutes / 20, 0.8, 4.5);
@@ -474,6 +538,8 @@ export function recommend(sessions, { now = new Date(), profile, minutes, locati
   const scored = [];
   for (const c of candidates()) {
     if (c.groups.length > maxG) continue;
+    // §26 B: a card whose every muscle an issue leaves nothing for here is dropped
+    if (issues.length && c.groups.every(g => avail[g]?.status === 'out')) continue;
     const load = c.groups.reduce((s, g) => s + size(g), 0);
     const wsum = c.groups.reduce((s, g) => s + size(g) * value(g), 0);
     const mean = wsum / load;
@@ -491,14 +557,23 @@ export function recommend(sessions, { now = new Date(), profile, minutes, locati
   let pick = viable.slice(0, 5);
   if (pick.length < 3) pick = pick.concat(scored.filter(x => x.recovering).slice(0, 3 - pick.length));
 
-  const cardioReason = cardio.behind
-    ? `Cardio: ${cardio.minutes7d}/${cardio.target} min this week${cardio.planMode ? ' incl. planned' : ''}. Add a ${clamp(Math.round((cardio.target - cardio.minutes7d) / 5) * 5, 10, 30)}-min Zone 2 finisher or do a cardio day.`
-    : null;
+  // With a week view that carries the cardio row (targets.cardioWeek: this calendar week, done + planned),
+  // quote that row's numbers, labelled; otherwise the old rolling figure, labelled "last 7 days".
+  const cw = week?.cardio;
+  const cardioReason = cw ? (cw.target > 0 && cw.total < cw.target
+    ? `Cardio: ${cw.done} of ${cw.target} min done this week${cw.planned ? `, ${cw.planned} planned` : ''}. Add a ${clamp(Math.round((cw.target - cw.total) / 5) * 5, 10, 30)}-min Zone 2 finisher or do a cardio day.` : null)
+    : cardio.behind
+      ? `Cardio: ${cardio.minutes7d}/${cardio.target} min ${cardio.planMode ? 'this week incl. planned' : 'in the last 7 days'}. Add a ${clamp(Math.round((cardio.target - cardio.minutes7d) / 5) * 5, 10, 30)}-min Zone 2 finisher or do a cardio day.`
+      : null;
 
   const dayName = d => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][parseDs(d).getDay()];
   return pick.map(({ c, score, recovering, clash }) => {
     const ordered = [...c.groups].sort((a, b) => (ADDON_ONLY.has(a) - ADDON_ONLY.has(b)) || value(b) - value(a));
-    const reasons = ordered.slice(0, 3).map(g => groupReason(g, gs[g]));
+    const reasons = ordered.filter(g => avail[g]?.status !== 'out').slice(0, 3).map(g => groupReason(g, gs[g], week));
+    // §26 B: what the issue changes leads the reasons, in the words the built workout uses
+    const issueNotes = c.groups.map(g => avail[g]).filter(a => a && a.by && ['out', 'side', 'limited'].includes(a.status))
+      .map(a => ({ group: a.group, status: a.status, side: a.sideOf, limb: a.limb, issue: a.by.id, line: availabilityLine(a) }));
+    reasons.unshift(...issueNotes.filter(n => n.status !== 'limited').map(n => n.line));
     for (const g of c.groups) {
       const rd = gs[g]?.readiness ?? 1;
       if (rd < 0.8) reasons.push(`${groupName(g)} only ${Math.round(rd * 100)}% recovered${rd < 0.5 ? ' (better tomorrow)' : ''}`);
@@ -513,6 +588,7 @@ export function recommend(sessions, { now = new Date(), profile, minutes, locati
     return {
       targetId, label: c.label, score: Math.round(score * 10) / 10, reasons,
       groups: [...c.groups], targets, recovering, ...(clash.length ? { clash } : {}), cardio: cardio.behind ? cardio.suggestion : null,
+      ...(issueNotes.length ? { issueNotes } : {}),
       location: location?.id || location || null,
     };
   });

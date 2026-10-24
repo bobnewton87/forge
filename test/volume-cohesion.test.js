@@ -342,11 +342,20 @@ test('planner: a retroactively logged past day moves this week the same way ever
   const gs = rec.groupStatus([retro], { now: wed, profile: p });
   assert.equal(gs.shoulders.lastTrained, retro.date, 'recency sees the retro day');
   assert.ok(gs.shoulders.readiness < 1, 'and so does readiness');
-  const recs = rec.recommend([retro], { now: wed, profile: p, minutes: 45 });
+  // §18.y: with the week view (the raw sessions: what Plan's rows count) the reasons quote PER-UNIT numbers,
+  // identical to the rows; without it they quote none.
+  const week = rec.weekUnitView([...plan, retro], { profile: p, now: wed });
+  const recs = rec.recommend([retro], { now: wed, profile: p, minutes: 45, week });
   assert.ok(recs.length, 'and "what should I train" still answers');
-  // The reason strings quote the shared numbers.
-  const shoulderRec = recs.find(r => r.groups.includes('shoulders'));
-  if (shoulderRec) assert.ok(shoulderRec.reasons.some(x => /sets this week/.test(x)), shoulderRec.reasons.join(' | '));
+  for (const r of recs) for (const g of r.groups.filter(g => g !== 'forearms')) {
+    const u = rec.leastCoveredUnit(week, g); if (!u) continue;
+    const x = sum.units[u];
+    const want = `${TG.unitShort(u)}: `;
+    const line = r.reasons.find(t => t.startsWith(want));
+    if (line) assert.ok(line.includes(`${TG.fmtSets(x.done)} of ${TG.fmtSets(x.target)} done`), `${line} vs Plan's row ${x.done}/${x.target}`);
+  }
+  const bare = rec.recommend([retro], { now: wed, profile: p, minutes: 45 });
+  assert.ok(bare.every(r => r.reasons.every(t => !/\d+(\.\d)? of \d+ done|sets this week/.test(t))), 'no numbers without the week view');
 });
 
 // ---------------------------------------------------------------- the handoff to the projection

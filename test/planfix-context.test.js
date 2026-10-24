@@ -99,9 +99,12 @@ test('planRange builds around user-touched days after a date and never replaces 
   assert.ok(!(wed.plan.groups || []).includes('shoulders'));
 });
 
-test('buildWorkout forwards upcoming: rationale counts planned sets', () => {
+// §18.y (2026-10-24): a stored rationale no longer quotes weekly set numbers (they went stale, and they were
+// group sums the weekly rows never show); the live per-unit numbers are drawn where the workout is shown.
+test('buildWorkout forwards upcoming, and its rationale quotes no weekly set numbers', () => {
   const p = profile();
   const thu = simulateDone(shoulderDay('2026-10-22'));
   const s = buildWorkout({ targets: ['triceps'], minutes: 30, location: LOC.crunch, profile: p, sessions: [], now: new Date(2026, 9, 20, 12), upcoming: [thu], seed: 3 });
-  assert.ok(s.rationale.some(r => /incl\. planned/.test(r)), s.rationale.join(' | '));
+  assert.ok(s.rationale.some(r => /^Focus: Triceps/.test(r)), s.rationale.join(' | '));
+  assert.ok(!s.rationale.some(r => /target sets|sets this week|\d+\/\d+ /.test(r)), s.rationale.join(' | '));
 });
