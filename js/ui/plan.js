@@ -34,6 +34,9 @@ import { resolveTargets, volumePolicyOf, CARDIO_STYLES, CARDIO_STYLE_NAMES, fmtS
 import { UNIT_ORDER } from '../data/muscles.js';
 import { styleChipsHTML } from './styles.js';
 import { resolveStyle } from '../engine/generator.js';
+// CONTRACT-NOTE (§26): the day sheet shows the workout-ceiling line for a capped day, or the heavy-workout
+//   warning with a one-tap trim once edits pass the ceiling or a muscle's per-session cap (ui/overload.js).
+import { loadNoteHTML, rationaleWithoutCap, trimSession } from './overload.js';
 // CONTRACT-NOTE (STYLES): availability rows for lift / flex days have a style picker (schedule[day].style;
 //   "Default" = profile.defaultStyle); day cards show a non-default style's short name.
 // CONTRACT-NOTE (INTEGRATOR §18): the coverage card's cardio target reads resolveTargets and its
@@ -344,7 +347,8 @@ function openDay(ctx, date) {
   const has = plan && !rest;
   const groups = has ? sessionGroups(plan).slice(0, 6) : [];
   const cmin = has ? cardioMin(plan) : 0;
-  const rationale = has ? [plan.plan?.reason, ...(plan.rationale || [])].filter((x, i, a) => x && a.indexOf(x) === i && x !== 'Custom').slice(0, 5) : [];
+  const rationale = has ? [plan.plan?.reason, ...rationaleWithoutCap(plan.rationale)].filter((x, i, a) => x && a.indexOf(x) === i && x !== 'Custom').slice(0, 5) : [];
+  const loadNote = has ? safe(() => loadNoteHTML(plan, profile, { attr: 'data-pl-trim', editable: date >= t }), '') : '';
   const actions = [
     date === t && has ? ['start', '▶', 'Start now', 'primary'] : null,
     [has ? 'resuggest' : 'suggest', '✦', has ? 'Re-suggest' : 'Suggest a workout'],
@@ -365,6 +369,7 @@ function openDay(ctx, date) {
       ${cmin ? `<span class="badge cardio">${cmin} min cardio</span>` : ''}
     </div>
     ${groups.length ? `<div class="pl-chips mt">${groups.map(g => `<span class="pl-mchip">${esc(g.name)} <b>${fmtSets(g.sets)}</b></span>`).join('')}</div>` : ''}
+    ${loadNote}
     ${rationale.length ? `<ul class="pl-why">${rationale.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
     ${has ? blocksHtml(plan, profile.units, { edit: date >= t }) + (date >= t ? `<button type="button" class="btn btn-sm btn-ghost btn-block pl-exadd" data-exadd>+ Add exercise</button><p class="tiny muted center">Tap a name for form cues &amp; video · ⇄ swap just that exercise</p>` : '') : rest || sch.kind === 'rest' ? '<p class="muted small mt">Rest days let muscles rebuild. You can still plan something below.</p>' : '<p class="muted small mt">Get a suggestion that fits your recovery and weekly targets, or build your own.</p>'}
     ${date >= t ? `<div class="pl-where"><div class="tiny muted bold">Where${has ? ' · tap to re-suggest there' : ''}</div>
@@ -374,6 +379,11 @@ function openDay(ctx, date) {
   </div>`;
   ctx.openSheet(html, (el, close) => {
     el.querySelector('.pl-blocks')?.addEventListener('click', e => blockEdit(ctx, date, plan, loc, e));
+    el.querySelectorAll('[data-pl-trim]').forEach(b => b.addEventListener('click', () => {
+      const ec = editCtx(ctx, date);
+      const r = safe(() => trimSession(plan, ctx.store.getProfile(), { ...ec, muscles: b.dataset.plTrim === 'trim-m' }), null);
+      if (r) saveEdited(ctx, date, r.session, r.msg);
+    }));
     el.querySelector('[data-exadd]')?.addEventListener('click', () => {
       const lifts = (plan.blocks || []).filter(b => b.kind === 'lift').map(b => b.exId);
       addExerciseSheet(ctx, { equipment: loc.equipment || [], targets: plan.targets || [], sculptGoals: profile.sculptGoals || [], exclude: lifts,

@@ -11,6 +11,9 @@ import * as bodycomp from '../engine/bodycomp.js';
 import { silhouetteSVG } from './silhouette.js';
 import { mount3D, body3d, supports3D, estMuscle, shapeOf } from './projection.js';
 import { targetsSummaryHTML, bindTargetsSummary, cardioTargetHTML, bindCardioTarget, weeklySetsHTML, weekSummaryFor } from './targets.js';
+// CONTRACT-NOTE (§26): active issues ("Something hurting?") are listed under the hero (ui/issues.js
+//   issueCardHTML: tap one to edit or mark it better; the last row logs a new one).
+import { issueCardHTML, bindIssueCard, activeOf } from './issues.js';
 // CONTRACT-NOTE (INTEGRATOR §18): the cardio card is the shared editable weekly target
 // (targets.js cardioTargetHTML: stepper + 90/150/225/300 chips, done vs planned vs target this
 // calendar week) and a "Your targets" strip sits at the top. Both write through setTargets.
@@ -223,6 +226,7 @@ export function render(ctx) {
     ${safe(() => targetsSummaryHTML(ctx), '')}
     ${yourBodyCard(store, profile, log)}
     ${hero}
+    ${safe(() => `<div class="section-title">${activeOf(ctx).length ? 'Working around' : 'Aches &amp; pains'}</div>${issueCardHTML(ctx)}`, '')}
     <div class="section-title">Muscle map</div>${map}
     <div class="section-title">Recovery</div><div class="gcards">${gcards}</div>
     <div class="section-title">Weekly sets vs target</div>
@@ -291,6 +295,7 @@ function weightsSheet(ctx) {
 export function bind(root, ctx) {
   root.querySelectorAll('[data-bdnav]').forEach(b => b.onclick = () => ctx.nav(b.dataset.bdnav));
   safe(() => { bindTargetsSummary(root, ctx); bindCardioTarget(root, ctx); return true; }, null);
+  safe(() => { bindIssueCard(root, ctx); return true; }, null);
   const host3d = root.querySelector('#bdCard3d');
   if (host3d && card3d) {
     const o3 = card3d;

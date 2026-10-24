@@ -12,7 +12,10 @@ import { ds } from '../util.js';
 import { setTargets, openTargetsSheet, ensureTargetStyles } from './targets.js';
 import { styleChipsHTML, customStylesListHTML, openStyleEditor, openStyleInfo, deleteStyle } from './styles.js';
 import { buildWorkout } from '../engine/generator.js';
-import { resolveTargets, unitTargets, maxNote, starredGroups, PRIORITY_LEGEND, LIMITS, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY, GOAL_INFO, GOAL_ORDER, priorityLimits } from '../engine/targets.js';
+import { resolveTargets, unitTargets, maxNote, starredGroups, PRIORITY_LEGEND, LIMITS, CARDIO_STYLES, CARDIO_STYLE_NAMES, CARDIO_STYLE_WHY, GOAL_INFO, GOAL_ORDER, priorityLimits, SESSION_CAP_INFO, SESSION_CAP_DEFAULT } from '../engine/targets.js';
+// CONTRACT-NOTE (§26): Training defaults → "Most working sets in one workout" (12-50, default 30) reads
+//   resolveTargets().training.sessionSetCap and writes setTargets({ training: { sessionSetCap } }) (re-plans);
+//   its note says plainly that the ceiling is a convention, with the two sources behind it.
 import { accountsSectionHTML, bindAccountsSection } from './accounts.js';
 // CONTRACT-NOTE (INTEGRATOR §18): goal, sculpt focus, muscle priority, default length/style, the
 //   weekly cardio target and adherence all read resolveTargets and write through setTargets (planning
@@ -155,6 +158,11 @@ function renderSettings(ctx) {
   <div class="card">
     <div class="label mb">Default session length</div>
     <div class="chips">${[15, 20, 30, 45, 60, 75, 90].map(m => `<button class="chip ${T.training.defaultMinutes === m ? 'active' : ''}" data-min="${m}">${m}</button>`).join('')}</div>
+    <div class="label mt2">Most working sets in one workout <span class="tiny muted" style="text-transform:none;letter-spacing:0">${esc(SESSION_CAP_INFO.label)}</span></div>
+    <div class="row mt"><input type="range" min="${LIMITS.sessionSetCap[0]}" max="${LIMITS.sessionSetCap[1]}" step="1" value="${T.training.sessionSetCap}" data-setcap style="--pct:${((T.training.sessionSetCap - LIMITS.sessionSetCap[0]) / (LIMITS.sessionSetCap[1] - LIMITS.sessionSetCap[0])) * 100}%" class="grow" aria-label="Most working sets in one workout"><span class="num bold" style="width:72px;text-align:right" data-setcap-v>${T.training.sessionSetCap} sets</span></div>
+    <details class="st-maxd"><summary class="tiny muted">Whatever the time, a workout stops here and finishes early. ${esc(SESSION_CAP_INFO.short)} Why? ⓘ</summary>
+      <p class="tiny muted">${esc(SESSION_CAP_INFO.text)}${T.training.sessionSetCap !== SESSION_CAP_DEFAULT ? ` Forge's default is ${SESSION_CAP_DEFAULT}.` : ''}</p>
+      <ul class="tiny muted" style="margin:4px 0 0 16px">${SESSION_CAP_INFO.evidence.map(e => `<li>${esc(e.claim)} <i>${esc(e.source)}</i></li>`).join('')}</ul></details>
     <div class="label mb mt2">Default style</div>${styleChipsHTML(p, T.training.style, { attr: 'data-dstyle' })}
     <div class="label mb mt2" id="sec-styles">My training styles</div>${customStylesListHTML(p)}
     <div class="label mt2">Weekly cardio target</div>
@@ -293,6 +301,12 @@ function bindSettings(root, ctx, params) {
   const cr = root.querySelector('[data-cardio]'), crv = root.querySelector('[data-cardio-v]');
   cr.addEventListener('input', () => { crv.textContent = cr.value + ' min'; cr.style.setProperty('--pct', (cr.value / Number(cr.dataset.max || 600)) * 100 + '%'); });
   cr.addEventListener('change', () => { cr.blur(); setTargets(ctx, { cardio: { minPerWeek: Number(cr.value) } }); });
+  const sc = root.querySelector('[data-setcap]'), scv = root.querySelector('[data-setcap-v]');
+  if (sc) {
+    const [lo, hi] = LIMITS.sessionSetCap;
+    sc.addEventListener('input', () => { scv.textContent = sc.value + ' sets'; sc.style.setProperty('--pct', ((sc.value - lo) / (hi - lo)) * 100 + '%'); });
+    sc.addEventListener('change', () => { sc.blur(); setTargets(ctx, { training: { sessionSetCap: Number(sc.value) } }); });
+  }
   const ad = root.querySelector('[data-adh]'), adv = root.querySelector('[data-adh-v]');
   ad.addEventListener('input', () => { adv.textContent = Math.round(ad.value * 100) + '%'; ad.style.setProperty('--pct', ((ad.value - LIMITS.adherence[0]) / (LIMITS.adherence[1] - LIMITS.adherence[0])) * 100 + '%'); });
   ad.addEventListener('change', () => { ad.blur(); setTargets(ctx, { adherence: Number(ad.value) }, { replan: false }); });

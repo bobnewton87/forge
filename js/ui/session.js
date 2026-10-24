@@ -12,7 +12,14 @@ import { CARDIO, INTENSITIES, estimateCalories } from '../data/cardio.js';
 import { getEx } from '../data/exercises.js';
 import { groupStatus, sessionVolume } from '../engine/recovery.js';
 import { sessionPRs, personalRecords } from '../engine/progression.js';
-import { swapBlock, addExercise } from '../engine/generator.js';
+import { swapBlock, addExercise, alternatives } from '../engine/generator.js';
+import { activeIssues, issueLabel, issueTier } from '../engine/issues.js';
+// CONTRACT-NOTE (§26): the header carries the heavy-workout warning (ui/overload.js) once the workout passes
+//   the ceiling or a muscle's per-session cap, with a one-tap trim that never removes a logged set. The ⋯ menu
+//   has "This hurts": it logs an issue for the exercise's area (ui/issues.js openHurtsSheet) and swaps the
+//   exercise for the best alternative that spares it (logged sets stay; no safe swap → the exercise is skipped).
+import { openHurtsSheet } from './issues.js';
+import { loadNoteHTML, trimSession } from './overload.js';
 import { cardioWeek } from '../engine/targets.js';
 import { retroTimes, retroFloor, canLogPast } from '../engine/retro.js';
 import { weeklySetsHTML, weekSummaryFor } from './targets.js';
@@ -182,6 +189,7 @@ function renderHeader(profile) {
     </div>
     <div class="tr-sprog"><div style="width:${pct}%"></div></div>
     <div class="tr-shead-foot muted small"><span data-prog>${p.done}/${p.total} done</span>${s.status !== 'done' && !manual ? `<span data-left>${left ? `~${left} min left` : 'All done 💪'}</span>` : ''}</div>
+    ${s.status !== 'done' ? safe(() => loadNoteHTML(s, profile, { attr: 'data-s' }), '') : ''}
   </header>`;
 }
 
@@ -374,6 +382,7 @@ function blockMenu(root, i) {
     <div class="tr-menu">
       <button type="button" data-m="info">ⓘ Form cues & video</button>
       <button type="button" data-m="swap">⇄ Swap exercise</button>
+      <button type="button" data-m="hurts">🩹 This hurts</button>
       ${i > 0 ? '<button type="button" data-m="up">▲ Move up</button>' : ''}
       ${i < S.blocks.length - 1 ? '<button type="button" data-m="down">▼ Move down</button>' : ''}
       <button type="button" data-m="skip">⏭ Skip exercise</button>
@@ -385,6 +394,7 @@ function blockMenu(root, i) {
       close();
       if (m === 'info') return showInfo(b.exId);
       if (m === 'swap') return doSwap(root, i);
+      if (m === 'hurts') return openHurtsSheet(CTX, { exId: b.exId, onSaved: () => swapForSafe(root, i) });
       if (m === 'up' || m === 'down') { const j = m === 'up' ? i - 1 : i + 1; [S.blocks[i], S.blocks[j]] = [S.blocks[j], S.blocks[i]]; }
       if (m === 'skip') b.skipped = true;
       if (m === 'remove') { if (b.sets.some(x => x.done) && !confirm('Remove this exercise and its logged sets?')) return; S.blocks.splice(i, 1); }
@@ -404,30 +414,47 @@ function doSwap(root, i) {
   const b = S.blocks[i];
   swapSheet(CTX, {
     exId: b.exId, equipment: sessionEquipment(profile, S), exclude: S.blocks.filter(isLift).map(x => x.exId),
-    onPick: id => {
-      const opts = { sessions: CTX.store.getSessions().filter(x => x.id !== S.id), now: new Date() };
-      const doneSets = b.sets.filter(x => x.done);
-      if (doneSets.length) {
-        // Keep what was logged; the new exercise gets the remaining sets right after it.
-        const tmp = safe(() => addExercise(S, id, opts), null);
-        if (!tmp) return;
-        const nb = tmp.blocks[tmp.blocks.length - 1];
-        const remaining = Math.max(1, b.sets.length - doneSets.length);
-        nb.sets = Array.from({ length: remaining }, () => ({ w: null, r: null, done: false }));
-        nb.target = { ...nb.target, sets: remaining };
-        nb.group = b.group ?? null;
-        b.sets = doneSets; b.target = { ...b.target, sets: doneSets.length };
-        S.blocks.splice(i + 1, 0, nb);
-      } else {
-        const out = safe(() => swapBlock(S, i, id, opts), null);
-        if (!out) return;
-        if (out.blocks[i] && out.blocks[i].group == null && b.group) out.blocks[i].group = b.group;
-        Object.assign(S, out);
-      }
-      saveNow(); redrawAll(root);
-      toast(CTX, `Swapped to ${exName(id)}`);
-    },
+    onPick: id => { if (!applySwap(i, id)) return; saveNow(); redrawAll(root); toast(CTX, `Swapped to ${exName(id)}`); },
   });
+}
+// Swap block i for exercise id. Logged sets stay with the old exercise; the new one gets the remaining sets
+// right after it.
+function applySwap(i, id) {
+  const b = S.blocks[i];
+  const opts = { sessions: CTX.store.getSessions().filter(x => x.id !== S.id), now: new Date() };
+  const doneSets = b.sets.filter(x => x.done);
+  if (doneSets.length) {
+    const tmp = safe(() => addExercise(S, id, opts), null);
+    if (!tmp) return false;
+    const nb = tmp.blocks[tmp.blocks.length - 1];
+    const remaining = Math.max(1, b.sets.length - doneSets.length);
+    nb.sets = Array.from({ length: remaining }, () => ({ w: null, r: null, done: false }));
+    nb.target = { ...nb.target, sets: remaining };
+    nb.group = b.group ?? null;
+    b.sets = doneSets; b.target = { ...b.target, sets: doneSets.length };
+    S.blocks.splice(i + 1, 0, nb);
+  } else {
+    const out = safe(() => swapBlock(S, i, id, opts), null);
+    if (!out) return false;
+    if (out.blocks[i] && out.blocks[i].group == null && b.group) out.blocks[i].group = b.group;
+    Object.assign(S, out);
+  }
+  return true;
+}
+// §26 "This hurts": the issue is already saved (setTargets writes the profile at once), so the best
+// alternative that spares every active issue goes in; with none at this location the exercise is skipped.
+function swapForSafe(root, i) {
+  const b = S && S.blocks[i]; if (!b || !isLift(b)) return;
+  const profile = CTX.store.getProfile();
+  const issues = safe(() => activeIssues(profile, ds()), []);
+  const logged = issues[issues.length - 1];   // the one just logged (newest)
+  // the alternatives that spare every active issue, the ones that load the just-logged area least first
+  const alts = safe(() => alternatives(b.exId, { equipment: sessionEquipment(profile, S), exclude: S.blocks.filter(isLift).map(x => x.exId), limit: 8, issues }), [])
+    .map((e, k) => ({ e, k, t: logged ? issueTier(e, logged) : 0 })).sort((x, y) => x.t - y.t || x.k - y.k).map(x => x.e);
+  const what = logged ? `your ${issueLabel(logged).toLowerCase()}` : 'it';
+  if (alts.length && applySwap(i, alts[0].id)) toast(CTX, `Logged. Swapped to ${alts[0].name}, which spares ${what}`);
+  else { b.skipped = true; toast(CTX, `Logged. Nothing here spares ${what}, so this one is skipped (⇄ to pick your own)`); }
+  saveNow(); redrawAll(root);
 }
 
 function finish(root) {
@@ -595,6 +622,12 @@ export function bind(root, ctx, params = {}) {
           };
         });
         break;
+      }
+      case 'trim': case 'trim-m': {   // §26: never removes a logged set
+        const r = safe(() => trimSession(S, store.getProfile(), { sessions: store.getSessions().filter(x => x.id !== S.id), now: new Date(), muscles: a === 'trim-m' }), null);
+        if (!r) break;
+        Object.assign(S, { blocks: r.session.blocks, estMinutes: r.session.estMinutes });
+        saveNow(); redrawAll(root); toast(ctx, r.msg); break;
       }
       case 'finish': finish(root); break;
       case 'close': saveNow(); ctx.nav('history'); break;

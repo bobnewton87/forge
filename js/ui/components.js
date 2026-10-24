@@ -10,6 +10,11 @@ import { expandEquipment, canDo } from '../data/equipment.js';
 import { CARDIO, INTENSITIES, estimateCalories } from '../data/cardio.js';
 import { exercisesFor, alternatives } from '../engine/generator.js';
 import { GROUP_ORDER } from '../data/muscles.js';
+// CONTRACT-NOTE (§26): addExerciseSheet / swapSheet read the active issues from ctx.store's profile: the
+//   suggested lists leave out what an issue rules out (with a "N hidden" note naming the issue); search
+//   still finds everything, marking those moves "⚠ loads your …" (an explicit pick is the user's call).
+import { activeIssues, issueFilter, issueLabel } from '../engine/issues.js';
+import { ds } from '../util.js';
 
 export function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -207,11 +212,17 @@ function groupOfTarget(t) {
   return null;
 }
 
-function exPickList(list, exclude = []) {
-  if (!list.length) return '<div class="empty muted">No matching exercises for this equipment.</div>';
-  return list.slice(0, 40).map(ex => `<button type="button" class="tr-pick" data-pick="${esc(ex.id)}" ${exclude.includes(ex.id) ? 'data-dup="1"' : ''}>
-      ${exerciseCard(ex, { compact: true })}<span class="tr-pick-plus">${exclude.includes(ex.id) ? '✓' : '+'}</span></button>`).join('');
+function exPickList(list, exclude = [], IF = null, hidden = 0) {
+  const note = hidden && IF ? `<p class="tiny muted is-hidden">${hidden} more hidden: ${hidden === 1 ? 'it loads' : 'they load'} your ${esc([...new Set(IF.issues.map(x => issueLabel(x).toLowerCase()))].join(' / '))}. Search to see everything.</p>` : '';
+  if (!list.length) return (note || '') + '<div class="empty muted">No matching exercises for this equipment.</div>';
+  return note + list.slice(0, 40).map(ex => {
+    const why = IF && IF.blocked.has(ex.id) ? IF.why(ex.id) : null;
+    return `<button type="button" class="tr-pick" data-pick="${esc(ex.id)}" ${exclude.includes(ex.id) ? 'data-dup="1"' : ''}>
+      ${exerciseCard(ex, { compact: true })}${why ? `<span class="badge warn is-loads">⚠ loads your ${esc(issueLabel(why).toLowerCase())}</span>` : ''}<span class="tr-pick-plus">${exclude.includes(ex.id) ? '✓' : '+'}</span></button>`;
+  }).join('');
 }
+// §26: the active issues of the profile behind this sheet ([] when there's no store, e.g. a test ctx).
+function issuesOf(ctx) { return safe(() => activeIssues(ctx?.store?.getProfile?.() || {}, ds()), []); }
 
 function searchAll(q, eqSet) {
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
@@ -222,11 +233,16 @@ function searchAll(q, eqSet) {
 export function addExerciseSheet(ctx, { equipment = [], targets = [], sculptGoals = [], exclude = [], onPick, title = 'Add exercise' } = {}) {
   const eqSet = safe(() => expandEquipment(equipment), new Set(['bodyweight']));
   let cur = targets.map(groupOfTarget).find(Boolean) || 'chest';
-  const listFor = g => safe(() => exercisesFor(g, eqSet, { sculptGoals }), []);
+  const issues = issuesOf(ctx), IF = issueFilter(issues);
+  const listHtml = g => {
+    const all = safe(() => exercisesFor(g, eqSet, { sculptGoals }), []);
+    const ok = safe(() => exercisesFor(g, eqSet, { sculptGoals, issues }), all);
+    return exPickList(ok, exclude, IF, all.length - ok.length);
+  };
   const html = `<div class="tr-sheet-h"><h3>${esc(title)}</h3></div>
     <input class="tr-search" type="search" placeholder="Search exercises…" data-q>
     <div class="tr-chiprow scroll" data-groups>${GROUP_ORDER.map(g => chip(GROUPS[g]?.name || g, { active: g === cur, attrs: `data-g="${g}"` })).join('')}</div>
-    <div class="tr-picklist" data-list>${exPickList(listFor(cur), exclude)}</div>`;
+    <div class="tr-picklist" data-list>${listHtml(cur)}</div>`;
   openSheet(ctx, html, (el, close) => {
     const listEl = el.querySelector('[data-list]');
     const q = el.querySelector('[data-q]');
@@ -234,9 +250,9 @@ export function addExerciseSheet(ctx, { equipment = [], targets = [], sculptGoal
       const b = e.target.closest('[data-g]'); if (!b) return;
       cur = b.dataset.g; q.value = '';
       el.querySelectorAll('[data-g]').forEach(x => x.classList.toggle('active', x === b));
-      listEl.innerHTML = exPickList(listFor(cur), exclude);
+      listEl.innerHTML = listHtml(cur);
     };
-    q.oninput = () => { listEl.innerHTML = exPickList(q.value.trim() ? searchAll(q.value.trim(), eqSet) : listFor(cur), exclude); };
+    q.oninput = () => { listEl.innerHTML = q.value.trim() ? exPickList(searchAll(q.value.trim(), eqSet), exclude, IF) : listHtml(cur); };
     listEl.onclick = e => {
       const b = e.target.closest('[data-pick]'); if (!b) return;
       close(); onPick && onPick(b.dataset.pick);
@@ -247,14 +263,16 @@ export function addExerciseSheet(ctx, { equipment = [], targets = [], sculptGoal
 // Sheet: swap an exercise for an alternative with the same main muscles.
 export function swapSheet(ctx, { exId, equipment = [], exclude = [], onPick } = {}) {
   const eqSet = safe(() => expandEquipment(equipment), new Set(['bodyweight']));
-  const alts = safe(() => alternatives(exId, { equipment: [...eqSet], exclude: [exId, ...exclude], limit: 12 }), []);
-  const html = `<div class="tr-sheet-h"><h3>Swap ${esc(exName(exId))}</h3><div class="muted small">Same muscles, your equipment</div></div>
+  const issues = issuesOf(ctx), IF = issueFilter(issues);
+  const alts = safe(() => alternatives(exId, { equipment: [...eqSet], exclude: [exId, ...exclude], limit: 12, issues }), []);
+  const hidden = IF.any ? safe(() => alternatives(exId, { equipment: [...eqSet], exclude: [exId, ...exclude], limit: 12 }).filter(e => IF.blocked.has(e.id)).length, 0) : 0;
+  const html = `<div class="tr-sheet-h"><h3>Swap ${esc(exName(exId))}</h3><div class="muted small">Same muscles, your equipment${IF.any ? ', sparing what hurts' : ''}</div></div>
     <input class="tr-search" type="search" placeholder="Or search any exercise…" data-q>
-    <div class="tr-picklist" data-list>${exPickList(alts)}</div>`;
+    <div class="tr-picklist" data-list>${exPickList(alts, [], IF, hidden)}</div>`;
   openSheet(ctx, html, (el, close) => {
     const listEl = el.querySelector('[data-list]');
     const q = el.querySelector('[data-q]');
-    q.oninput = () => { listEl.innerHTML = exPickList(q.value.trim() ? searchAll(q.value.trim(), eqSet).filter(e => e.id !== exId) : alts); };
+    q.oninput = () => { listEl.innerHTML = q.value.trim() ? exPickList(searchAll(q.value.trim(), eqSet).filter(e => e.id !== exId), [], IF) : exPickList(alts, [], IF, hidden); };
     listEl.onclick = e => {
       const b = e.target.closest('[data-pick]'); if (!b) return;
       close(); onPick && onPick(b.dataset.pick);

@@ -48,6 +48,12 @@ import {
   esc, chip, readinessColor, fmtNum, exName, targetName, unitLabel, safe, openSheet, closeSheet, toast,
   addExerciseSheet, swapSheet, cardioFormHtml, bindCardioForm, readCardioForm, cardioName, intensityName, exerciseInfoHtml,
 } from './components.js';
+// CONTRACT-NOTE (§26): plain Today shows the issue strip (ui/issues.js: "Something hurting?", one chip per
+//   active issue, a "Still hurting?" card after 7 days). The preview shows the workout-ceiling line for a
+//   capped build, or the heavy-workout warning with "Trim to N" once the user's edits pass the ceiling or a
+//   muscle's per-session cap (ui/overload.js; data-t="trim" / "trim-m").
+import { issueStripHTML, bindIssueStrip } from './issues.js';
+import { loadNoteHTML, rationaleWithoutCap, trimSession } from './overload.js';
 
 const TIMES = [15, 20, 30, 45, 60, 75, 90];
 // CONTRACT-NOTE (STYLES): the builder's style row lists built-ins + custom styles (profile.customStyles)
@@ -209,6 +215,7 @@ export function render(ctx, params = {}) {
 
   let h = `<div class="tr-today">${header(profile, sessions, showPreview)}`;
   if (active && active.status === 'active') h += resumeCard(active);
+  if (!showPreview) h += safe(() => issueStripHTML(ctx), '');
   if (!showPreview) h += todayPlanCard(sessions, profile, active);
   if (showPreview) h += preview(draft, profile);
   else {
@@ -458,7 +465,8 @@ function preview(draft, profile) {
     </div>
     ${rebuiltNote ? `<div class="tr-rebuilt">↻ ${esc(rebuiltNote)}</div>` : ''}
     ${styleCompare(s, profile)}
-    ${(s.rationale || []).length ? `<ul class="tr-rationale">${s.rationale.slice(0, 6).map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
+    ${loadNoteHTML(s, profile)}
+    ${rationaleWithoutCap(s.rationale).length ? `<ul class="tr-rationale">${rationaleWithoutCap(s.rationale).slice(0, 7).map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
     <div class="tr-plan">${items || '<div class="empty muted">No exercises. Add one below.</div>'}</div>
     <div class="tr-plan-tools">
       <button type="button" class="btn btn-ghost" data-t="add">+ Add exercise</button>
@@ -663,6 +671,7 @@ function openManualSheet(ctx, loc) {
 export function bind(root, ctx, params = {}) {
   const store = ctx.store;
   safe(() => { bindTargetsSummary(root, ctx); return true; }, null);
+  safe(() => { bindIssueStrip(root, ctx); return true; }, null);
   if (showBuilderOverride && store.kv('draft')) { /* keep draft until a new build replaces it */ }
 
   root.onclick = e => {
@@ -794,6 +803,12 @@ export function bind(root, ctx, params = {}) {
         return s;
       }); break;
       case 'rm': updateDraft(ctx, s => { s.blocks.splice(i, 1); return s; }); break;
+      case 'trim': case 'trim-m': updateDraft(ctx, s => {   // §26: advice, one tap; never blocks Start
+        const r = safe(() => trimSession(s, profile, { sessions: store.getSessions(), now: refNow(), muscles: t === 'trim-m' }), null);
+        if (!r) return s;
+        toast(ctx, r.msg);
+        return r.session;
+      }); break;
       case 'info': {
         const b = draft?.session?.blocks?.[i]; if (!b) return;
         openSheet(ctx, exerciseInfoHtml(getEx(b.exId)), (sh, close) => {

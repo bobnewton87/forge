@@ -1045,10 +1045,12 @@ export function buildWorkout({
   //     and the rationale says so (never an empty result without a reason). If nothing requested is
   //     left, its complement groups stand in, and that is said too.
   const issueLines = [];
+  const avoid0 = new Set([...(exclude || []), ...(profile.avoidExercises || [])]);
+  const movesFor = (g, blockedToo) => EXERCISES.filter(e => e && e.muscles && primaryGroup(e) === g && !avoid0.has(e.id) && !isBackSquat(e) && canDo(e, eq)
+    && e.pattern !== 'conditioning' && (blockedToo || !IF.blocked.has(e.id)));
+  // a group an issue leaves nothing for here is never added as a fill-in either
+  const spared = g => !IF.any || movesFor(g, false).length > 0;
   if (IF.any) {
-    const avoid0 = new Set([...(exclude || []), ...(profile.avoidExercises || [])]);
-    const movesFor = (g, blockedToo) => EXERCISES.filter(e => e && e.muscles && primaryGroup(e) === g && !avoid0.has(e.id) && !isBackSquat(e) && canDo(e, eq)
-      && e.pattern !== 'conditioning' && (blockedToo || !IF.blocked.has(e.id)));
     const blockedBy = g => {   // the issue that rules out most of this group's moves
       const n = new Map(); for (const e of movesFor(g, true)) { const x = IF.why(e.id); if (x) n.set(x, (n.get(x) || 0) + 1); }
       return [...n.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || issues[0];
@@ -1098,7 +1100,7 @@ export function buildWorkout({
     for (let k = 0; k < 3 && planInfo.est() < minutes * 60 * 0.9 && !ctx.capHit; k++) {
       const gs = safe(() => groupStatus(sessions, { now, profile, upcoming }), {});
       const cands = [...new Set(res.groups.flatMap(g => COMPLEMENT[g] || []))]
-        .filter(g => GROUPS[g] && !res.groups.includes(g) && !addedGroups.includes(g))
+        .filter(g => GROUPS[g] && !res.groups.includes(g) && !addedGroups.includes(g) && spared(g))
         .map(g => [g, (gs[g]?.need ?? 0.5) * (1 - 0.25 * Math.min(...res.groups.map(x => { const i = (COMPLEMENT[x] || []).indexOf(g); return i < 0 ? 3 : i; })))])
         .sort((a, b) => b[1] - a[1]).map(x => x[0]);
       if (!cands.length) break;
