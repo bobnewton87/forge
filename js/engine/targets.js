@@ -38,6 +38,12 @@
 //  - Per-session returns diminish beyond ~8-10 sets per muscle, so the planner caps additions per
 //    session (~10 big / ~8 small groups) and spreads the rest across the week. resolveTargets also returns
 //   `capacity` ({ cardio, total, finishers, cardioDays, flex }) and `warnings`.
+// CONTRACT-NOTE (§26, 2026-10-24): profile.sessionSetCap (number, working sets per workout, LIMITS.sessionSetCap
+//   [12, 50], default 30) ← resolveTargets().training.sessionSetCap; written via applyTargetChange({ training:
+//   { sessionSetCap } }); sessionSetCapOf(profile) is the resolver the generator and planner call. SESSION_CAP_INFO
+//   holds the in-app "why" (a convention, not a measured ceiling). profile.issues (things that hurt, §26) are
+//   validated by engine/issues.js; resolveTargets().issues lists the active ones and applyTargetChange({ issues:
+//   { add | update | resolve | check } }) is the one write path, so logging one re-plans upcoming auto days.
 // CONTRACT-NOTE: nutrition.phases entries: { label, start:'YYYY-MM-DD', end:'YYYY-MM-DD'|null,
 //   surplus:number|null, calories:number|null } sorted by start (max 12). Consumers may ignore them.
 import { CARDIO, cardioOptions, estimateCalories, estimateNetCalories } from '../data/cardio.js';
@@ -52,6 +58,7 @@ import { STYLE_LIMITS, normalizeCustomStyle, styleOptions, isStyleId, resolveSty
 // spread of generator's const here would hit its TDZ. Function imports are hoisted, so they are safe.
 export { BUILTIN_STYLES as STYLES } from './generator.js';
 import { sexOf, BODY } from './sex.js';
+import { activeIssues, applyIssuePatch, issueLabel, issueKey } from './issues.js';
 import { lossRateDeficit, KCAL_PER_LB_TREND } from './nutrition.js';
 // Namespace import on purpose: it lets this module read nutrition.js's own tables when they are
 // exported and fall back to a pinned copy when they are not, so the two can never resolve one target
@@ -84,6 +91,8 @@ export const LIMITS = {
   // floor drops from 0.5× to 0×. Every other goal keeps LIMITS.priority.
   priorityLoss: [0, 2],
   goalWeightLb: [70, 600], lossRatePctPerWeek: [0.1, 2],
+  // §26: whole-workout working-set ceiling (every style, built-in and custom).
+  sessionSetCap: [12, 50],
 };
 export const CARDIO_CHIPS = [90, 150, 225, 300];
 // §23. 'cut' = get lean, KEEP muscle. 'weight_loss' = get smaller: fat first, lean mass allowed to follow.
@@ -195,7 +204,26 @@ export const MINIMUMS_EVIDENCE = [
 ];
 const DEF_VOLUME = { mode: 'extend', maxMinutes: 90 };
 // goalBodyFatPct: 15 % DXA-equivalent ≈ the colloquial "12 %" (§20b); a saved goal is never changed.
-const DEF = { cardioMin: 120, hardPerWeek: 1, adherence: 0.85, defaultMinutes: 45, style: 'hypertrophy', proteinGPerLb: 1.0, fatPct: 25, goalBodyFatPct: BODY.male.goalBodyFat, goal: 'recomp' };
+const DEF = { cardioMin: 120, hardPerWeek: 1, adherence: 0.85, defaultMinutes: 45, style: 'hypertrophy', proteinGPerLb: 1.0, fatPct: 25, goalBodyFatPct: BODY.male.goalBodyFat, goal: 'recomp', sessionSetCap: 30 };
+
+// ---------------------------------------------------------------- §26 workout set ceiling
+// The most working sets Forge puts in ONE workout, whatever the style or the minutes. It is a convention
+// with an honest rationale (fatigue, set quality, time), not a measured hypertrophy ceiling: the evidence
+// says per-session volume shows diminishing returns but no wall. Adjustable 12-50.
+export const SESSION_CAP_DEFAULT = DEF.sessionSetCap;
+export function sessionSetCapOf(profile) {
+  const v = num(profile?.sessionSetCap);
+  return Number.isFinite(v) && v > 0 ? clamp(Math.round(v), LIMITS.sessionSetCap) : DEF.sessionSetCap;
+}
+export const SESSION_CAP_INFO = {
+  short: 'Past this, extra sets mostly add fatigue.',
+  label: 'a convention, not a measured limit',
+  text: 'Forge stops adding sets to a workout at this ceiling, whatever the time you give it, and lets the workout finish early instead (after first lengthening rests a little where the style allows). This is a convention: no study has found a per-workout set limit for growth. The honest argument for it is quality: when the same weekly sets are spread over more sessions, each set is done with more load.',
+  evidence: [
+    { claim: 'No per-session plateau has been measured: the largest dose-response analysis reports diminishing returns with more sets per session, not a ceiling.', source: 'Pelland et al. 2025, Sports Med 56:481, doi:10.1007/s40279-025-02344-w' },
+    { claim: 'Nine weekly quad sets done in one session or spread over three grew the quads the same, but volume load was 58-76% higher when spread: the case for a cap is set quality and fatigue, not growth.', source: 'Calzavara & Barroso 2026, J Strength Cond Res, doi:10.1519/JSC.0000000000005665' },
+  ],
+};
 // §18: the protein default is PER GOAL, and nutrition.js owns the table. `DEF.proteinGPerLb` was flat
 // at 1.0, so under a cut with no protein set the Nutrition editor's slider read 1.00 while Today's
 // target computed at 1.15 g/lb - two numbers for one target, on one screen.
@@ -739,7 +767,9 @@ export function resolveTargets(profile = {}, { now = new Date(), sessions } = {}
       defaultMinutes: fin(profile.defaultMinutes) ? clamp(Math.round(num(profile.defaultMinutes)), LIMITS.defaultMinutes) : DEF.defaultMinutes,
       groupPriority: { ...(profile.groupPriority || {}) },
       volumePolicy: volumePolicyOf(profile),
+      sessionSetCap: sessionSetCapOf(profile),   // §26
     },
+    issues: activeIssues(profile, today),        // §26: things that hurt (active only)
     minimums: { groups: weeklyMinimums(profile), units: unitTargets(profile), evidence: MINIMUMS_EVIDENCE,
       // §23: which weekly-set floors are in force, and whether the goal even allows going below them.
       floor: { mode: floorMode, factor: FLOOR_FACTOR[floorMode], name: FLOOR_INFO[floorMode].name, why: FLOOR_INFO[floorMode].why,
@@ -833,6 +863,10 @@ export function applyTargetChange(profile, patch = {}) {
     for (const k of DAYS) if (p.schedule?.[k]?.style && !isStyleId(p.schedule[k].style, p)) { p.schedule = { ...p.schedule, [k]: { ...p.schedule[k] } }; delete p.schedule[k].style; }
   }
   if ('defaultMinutes' in t) { const v = vNum(t.defaultMinutes, LIMITS.defaultMinutes); if (v !== undefined) p.defaultMinutes = v; }
+  if ('sessionSetCap' in t) {   // §26: null resets to the default
+    if (t.sessionSetCap === null) delete p.sessionSetCap;
+    else { const v = vNum(t.sessionSetCap, LIMITS.sessionSetCap); if (v !== undefined) p.sessionSetCap = v; }
+  }
   if ('style' in t && isStyleId(t.style, p)) p.defaultStyle = t.style;
   if (t.schedule && typeof t.schedule === 'object') {
     const kinds = ['lift', 'cardio', 'class', 'flex', 'rest'];
@@ -879,6 +913,8 @@ export function applyTargetChange(profile, patch = {}) {
     p.nutrition = cur;
   }
   if ('adherence' in patch) { const v = vNum(patch.adherence, LIMITS.adherence, { round: 2 }); if (v !== undefined) p.adherence = v; }
+  // §26: things that hurt. engine/issues.js validates; this stays the one write path for the profile.
+  if (patch.issues && typeof patch.issues === 'object') p.issues = applyIssuePatch(p.issues, patch.issues);
   const g = patch.goals || {};
   if ('goal' in g && GOALS.includes(g.goal)) p.goal = g.goal;
   if (Array.isArray(g.sculptGoals)) p.sculptGoals = [...new Set(g.sculptGoals.filter(x => typeof x === 'string'))];
@@ -919,7 +955,8 @@ export function needsReplan(before, after) {
   const a = resolveTargets(before), b = resolveTargets(after);
   const k = t => JSON.stringify([t.cardio.minPerWeek, t.cardio.modalities, t.cardio.hardSessionsPerWeek, t.cardio.style, t.cardio.minSession, t.training.schedule, t.training.style,
     t.training.defaultMinutes, t.training.groupPriority, t.training.volumePolicy, t.goals.sculptGoals, usedStyles(t.training),
-    t.minimums.floor.mode]);   // §23: the weekly-set floors change what the planner builds
+    t.minimums.floor.mode,   // §23: the weekly-set floors change what the planner builds
+    t.training.sessionSetCap, t.issues.map(issueKey)]);   // §26: the workout ceiling and active issues too
   return k(a) !== k(b);
 }
 
@@ -939,6 +976,11 @@ export function describeChange(before, after) {
   if (JSON.stringify(a.cardio.modalities) !== JSON.stringify(b.cardio.modalities)) out.push(b.cardio.modalities.length ? `cardio: ${b.cardio.modalities.map(m => CARDIO[m]?.name || m).join(', ')}` : 'any cardio type');
   if (JSON.stringify(a.training.schedule) !== JSON.stringify(b.training.schedule)) out.push('your availability');
   if (a.training.defaultMinutes !== b.training.defaultMinutes) out.push(`${b.training.defaultMinutes}-min default sessions`);
+  if (a.training.sessionSetCap !== b.training.sessionSetCap) out.push(`at most ${b.training.sessionSetCap} working sets a workout`);
+  const ia = new Map(a.issues.map(x => [x.id, x])), ib = new Map(b.issues.map(x => [x.id, x]));
+  for (const [id, x] of ib) if (!ia.has(id)) out.push(`${issueLabel(x).toLowerCase()} logged (${x.severity})`);
+    else if (issueKey(ia.get(id)) !== issueKey(x)) out.push(`${issueLabel(x).toLowerCase()}: now ${x.severity}`);
+  for (const [id, x] of ia) if (!ib.has(id)) out.push(`${issueLabel(x).toLowerCase()} feels better`);
   if (a.training.style !== b.training.style) out.push(`${resolveStyle(b.training.style, after).name.toLowerCase()} style`);
   if (JSON.stringify(a.training.customStyles) !== JSON.stringify(b.training.customStyles)) out.push('your training styles');
   if (JSON.stringify(a.training.groupPriority) !== JSON.stringify(b.training.groupPriority)) out.push('muscle priorities');

@@ -1,7 +1,7 @@
 // ENGINE-B tests: generator.js. Property-based so they survive the library growing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildWorkout, estimateMinutes, alternatives, swapBlock, addExercise, exercisesFor, isBackSquat } from '../js/engine/generator.js';
+import { buildWorkout, estimateMinutes, alternatives, swapBlock, addExercise, exercisesFor, isBackSquat, workingSets } from '../js/engine/generator.js';
 import { EXERCISES, getEx } from '../js/data/exercises.js';
 import { DEFAULT_LOCATIONS, expandEquipment, canDo } from '../js/data/equipment.js';
 import { SCULPT_GOALS } from '../js/data/sculpt.js';
@@ -30,7 +30,18 @@ function history() {
   ];
 }
 
-test('time fit within ±10% across minutes × locations × targets (or flagged poolLimited)', () => {
+// §26: a workout the set ceiling stopped (s.capped) is short ON PURPOSE: it is exempt from the ±10% fit,
+// must sit at or under the ceiling, must not be flagged poolLimited, and must say so in the rationale.
+const CAP = 30;
+const cappedOk = (s, minutes, tag) => {
+  assert.ok(workingSets(s) <= CAP, `${tag}: ${workingSets(s)} sets over the ${CAP}-set ceiling`);
+  assert.ok(s.estMinutes <= minutes * 1.1, `${tag}: capped but long (${s.estMinutes})`);
+  assert.equal(s.capped.cap, CAP); assert.equal(s.capped.sets, workingSets(s));
+  assert.equal(s.capped.freedMin, Math.max(0, minutes - s.estMinutes));
+  assert.ok(!s.poolLimited, `${tag}: capped is not pool-limited`);
+  assert.ok(s.rationale.some(r => /^Capped at/.test(r)), `${tag}: cap explained`);
+};
+test('time fit within ±10% across minutes × locations × targets (or flagged poolLimited / capped)', () => {
   let limited = 0, total = 0;
   for (const loc of DEFAULT_LOCATIONS) for (const targets of TARGET_SETS) for (const minutes of MINUTES) {
     total++;
@@ -38,7 +49,9 @@ test('time fit within ±10% across minutes × locations × targets (or flagged p
     const est = estimateMinutes(s.blocks);
     assert.equal(s.estMinutes, est, 'estMinutes matches estimateMinutes(blocks)');
     const tag = `${loc.id} ${targets.join('+') || 'auto'} ${minutes}`;
-    if (s.poolLimited) {
+    assert.ok(workingSets(s) <= CAP, `${tag}: ${workingSets(s)} working sets past the ${CAP}-set ceiling`);
+    if (s.capped) cappedOk(s, minutes, tag);
+    else if (s.poolLimited) {
       limited++;
       assert.ok(est < minutes * 0.9, `${tag}: poolLimited only when short (${est})`);
       assert.ok(s.rationale.some(r => /suitable exercises|Not enough/.test(r)), `${tag}: limitation explained`);
@@ -54,7 +67,8 @@ test('time fit for every style at crunch and home', () => {
   for (const style of ['hypertrophy', 'pump', 'strength', 'circuit']) for (const loc of [LOC.crunch, LOC.home]) for (const minutes of MINUTES) {
     const s = buildWorkout({ targets: ['upper'], minutes, location: loc, profile: PROFILE, now: NOW, style, seed: 3 });
     assert.equal(s.style, style);
-    if (!s.poolLimited) assert.ok(Math.abs(s.estMinutes - minutes) <= minutes * 0.1, `${style} ${loc.id} ${minutes}: ${s.estMinutes}`);
+    if (s.capped) cappedOk(s, minutes, `${style} ${loc.id} ${minutes}`);
+    else if (!s.poolLimited) assert.ok(Math.abs(s.estMinutes - minutes) <= minutes * 0.1, `${style} ${loc.id} ${minutes}: ${s.estMinutes}`);
   }
 });
 

@@ -26,6 +26,21 @@
 //   styleOptions, isStyleId, restyle(session, style, { profile, sessions, now }) (same exercises/sets
 //   re-arranged + re-rested for another style), sharesLimiter, competes.
 
+// CONTRACT-NOTE (§26, 2026-10-24): WORKOUT SET CEILING. Every style (built-in and custom) stops at
+//   targets.sessionSetCapOf(profile) working sets (default 30, 12-50; buildWorkout also takes an explicit
+//   `setCap`). When the ceiling stops the fitter, it lengthens rests within the style's own restFlex
+//   allowance and then lets the workout finish early; complement groups are not added. The session then
+//   carries `capped = { sets, cap, freedMin, restScale }` (freedMin = budget − estimate, ≥ 0) and a
+//   rationale line, and is exempt from the ±10% time fit (it is short on purpose; poolLimited stays
+//   false). Extra exports: workingSets(session), sessionLoad(session, profile) (overload check for a
+//   workout the user built or edited: { sets, cap, over, muscles:[{ group, name, sets, cap }] }),
+//   trimToCap(session, cap, { profile, sessions, now }) (removes sets from the least-needed exercises,
+//   with the same need ordering the fitter uses to drop an exercise), muscleSessionCap(group, minutes, starred).
+// CONTRACT-NOTE (§26): ISSUES. Active profile.issues (engine/issues.js) exclude exercises from the pool
+//   (mild: the area's hardest-loading tier; moderate/severe: every move that loads it) and penalise what a
+//   mild issue still allows. A requested group whose every exercise here is excluded is dropped with a
+//   rationale line saying so; if nothing requested is left, its complement groups are trained instead,
+//   also said in the rationale. alternatives() / exercisesFor() accept `issues` (an active-issue list).
 import { EXERCISES, getEx } from '../data/exercises.js';
 import { REGIONS, GROUPS, PRESETS, regionsFor } from '../data/muscles.js';
 import { SCULPT_GOALS, DEFAULT_SCULPT_GOALS, defaultSculptGoals } from '../data/sculpt.js';
@@ -33,6 +48,9 @@ import { DEFAULT_LOCATIONS, expandEquipment, canDo } from '../data/equipment.js'
 import { suggest } from './progression.js';
 import { recommend, muscleStatus, groupStatus } from './recovery.js';
 import { ds, rng as makeRng, daysBetween, clamp } from '../util.js';
+// generator → targets → generator is the same deliberate cycle recovery already closes; only called at run time.
+import { sessionSetCapOf, starredGroups } from './targets.js';
+import { activeIssues, issueFilter, issueLabel } from './issues.js';
 
 // ---------------------------------------------------------------- time model constants
 export const TIME = {
@@ -436,8 +454,9 @@ function groupMeanMin(r) {
 }
 
 function makeCtx(opts) {
-  const { minutes, style, def, profile, sessions, now, eq, exclude, rw, activeGoals, targetGoals, seed, reqGroups, upcoming } = opts;
-  const avoid = new Set([...(exclude || []), ...((profile && profile.avoidExercises) || [])]);
+  const { minutes, style, def, profile, sessions, now, eq, exclude, rw, activeGoals, targetGoals, seed, reqGroups, upcoming, issues, setCap } = opts;
+  const IF = issues || issueFilter([]);
+  const avoid = new Set([...(exclude || []), ...((profile && profile.avoidExercises) || []), ...IF.blocked]);
   const recent = recentExercises(sessions, now);
   const favs = new Set((profile && profile.favoriteExercises) || []);
   const mstat = safe(() => muscleStatus(sessions || [], { now, profile, upcoming }), {});
@@ -485,9 +504,12 @@ function makeCtx(opts) {
     // the user's favourites for a group ARE its openers when there are any
     staples[g] = favFirst.length ? favFirst : (STAPLES[g] || []).filter(id => poolIds.has(id));
   }
-  const quality = new Map(pool.map(e => [e.id, eqQuality(e, eq)]));
+  // §26: a mild issue keeps the moves that load its area only moderately, at a strong penalty.
+  const quality = new Map(pool.map(e => [e.id, eqQuality(e, eq) * (IF.penalty.get(e.id) ?? 1)]));
   return { minutes, style, def, profile, sessions, now, eq, weights, pool, recent, favs, activeTags, targetTags,
-    rand: makeRng(seed), cache: new Map(), mstat, req, reqRegions, staples, quality };
+    rand: makeRng(seed), cache: new Map(), mstat, req, reqRegions, staples, quality,
+    setCap: Number.isFinite(setCap) && setCap > 0 ? setCap : Infinity, capHit: false,
+    starred: safe(() => starredGroups(profile || {}), new Set()) };
 }
 
 function groupCap(g, minutes) {
@@ -508,9 +530,26 @@ function credits(items) {
   return { reg, grp };
 }
 
+// How much an item serves what the session still wants (desired sets per region). The fitter's own
+// "least needed" measure, shared by its drop-an-exercise move and trimToCap (§26).
+function itemNeed(it, desired) { return Object.entries(it.ex.muscles).reduce((a, [r, w]) => a + w * (desired[r] || 0), 0); }
+// Index of the item to drop first: the least needed, a pattern duplicate (2nd press) before a lone fly,
+// compounds protected a little (they serve more). -1 when there is nothing to drop.
+function leastNeededIndex(items, desired, ok = () => true) {
+  let wi = -1, ws = Infinity;
+  items.forEach((x, i) => {
+    if (!ok(x, i)) return;
+    const dup = items.some((y, j) => j < i && y.ex.pattern === x.ex.pattern);
+    const n = itemNeed(x, desired) * (x.ex.category === 'compound' ? 1.3 : 1) * (dup ? 0.5 : 1);
+    if (n < ws) { ws = n; wi = i; }
+  });
+  return wi;
+}
+
 function desiredSets(ctx, budgetSec) {
   const perSet = ctx.def.perSet || 115;
-  const total = Math.max(4, budgetSec / perSet);
+  // §26: never aim past the workout set ceiling, whatever the minutes.
+  const total = Math.min(ctx.setCap || Infinity, Math.max(4, budgetSec / perSet));
   const sumW = Object.values(ctx.weights).reduce((s, x) => s + x, 0) || 1;
   const d = {};
   for (const [r, w] of Object.entries(ctx.weights)) d[r] = total * w / sumW;
@@ -594,13 +633,26 @@ function scoreEx(ex, items, ctx, desired, { novelty = false, relaxed = false } =
 function orderItems(items, ctx) {
   const idx = new Map(items.map((it, i) => [it, i]));
   const reqOf = it => (ctx && ctx.req && !ctx.req.has(primaryGroup(it.ex)) ? 1 : 0);
-  return [...items].sort((a, b) => {
+  const out = [...items].sort((a, b) => {
     const ca = a.ex.category === 'compound' ? 0 : 1, cb = b.ex.category === 'compound' ? 0 : 1;
     if (reqOf(a) !== reqOf(b)) return reqOf(a) - reqOf(b);
     if (ca !== cb) return ca - cb;
     if (ca === 0 && (b.ex.fatigue || 1) !== (a.ex.fatigue || 1)) return (b.ex.fatigue || 1) - (a.ex.fatigue || 1);
     return idx.get(a) - idx.get(b);
   });
+  // Each group's opener (the first move picked for it, which scoreEx forces to be a staple) stays first
+  // among that group's moves of the same category: a higher-fatigue compound picked later for the group
+  // (a rack pull after the row that opened back) no longer jumps ahead of it on fatigue alone.
+  if (ctx && ctx.staples) {
+    const opener = new Map();
+    for (const it of items) { const g = primaryGroup(it.ex); if (g && !opener.has(g)) opener.set(g, it); }
+    for (const [g, op] of opener) {
+      const first = out.findIndex(it => primaryGroup(it.ex) === g && it.ex.category === op.ex.category);
+      const at = out.indexOf(op);
+      if (first >= 0 && at > first) { out.splice(at, 1); out.splice(first, 0, op); }
+    }
+  }
+  return out;
 }
 
 function pairUp(list, allowTri) {
@@ -689,12 +741,24 @@ function planSession(ctx, budgetMin, otherMin) {
   const desired = desiredSets(ctx, budgetSec);
   const [lo, hi] = exRange(budgetMin, ctx.def);
   const plan = { items: [], restScale: 1 };
-  const est = () => estimateSeconds(materialize(plan, ctx).blocks) + otherMin * 60;
+  const cap = ctx.setCap || Infinity;
+  // §26: per-muscle cap for this workout (the same rule sessionLoad warns with): direct sets, i.e. sets
+  // of moves whose prime mover is that muscle, after pairs are equalized.
+  const mcap = g => muscleSessionCap(g, ctx.minutes, ctx.starred?.has(g));
+  // One materialize gives every number: elapsed seconds, working sets and the muscles past their cap.
+  const evalPlan = () => {
+    const m = materialize(plan, ctx);
+    const direct = {};
+    for (const b of m.blocks) { const g = primaryGroup(getEx(b.exId)); if (g) direct[g] = (direct[g] || 0) + b.target.sets; }
+    return { sec: estimateSeconds(m.blocks) + otherMin * 60, sets: m.blocks.reduce((n, b) => n + b.target.sets, 0),
+      over: Object.keys(direct).filter(g => direct[g] > mcap(g)), direct };
+  };
+  const est = () => evalPlan().sec;
   const noveltySlot = ctx.recent.size ? 1 + Math.floor(ctx.rand() * Math.max(1, hi - 1)) : -1;
   let novelPick = null;
 
-  const pickNext = (relaxed) => {
-    const used = new Set(plan.items.map(x => x.ex.id));
+  const pickNext = (relaxed, skip = null) => {
+    const used = new Set([...plan.items.map(x => x.ex.id), ...(skip || [])]);
     const novelty = plan.items.length === noveltySlot && !novelPick;
     let best = null, bs = -Infinity;
     for (const ex of ctx.pool) {
@@ -706,11 +770,23 @@ function planSession(ctx, budgetMin, otherMin) {
     return best;
   };
 
-  // 1. greedy fill with default sets
-  while (plan.items.length < hi) {
-    const ex = pickNext(false); if (!ex) break;
+  // 1. greedy fill with default sets (§26: never past the workout set ceiling or a muscle's cap)
+  const skip = new Set();
+  for (let guard = 0; plan.items.length < hi && guard < 60; guard++) {
+    const ex = pickNext(false, skip); if (!ex) break;
+    const snap = plan.items.map(x => x.sets);   // materialize equalizes pairs in place: restore on undo
     plan.items.push({ ex, sets: defaultSets(ex, ctx.def, budgetMin) });
-    if (plan.items.length >= lo && est() >= total * 0.92) break;
+    const e = evalPlan();
+    if (e.over.length && e.sets <= cap) {   // would push a muscle past its per-session cap: try the next move
+      plan.items.pop(); plan.items.forEach((x, i) => { x.sets = snap[i]; }); skip.add(ex.id); continue;
+    }
+    if (e.sets > cap) {
+      plan.items.pop(); plan.items.forEach((x, i) => { x.sets = snap[i]; });
+      if (e.sec < total * 1.03) ctx.capHit = true;
+      break;
+    }
+    if (plan.items.length >= lo && e.sec >= total * 0.92) break;
+    if (e.sets >= cap) { if (e.sec < total * 0.92) ctx.capHit = true; break; }
   }
 
   // 2. tune sets / exercises / rest to land on budget
@@ -727,21 +803,23 @@ function planSession(ctx, budgetMin, otherMin) {
       const moves = [];
       const units = arrange(plan.items, ctx);
       const { grp } = credits(plan.items);
-      const unitNeed = u => u.reduce((s, x) => s + Object.entries(x.ex.muscles).reduce((a, [r, w]) => a + w * (desired[r] || 0), 0), 0);
+      const unitNeed = u => u.reduce((s, x) => s + itemNeed(x, desired), 0);
       const maxNeed = Math.max(1e-6, ...units.map(unitNeed));
       if (cur < total) {
         for (const u of units) {
           if (u.some(x => x.sets >= maxSets)) continue;
           if (!relaxed && u.some(x => { const g = primaryGroup(x.ex); return g && (grp[g] || 0) + 1 > groupCap(g, ctx.minutes); })) continue;
-          moves.push({ pen: 0.01 * (1 - unitNeed(u) / maxNeed) + 0.004 * u[0].sets, apply: () => u.forEach(x => x.sets++), undo: () => u.forEach(x => x.sets--) });
+          moves.push({ adds: true, pen: 0.01 * (1 - unitNeed(u) / maxNeed) + 0.004 * u[0].sets, apply: () => u.forEach(x => x.sets++), undo: () => u.forEach(x => x.sets--) });
         }
         if (plan.items.length < hiEx) {
           const ex = pickNext(relaxed);
           if (ex) {
             const it = { ex, sets: ctx.def.pairing === 'circuit' ? (plan.items[0]?.sets || 3) : Math.max(minSets, defaultSets(ex, ctx.def, budgetMin) - (fixed ? 0 : 1)) };
-            moves.push({ pen: plan.items.length < lo ? 0 : 0.012, apply: () => plan.items.push(it), undo: () => plan.items.pop() });
+            moves.push({ adds: true, pen: plan.items.length < lo ? 0 : 0.012, apply: () => plan.items.push(it), undo: () => plan.items.pop() });
           }
         }
+        // §26: once the ceiling blocks every add, this is the only move left: longer rests, within the
+        // style's own restFlex allowance (custom styles have none), and then the workout finishes early.
         if (plan.restScale < restHi - 1e-9) moves.push({ pen: 0.02, apply: () => { plan.restScale += 0.1; }, undo: () => { plan.restScale -= 0.1; } });
       } else {
         for (const u of units) {
@@ -749,13 +827,7 @@ function planSession(ctx, budgetMin, otherMin) {
           moves.push({ pen: 0.002 + 0.01 * (unitNeed(u) / maxNeed), apply: () => u.forEach(x => x.sets--), undo: () => u.forEach(x => x.sets++) });
         }
         if (plan.items.length > Math.max(1, lo)) {
-          let wi = 0, ws = Infinity;
-          // drop the least-needed item; a pattern duplicate (2nd press) goes before a lone fly
-          plan.items.forEach((x, i) => {
-            const dup = plan.items.some((y, j) => j < i && y.ex.pattern === x.ex.pattern);
-            const n = unitNeed([x]) * (x.ex.category === 'compound' ? 1.3 : 1) * (dup ? 0.5 : 1);
-            if (n < ws) { ws = n; wi = i; }
-          });
+          const wi = leastNeededIndex(plan.items, desired);
           const removed = plan.items[wi];
           moves.push({ pen: 0.02, apply: () => plan.items.splice(wi, 1), undo: () => plan.items.splice(wi, 0, removed) });
         } else if (plan.items.length > 1 && cur > total * 1.1) {
@@ -766,12 +838,19 @@ function planSession(ctx, budgetMin, otherMin) {
       }
       let best = null, bc = diff;
       const snap = plan.items.map(x => x.sets);
+      const before0 = evalPlan();
       for (const mv of moves) {
         const before = plan.items.map(x => [x, x.sets]);
         mv.apply();
-        const c = Math.abs(est() - total) / total + mv.pen;
+        const e = evalPlan();
+        const c = Math.abs(e.sec - total) / total + mv.pen;
         mv.undo();
         before.forEach(([x, s]) => { x.sets = s; }); // materialize equalizes sets; restore exactly
+        // §26: a move that would pass the ceiling is never taken; note that the ceiling is what stopped it.
+        if (mv.adds && e.sets > cap) { if (c < diff) ctx.capHit = true; continue; }
+        // nor one that pushes a muscle past its per-session cap (pairs equalize set counts, so this is
+        // checked on the materialized plan, not on the item that was added)
+        if (mv.adds && e.over.some(g => !before0.over.includes(g) || e.direct[g] > before0.direct[g])) continue;
         if (c < bc) { bc = c; best = mv; }
       }
       plan.items.forEach((x, i) => { if (snap[i] != null) x.sets = snap[i]; });
@@ -780,13 +859,155 @@ function planSession(ctx, budgetMin, otherMin) {
     }
   };
   tune(false);
-  return { plan, est, tune, novelPick, desired };
+  // Hard guarantee: pairs equalize set counts, so a plan can land a set or two past the ceiling; take
+  // them off the least-needed units (fewest sets first), then drop the least-needed exercise.
+  const enforceCap = () => {
+    for (let guard = 80; guard-- > 0;) {
+      const e = evalPlan();
+      const g0 = e.over[0];
+      if (e.sets <= cap && !g0) return;
+      const minSets = ctx.def.setsPerExercise || 2;
+      if (e.sets <= cap) {   // a muscle past its cap: its least-needed units lose a set, else its least-needed move goes
+        const units = arrange(plan.items, ctx).filter(u => u.some(x => primaryGroup(x.ex) === g0) && u.every(x => x.sets > minSets));
+        if (units.length) {
+          const u = units.reduce((a, b) => (a.reduce((s, x) => s + itemNeed(x, desired), 0) <= b.reduce((s, x) => s + itemNeed(x, desired), 0) ? a : b));
+          u.forEach(x => { x.sets--; });
+          continue;
+        }
+        const wi = leastNeededIndex(plan.items, desired, x => primaryGroup(x.ex) === g0);
+        if (wi < 0 || plan.items.length <= 1) return;
+        plan.items.splice(wi, 1);
+        continue;
+      }
+      ctx.capHit = true;
+      const units = arrange(plan.items, ctx).filter(u => u.every(x => x.sets > minSets));
+      if (units.length) {
+        const u = units.reduce((a, b) => (a.reduce((s, x) => s + itemNeed(x, desired), 0) <= b.reduce((s, x) => s + itemNeed(x, desired), 0) ? a : b));
+        u.forEach(x => { x.sets--; });
+        continue;
+      }
+      const wi = leastNeededIndex(plan.items, desired);
+      if (wi < 0 || plan.items.length <= 1) return;
+      plan.items.splice(wi, 1);
+    }
+  };
+  enforceCap();
+  return { plan, est, evalPlan, tune: r => { tune(r); enforceCap(); }, novelPick, desired, ctx };
+}
+
+// ---------------------------------------------------------------- §26 workout ceiling: shared helpers
+// The one line every screen shows for a capped workout (rationale, Today preview, Plan day sheet).
+export function capLine(c) {
+  if (!c) return '';
+  const n = c.sets < c.cap ? `your ${c.cap}-set ceiling (${c.sets} working sets)` : `${c.cap} working sets`;
+  return `Capped at ${n}: ${c.freedMin >= 2 ? `finishes ~${c.freedMin}′ early` : 'rests run a little longer instead of adding sets'}. Past this, extra sets mostly add fatigue (a convention; change it in Settings)`;
+}
+// Working sets in a session: prescribed sets of every lift block that isn't skipped (the rows the logger
+// shows, so "+ Set" counts). Warm-ups are never stored as sets, so they never count.
+export function workingSets(session) {
+  let n = 0;
+  for (const b of session?.blocks || []) if (b && b.kind === 'lift' && !b.skipped) n += (b.sets || []).length || Number(b.target?.sets) || 0;
+  return n;
+}
+// Per-muscle cap for ONE workout, on DIRECT sets (sets of moves whose prime mover is that muscle): the
+// generator's own cap for that length (8 small / 10 big, ×1.2 at 75+ min), raised to the planner's
+// priority allowance of 12 for a starred muscle (planner.PRIORITY_CAP). The fitter never builds past it
+// and sessionLoad warns past it: one rule. Like the ceiling, a fatigue / set-quality convention, not a
+// measured limit.
+export function muscleSessionCap(group, minutes = 45, starred = false) {
+  return Math.max(groupCap(group, minutes), starred ? 12 : 0);
+}
+// Is this workout heavier than the user's ceiling, or does one muscle's direct work pass its per-session
+// cap? → { sets, cap, over, excess, muscles:[{ group, name, sets, cap }], heavy }   (advice only, never blocks)
+export function sessionLoad(session, profile, { starred = null } = {}) {
+  const cap = sessionSetCapOf(profile || {});
+  const sets = workingSets(session);
+  const minutes = Number(session?.minutes) || Number(session?.estMinutes) || 45;
+  const star = starred instanceof Set ? starred : safe(() => starredGroups(profile || {}), new Set());
+  const per = {};
+  for (const b of session?.blocks || []) {
+    if (!b || b.kind !== 'lift' || b.skipped) continue;
+    const n = (b.sets || []).length || Number(b.target?.sets) || 0;
+    const g = primaryGroup(getEx(b.exId) || {});
+    if (g) per[g] = (per[g] || 0) + n;
+  }
+  const muscles = Object.entries(per).map(([g, v]) => ({ group: g, name: GROUPS[g]?.name || g, sets: v, cap: muscleSessionCap(g, minutes, star.has(g)) }))
+    .filter(x => x.sets > x.cap + 0.01).sort((a, b) => (b.sets - b.cap) - (a.sets - a.cap));
+  return { sets, cap, over: sets > cap, excess: Math.max(0, sets - cap), muscles, heavy: sets > cap || muscles.length > 0 };
+}
+// Trim a workout to `cap` working sets (§26 "Trim to 30"), least-needed exercises first, using the
+// fitter's own need measure (desired sets per region from recovery need × priority × sculpt goals, and
+// its drop-an-exercise ordering: a pattern duplicate before a lone fly, compounds protected a little):
+//   1. sets above an exercise's default for the style (3, or 4 for a compound in a 60+ min workout)
+//      come off the least-needed exercises first;
+//   2. then whole least-needed exercises go while the excess covers them (the workout keeps 2+);
+//   3. then single sets, down to 2 per exercise.
+// Then any muscle still past its per-session cap (muscleSessionCap, direct sets) loses sets from its
+// least-needed moves, then its least-needed move (muscles:true). cap null = muscles only. Logged sets are never removed;
+// a superset left with one member is a straight set again, with its own rest.
+// Pure → { session, removed:[{ exId, from, to }] } (to 0 = dropped).
+export function trimToCap(session, cap, { profile = {}, sessions = [], now = new Date(), muscles = false, starred = null } = {}) {
+  const s = cloneSession(session || {});
+  s.blocks = s.blocks || [];
+  cap = cap === null ? Infinity : Math.round(+cap || sessionSetCapOf(profile));
+  const removed = [];
+  const lifts = () => s.blocks.map((b, i) => ({ b, i, ex: b && b.kind === 'lift' && !b.skipped ? getEx(b.exId) : null })).filter(x => x.ex);
+  const count = b => (b.sets || []).length || Number(b.target?.sets) || 0;
+  const doneOf = b => (b.sets || []).filter(x => x && x.done).length;
+  const minutes = Number(s.minutes) || Number(s.estMinutes) || 45;
+  const def = resolveStyle(s.styleDef || s.style || 'hypertrophy', profile);
+  const load0 = sessionLoad(s, profile, { starred });
+  if (load0.sets <= cap && !(muscles && load0.muscles.length)) return { session: s, removed };
+  // desired sets per region, weighted exactly as buildWorkout weights them
+  const tg = resolveTargets(s.targets || []);
+  let rw = tg.regionW;
+  if (!Object.keys(rw).length) { rw = {}; for (const x of lifts()) for (const r of mainRegions(x.ex)) rw[r] = 1; }
+  const goal = Number.isFinite(cap) ? cap : Math.min(load0.sets, sessionSetCapOf(profile));
+  const ctx0 = safe(() => makeCtx({ minutes, style: def.id, def, profile, sessions, now, eq: null, exclude: [], rw, activeGoals: profile.sculptGoals || [], targetGoals: tg.sculpt, seed: 1, reqGroups: tg.groups, upcoming: null, setCap: goal }), null);
+  const desired = ctx0 ? desiredSets(ctx0, goal * (def.perSet || 115)) : Object.fromEntries(Object.keys(rw).map(r => [r, 1]));
+  const rec = (b, from, to) => { const r = removed.find(x => x.exId === b.exId); if (r) r.to = to; else removed.push({ exId: b.exId, from, to }); };
+  const shave = b => {   // one unlogged set off the end
+    const k = [...b.sets].map((x, j) => [x, j]).reverse().find(([x]) => !x.done)?.[1];
+    if (k == null) return false;
+    const from = count(b);
+    b.sets.splice(k, 1); b.target = { ...(b.target || {}), sets: b.sets.length }; rec(b, from, b.sets.length); return true;
+  };
+  const items = () => lifts().map(x => ({ ex: x.ex, sets: count(x.b), x }));
+  const least = list => list.reduce((a, c) => (itemNeed(a, desired) <= itemNeed(c, desired) ? a : c));
+  for (let guard = 300; guard-- > 0 && workingSets(s) > cap;) {
+    const excess = workingSets(s) - cap, I = items();
+    const above = I.filter(it => it.sets > Math.max(defaultSets(it.ex, def, minutes), doneOf(it.x.b)));
+    if (above.length) { if (shave(least(above).x.b)) continue; }
+    const wi = I.length > 2 ? leastNeededIndex(I, desired, it => !doneOf(it.x.b) && it.sets <= excess) : -1;
+    if (wi >= 0) { rec(I[wi].x.b, I[wi].sets, 0); s.blocks.splice(I[wi].x.i, 1); continue; }
+    const pool = I.filter(it => it.sets > Math.max(2, doneOf(it.x.b)));
+    if (!pool.length || !shave(least(pool).x.b)) break;
+  }
+  if (muscles) {
+    for (let guard = 120; guard-- > 0;) {
+      const over = sessionLoad(s, profile, { starred }).muscles[0]; if (!over) break;
+      const pool = items().filter(it => primaryGroup(it.ex) === over.group && it.sets > Math.max(2, doneOf(it.x.b)));
+      if (pool.length && shave(least(pool).x.b)) continue;
+      const I = items();
+      const wi = I.length > 2 ? leastNeededIndex(I, desired, it => !doneOf(it.x.b) && primaryGroup(it.ex) === over.group) : -1;
+      if (wi < 0) break;
+      rec(I[wi].x.b, I[wi].sets, 0); s.blocks.splice(I[wi].x.i, 1);
+    }
+  }
+  // superset bookkeeping: a group left with one member is a straight set again, with its own rest
+  const by = {};
+  s.blocks.forEach((b, i) => { if (b.kind === 'lift' && b.group) (by[b.group] ||= []).push(i); });
+  for (const idx of Object.values(by)) {
+    if (idx.length === 1) { const b = s.blocks[idx[0]]; const ex = getEx(b.exId); b.group = null; if (ex) b.target = { ...b.target, rest: soloRest(ex, def) }; }
+  }
+  s.estMinutes = estimateMinutes(s.blocks);
+  return { session: s, removed };
 }
 
 // ---------------------------------------------------------------- buildWorkout
 export function buildWorkout({
   targets = [], minutes = 45, location, profile, sessions = [], now = new Date(),
-  style = 'hypertrophy', cardio = null, seed, exclude = [], upcoming = null,
+  style = 'hypertrophy', cardio = null, seed, exclude = [], upcoming = null, setCap = null,
 } = {}) {
   sessions = sessions || [];
   profile = profile || {};
@@ -797,6 +1018,10 @@ export function buildWorkout({
   const eq = expandEquipment(location.equipment || ['bodyweight']);
   const activeGoals = (profile.sculptGoals || defaultSculptGoals(profile)).filter(g => SCULPT_GOALS[g]);   // §20: female default when unset
   const rationale = [];
+  // §26: the workout set ceiling (explicit setCap wins, else the profile's) and active issues.
+  const cap = Number.isFinite(+setCap) && +setCap > 0 ? Math.round(+setCap) : sessionSetCapOf(profile);
+  const issues = activeIssues(profile, now);
+  const IF = issueFilter(issues);
 
   // --- resolve targets (or ask recovery for a recommendation)
   let tgts = (targets || []).filter(Boolean);
@@ -816,6 +1041,39 @@ export function buildWorkout({
   if (seed == null) seed = hashStr(ds(now) + '|' + tgts.join(',') + '|' + (location.id || '') + '|' + minutes + '|' + style);
   seed = Number(seed) >>> 0;
 
+  // --- §26: a requested group with nothing left here once the issues' exclusions apply is dropped,
+  //     and the rationale says so (never an empty result without a reason). If nothing requested is
+  //     left, its complement groups stand in, and that is said too.
+  const issueLines = [];
+  if (IF.any) {
+    const avoid0 = new Set([...(exclude || []), ...(profile.avoidExercises || [])]);
+    const movesFor = (g, blockedToo) => EXERCISES.filter(e => e && e.muscles && primaryGroup(e) === g && !avoid0.has(e.id) && !isBackSquat(e) && canDo(e, eq)
+      && e.pattern !== 'conditioning' && (blockedToo || !IF.blocked.has(e.id)));
+    const blockedBy = g => {   // the issue that rules out most of this group's moves
+      const n = new Map(); for (const e of movesFor(g, true)) { const x = IF.why(e.id); if (x) n.set(x, (n.get(x) || 0) + 1); }
+      return [...n.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || issues[0];
+    };
+    const dead = res.groups.filter(g => movesFor(g, true).length && !movesFor(g, false).length);
+    for (const g of dead) {
+      const x = blockedBy(g);
+      issueLines.push(`${GROUPS[g].name}: every ${GROUPS[g].name.toLowerCase()} exercise here loads your ${issueLabel(x).toLowerCase()} (${x.severity}), so it is left out today`);
+      for (const r of Object.keys(res.regionW)) if (regionGroup(r) === g) delete res.regionW[r];
+    }
+    if (dead.length) {
+      res.groups = res.groups.filter(g => !dead.includes(g));
+      if (!Object.keys(res.regionW).length) {
+        const sub = [...new Set(dead.flatMap(g => COMPLEMENT[g] || []))].filter(g => GROUPS[g] && !dead.includes(g) && movesFor(g, false).length).slice(0, 2);
+        for (const g of sub) for (const r of GROUPS[g].regions) res.regionW[r] = 1;
+        res.groups = [...sub];
+        res.labels = sub.map(g => GROUPS[g].name);
+        issueLines.push(sub.length ? `So this works ${sub.map(g => GROUPS[g].name.toLowerCase()).join(' & ')} instead, which ${sub.length > 1 ? 'spare' : 'spares'} it`
+          : 'Nothing here trains that without loading it. Pick another muscle group, or tap the issue on Today when it feels better.');
+      }
+    }
+    const n = IF.blocked.size;
+    if (n) issueLines.push(`Working around ${issues.map(x => `your ${issueLabel(x).toLowerCase()} (${x.severity})`).join(' and ')}: ${n} moves that load ${issues.length > 1 ? 'them' : 'it'} are out${IF.penalty.size ? ', a few more only if nothing else fits' : ''}`);
+  }
+
   // --- cardio finisher
   let cardioBlock = null;
   if (cardio && cardio.modality) {
@@ -828,15 +1086,16 @@ export function buildWorkout({
 
   let blocks = [], poolLimited = false, planInfo = null, ctx = null;
   const addedGroups = [];
-  if (liftRoom >= 8) {
+  if (liftRoom >= 8 && Object.keys(res.regionW).length) {
     const targetGoals = res.sculpt;
     const reqGroups = [...res.groups];
-    const mk = (rw) => makeCtx({ minutes, style, def, profile, sessions, now, eq, exclude, rw, activeGoals: [...new Set([...activeGoals, ...targetGoals])], targetGoals, seed, reqGroups, upcoming });
+    const mk = (rw) => makeCtx({ minutes, style, def, profile, sessions, now, eq, exclude, rw, activeGoals: [...new Set([...activeGoals, ...targetGoals])], targetGoals, seed, reqGroups, upcoming, issues: IF, setCap: cap });
     let rw = { ...res.regionW };
     ctx = mk(rw);
     planInfo = planSession(ctx, minutes, otherMin);
-    // Under budget even after tuning? Add a complementary group rather than junk volume.
-    for (let k = 0; k < 3 && planInfo.est() < minutes * 60 * 0.9; k++) {
+    // Under budget even after tuning? Add a complementary group rather than junk volume, unless the
+    // workout set ceiling is what stopped it (§26): then more groups would only mean more sets.
+    for (let k = 0; k < 3 && planInfo.est() < minutes * 60 * 0.9 && !ctx.capHit; k++) {
       const gs = safe(() => groupStatus(sessions, { now, profile, upcoming }), {});
       const cands = [...new Set(res.groups.flatMap(g => COMPLEMENT[g] || []))]
         .filter(g => GROUPS[g] && !res.groups.includes(g) && !addedGroups.includes(g))
@@ -845,8 +1104,11 @@ export function buildWorkout({
       if (!cands.length) break;
       const g = cands[0]; addedGroups.push(g);
       for (const r of GROUPS[g].regions) rw[r] = Math.max(rw[r] || 0, 0.45);
+      const prev = { ctx, planInfo };
       ctx = mk(rw);
       planInfo = planSession(ctx, minutes, otherMin);
+      // The complement build ran into the ceiling with no more time used: keep the focused one.
+      if (ctx.capHit && planInfo.est() <= prev.planInfo.est()) { ({ ctx, planInfo } = prev); addedGroups.pop(); break; }
     }
     if (planInfo.est() < minutes * 60 * 0.9) planInfo.tune(true);
     blocks = materialize(planInfo.plan, ctx).blocks;
@@ -858,7 +1120,12 @@ export function buildWorkout({
   }
   if (cardioBlock) blocks.push(cardioBlock);
   let estSec = estimateSeconds(blocks);
-  if (estSec < minutes * 60 * 0.9) poolLimited = true;
+  // §26: short because the ceiling stopped it (capped) is not the same as short for lack of exercises.
+  const nSetsAll = blocks.reduce((n, b) => n + (b.kind === 'lift' ? b.target.sets : 0), 0);
+  const freedMin = Math.max(0, minutes - Math.round(estSec / 60));
+  const capped = ctx && ctx.capHit && nSetsAll >= cap - 3 && (freedMin >= 1 || planInfo.plan.restScale > 1.001)
+    ? { sets: nSetsAll, cap, freedMin, restScale: Math.round(planInfo.plan.restScale * 100) / 100 } : null;
+  if (!capped && estSec < minutes * 60 * 0.9) poolLimited = true;
 
   // --- rationale
   const lifts = blocks.filter(b => b.kind === 'lift');
@@ -875,6 +1142,7 @@ export function buildWorkout({
     });
     if (bits.length) rationale.push('Focus: ' + bits.join('; '));
   }
+  issueLines.forEach(x => rationale.push(x));
   if (addedGroups.length) rationale.push(`Added ${addedGroups.map(g => GROUPS[g].name.toLowerCase()).join(' & ')} to fill ${minutes} min without junk volume`);
   if (lifts.length) {
     const nSets = lifts.reduce((s, b) => s + b.target.sets, 0);
@@ -883,6 +1151,7 @@ export function buildWorkout({
       : grouped ? (def.pairing === 'antagonist' ? `${grouped} paired set${grouped > 1 ? 's' : ''} (non-competing moves, rest after the pair)` : `${grouped} superset${grouped > 1 ? 's' : ''} to fit more work`) : 'straight sets';
     if (!def.round) how += ` · ~${def.restCompound}/${def.restIsolation} s rest per muscle`;
     rationale.push(`${minutes} min: ${exs.length} exercises, ${nSets} working sets, ${how}`);
+    if (capped) rationale.push(capLine(capped));
   }
   // key exercises tied to sculpt goals
   const goalForTag = tag => Object.values(SCULPT_GOALS).find(g => (g.emphasisTag || g.id) === tag);
@@ -901,7 +1170,7 @@ export function buildWorkout({
   keyBits.forEach(k => rationale.push(k.text));
   if (planInfo?.novelPick && exs.some(e => e.id === planInfo.novelPick.id)) rationale.push(`New this time: ${planInfo.novelPick.name} for variety`);
   if (cardioBlock) rationale.push(`${cardioBlock.minutes} min ${cardioBlock.modality.replace(/_/g, ' ')} finisher (${cardioBlock.intensity})`);
-  if (poolLimited) {
+  if (poolLimited && !(issueLines.length && !lifts.length)) {
     rationale.unshift(lifts.length
       ? `Only ${ctx ? ctx.pool.length : exs.length} suitable exercises for this equipment, so this plan runs ~${Math.round(estSec / 60)} of ${minutes} min. Add a muscle group or equipment to fill it.`
       : `Not enough time or equipment for lifting here; ~${Math.round(estSec / 60)} of ${minutes} min planned.`);
@@ -922,17 +1191,18 @@ export function buildWorkout({
   return {
     id: 's_' + now.getTime(), date: ds(now), status: 'planned', startedAt: null, endedAt: null,
     location: location.id || 'home', minutes, title, targets: tgts, source: 'generated',
-    blocks, rationale: rationale.slice(0, 6), notes: '',
-    estMinutes: Math.round(estSec / 60), style, seed, poolLimited,
+    blocks, rationale: rationale.slice(0, 6 + Math.min(2, issueLines.length) + (capped ? 1 : 0)), notes: '',
+    estMinutes: Math.round(estSec / 60), style, seed, poolLimited, capped,
     ...(def.custom ? { styleDef: def.cfg, styleName: def.name } : {}),
   };
 }
 
 // ---------------------------------------------------------------- alternatives / swap / add
-export function alternatives(exId, { equipment, exclude = [], limit = 8 } = {}) {
+export function alternatives(exId, { equipment, exclude = [], limit = 8, issues = null } = {}) {
   const ex = getEx(exId); if (!ex) return [];
   const eq = toEqSet(equipment);
-  const ex2 = new Set(exclude || []);
+  const IF = issueFilter(issues || []);   // §26: never offer a move an active issue rules out
+  const ex2 = new Set([...(exclude || []), ...IF.blocked]);
   const mains = mainRegions(ex);
   const listed = new Set(ex.alt || []);
   const scored = [];
@@ -943,7 +1213,7 @@ export function alternatives(exId, { equipment, exclude = [], limit = 8 } = {}) 
     if (!sharesMain && sim < 0.4) continue;
     const score = (sharesMain ? 2 : 0) + (e.pattern === ex.pattern ? 1 : 0) + sim * 1.5 +
       (e.category === ex.category ? 0.2 : 0) + (listed.has(e.id) ? 0.5 : 0) - ((e.equipment || []).includes('barbell') ? 0.2 : 0);
-    scored.push([score, e]);
+    scored.push([score * (IF.penalty.get(e.id) ?? 1), e]);
   }
   scored.sort((a, b) => b[0] - a[0] || a[1].id.localeCompare(b[1].id));
   return scored.slice(0, limit).map(x => x[1]);
@@ -1003,15 +1273,16 @@ export function addExercise(session, exId, { sessions = [], now = new Date() } =
   return s;
 }
 
-export function exercisesFor(targetId, equipmentSet, { sculptGoals = [] } = {}) {
+export function exercisesFor(targetId, equipmentSet, { sculptGoals = [], issues = null } = {}) {
   const res = resolveTargets([targetId]);
   const rw = res.regionW;
   if (!Object.keys(rw).length) return [];
   const eq = toEqSet(equipmentSet);
+  const IF = issueFilter(issues || []);   // §26
   const tags = new Set([...(sculptGoals || []), ...res.sculpt].map(g => SCULPT_GOALS[g]?.emphasisTag || g));
   const scored = [];
   for (const e of EXERCISES) {
-    if (isBackSquat(e) || (eq && !canDo(e, eq))) continue;
+    if (isBackSquat(e) || (eq && !canDo(e, eq)) || IF.blocked.has(e.id)) continue;
     let s = 0, hit = false;
     for (const [r, w] of Object.entries(e.muscles || {})) {
       if (!rw[r]) continue; s += w * rw[r]; if (w >= 0.5) hit = true;
@@ -1019,7 +1290,7 @@ export function exercisesFor(targetId, equipmentSet, { sculptGoals = [] } = {}) 
     if (!hit) continue;
     s *= 1 + 0.4 * (e.emphasis || []).filter(t => tags.has(t)).length;
     if ((e.equipment || []).includes('barbell')) s *= 0.8;
-    scored.push([s, e]);
+    scored.push([s * (IF.penalty.get(e.id) ?? 1), e]);
   }
   scored.sort((a, b) => b[0] - a[0] || a[1].id.localeCompare(b[1].id));
   return scored.map(x => x[1]);

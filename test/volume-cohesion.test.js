@@ -12,6 +12,7 @@ import { getEx } from '../js/data/exercises.js';
 import * as rec from '../js/engine/recovery.js';
 import * as TG from '../js/engine/targets.js';
 import { planRange, weekPlanSummary, explainWeek, weekUnitTotals, simulateDone } from '../js/engine/planner.js';
+import { workingSets } from '../js/engine/generator.js';
 import { defaultProfile } from '../js/store.js';
 import { ds, addDays, weekStart, parseDs } from '../js/util.js';
 
@@ -241,7 +242,9 @@ test('planner: the week aims at targets, bounds overshoot and names every reason
   for (const [name, p] of PROFILES) {
     const plan = weekFor(name, p);
     const sum = weekPlanSummary(plan, { weekStart: monDate, profile: p, now: NOW });
-    const REASONS = new Set(['time', 'max', 'recovery', 'session', 'session_other', 'pushpull', 'exercise', 'policy', 'nolift', 'rounds']);
+    const REASONS = new Set(['time', 'max', 'recovery', 'session', 'session_other', 'pushpull', 'exercise', 'policy', 'nolift', 'rounds', 'ceiling', 'ceiling_some']);
+    // §26: no planned day passes the workout set ceiling (default 30)
+    for (const s of plan.filter(x => x.plan?.kind === 'lift')) assert.ok(workingSets(s) <= TG.sessionSetCapOf(p), `${name} ${s.date}: ${workingSets(s)} working sets`);
     for (const [u, x] of Object.entries(sum.units)) {
       assert.ok(x.total <= x.max + 0.25, `${name} ${u}: ${x.total} over the max of ${x.max}`);
       if (x.target > 0 && x.total > x.target + 1.5) assert.ok(x.overWhy && x.overText, `${name} ${u}: ${x.total}/${x.target} over target without a named reason`);
@@ -252,10 +255,15 @@ test('planner: the week aims at targets, bounds overshoot and names every reason
       }
     }
     assert.ok(sum.pushPull.ok, `${name}: push ${sum.pushPull.push} vs pull ${sum.pushPull.pull}`);
-    // The plan aims at the targets, not merely the floors.
+    // The plan aims at the targets, not merely the floors, unless (§26) every lift day is already at the
+    // workout set ceiling, in which case the shortfall must name the ceiling (all sliders at 2× asks for
+    // more weekly sets than four 30-set workouts hold).
     const counted = UNIT_ORDER.filter(u => sum.units[u].target > 0 && !sum.units[u].sub);
     const hit = counted.filter(u => sum.units[u].total >= sum.units[u].target - 0.25);
-    assert.ok(hit.length >= counted.length * 0.6, `${name}: only ${hit.length}/${counted.length} targets reached`);
+    const liftDays = plan.filter(s => s.plan?.kind === 'lift');
+    const ceilBound = liftDays.length && liftDays.every(s => workingSets(s) >= TG.sessionSetCapOf(p) - 1);
+    assert.ok(hit.length >= counted.length * 0.6 || ceilBound, `${name}: only ${hit.length}/${counted.length} targets reached`);
+    if (hit.length < counted.length * 0.6) assert.ok(sum.targets.short.some(x => x.why === 'ceiling' && /workout ceiling on every lift day/.test(x.whyText)), `${name}: ceiling-bound week without saying so`);
   }
 });
 
@@ -269,8 +277,10 @@ test('planner: "per-session caps" is only claimed when a muscle really is at its
     assert.equal(x.why, 'nolift', `${x.unit}: ${x.why}`);
     assert.match(x.whyText, /no lift day/);
   }
-  // Two lift days that both run to the 90-minute cap are TIME-bound, not cap-bound.
-  const two = prof({ schedule: Object.fromEntries(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+  // Two lift days that both run to the 90-minute cap are TIME-bound, not cap-bound. (§26: with the
+  // default 30-set workout ceiling these days stop at the ceiling around an hour, so this fixture raises
+  // the ceiling to 50 to keep testing the time story; the ceiling story is the next fixture.)
+  const two = prof({ sessionSetCap: 50, schedule: Object.fromEntries(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
     .map(d => [d, d === 'mon' || d === 'thu' ? { kind: 'lift', minutes: 30, location: 'crunch' } : { kind: 'rest', minutes: 0, location: 'home' }])) });
   const plan2 = weekFor('two short lift days', two);
   const sum2 = weekPlanSummary(plan2, { weekStart: monDate, profile: two, now: NOW });
@@ -289,8 +299,27 @@ test('planner: "per-session caps" is only claimed when a muscle really is at its
     assert.ok(lifts.some(s => unitIn(s, x.unit) >= cap - 0.6),
       `${x.unit} claims a per-session cap but no day holds near ${cap} (${lifts.map(s => r1(unitIn(s, x.unit))).join('/')})`);
   }
-  // Whatever the reason, every short target has plain-English text that names something true.
+  for (const x of sum2.targets.short) assert.ok(!/ceiling/.test(x.why || ''), `${x.unit}: ceiling claimed under a 50-set ceiling (${lifts.map(workingSets)})`);
   for (const x of sum2.targets.short) assert.ok(x.whyText && x.whyText.length > 8, `${x.unit}: ${x.whyText}`);
+
+  // §26: the same two days under the default 30-set ceiling stop at the CEILING, well short of 90′, and
+  // the reason must say so (never "time" or "per-session caps"), and be checkable against the plan.
+  const two30 = prof({ schedule: two.schedule });
+  const plan3 = weekFor('two short lift days, 30-set ceiling', two30);
+  const sum3 = weekPlanSummary(plan3, { weekStart: monDate, profile: two30, now: NOW });
+  const lifts3 = plan3.filter(s => s.plan?.kind === 'lift');
+  assert.ok(lifts3.length === 2 && lifts3.every(s => workingSets(s) <= 30 && workingSets(s) >= 29), `fixture: both days at the ceiling (${lifts3.map(workingSets)})`);
+  assert.ok(lifts3.every(s => (s.estMinutes || 0) < 85), `fixture: the ceiling binds before the 90′ cap (${lifts3.map(s => s.estMinutes)})`);
+  assert.ok(sum3.targets.short.length >= 3, 'fixture: two days at 30 sets cannot reach every target');
+  for (const x of sum3.targets.short) {
+    assert.notEqual(x.why, 'time', `${x.unit}: "time" while every day has minutes left`);
+    if (x.why === 'session') assert.ok(lifts3.some(s => unitIn(s, x.unit) >= (VOLUME_UNITS[x.unit].big ? 10 : 8) - 0.6), `${x.unit}: per-session cap claimed`);
+  }
+  assert.ok(sum3.targets.short.some(x => x.why === 'ceiling'), `the ceiling is named (${sum3.targets.short.map(x => x.why)})`);
+  for (const x of sum3.targets.short.filter(y => y.why === 'ceiling')) assert.match(x.whyText, /30-set workout ceiling on every lift day/);
+  assert.ok(sum3.capacity.setCap === 30 && sum3.capacity.maxSets === 60, JSON.stringify(sum3.capacity));
+  // Whatever the reason, every short target has plain-English text that names something true.
+  for (const x of sum3.targets.short) assert.ok(x.whyText && x.whyText.length > 8, `${x.unit}: ${x.whyText}`);
 });
 
 test('planner: a retroactively logged past day moves this week the same way everywhere', () => {

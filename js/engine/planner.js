@@ -48,15 +48,24 @@
 //   alone, e.g. to compare day decisions).
 //   weekPlanSummary warns per group "Triceps 9/13 sets: short 4" and returns `minimums`
 //   ({ met, short:[{ group, name, total, min, short }] }) and `extended` ([{ date, from, to, reason }]).
+// CONTRACT-NOTE (§26, 2026-10-24): the workout set ceiling (targets.sessionSetCapOf) holds on every
+//   planned day: buildWorkout already stops there, and balanceVolume never adds a set or an exercise
+//   that would pass it, so a day is lengthened only as far as the sets under the ceiling need. When
+//   the ceiling is what stops a muscle reaching its minimum/target the reason is 'ceiling' ("your N-set
+//   workout ceiling on every lift day", only when every lift day holds within a set of it) or
+//   'ceiling_some' ("… on 2 of 3 lift days"); weekPlanSummary.minimums.binding can be 'ceiling', and
+//   capacity gains { setCap, liftDays, maxSets }. Active profile.issues (§26) are excluded from every
+//   exercise the top-up adds or swaps in.
 import { recommend, groupStatus, muscleStatus, sessionVolume, unitVolume, unitSets, PUSH_PATTERNS, PULL_PATTERNS } from './recovery.js';
-import { buildWorkout, estimateMinutes, addExercise, exercisesFor, swapBlock, alternatives, isStyleId } from './generator.js';
+import { buildWorkout, estimateMinutes, addExercise, exercisesFor, swapBlock, alternatives, isStyleId, workingSets } from './generator.js';
+import { activeIssues, issueFilter } from './issues.js';
 import { getEx } from '../data/exercises.js';
 import { CARDIO, INTENSITIES, cardioOptions } from '../data/cardio.js';
 import { classify } from '../classes/classify.js';
 import { GROUPS, GROUP_ORDER, REGIONS, VOLUME_UNITS, UNIT_ORDER, COUNTED_UNITS, unitWeight, unitCredits } from '../data/muscles.js';
 import { DEFAULT_LOCATIONS, expandEquipment } from '../data/equipment.js';
 import { ds, parseDs, addDays, weekStart as weekStartOf, clamp, rng } from '../util.js';
-import { cardioPrefs, finisherCap, cardioCapacity, weekCardioCapacity, cardioTolerance, makeRoomProposal, volumePolicyOf, unitTargets } from './targets.js';
+import { cardioPrefs, finisherCap, cardioCapacity, weekCardioCapacity, cardioTolerance, makeRoomProposal, volumePolicyOf, unitTargets, sessionSetCapOf } from './targets.js';
 
 const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const PRIORITY_GROUPS = ['triceps', 'shoulders', 'core', 'back', 'chest'];
@@ -514,7 +523,8 @@ function decideFlex(ctx, date, slot, st, R, allowClasses) {
   const liftFrac = liftDeficitFrac(ctx, st);
   const jit = () => 0.92 + R() * 0.16;
   const opts = [];
-  opts.push({ kind: 'lift', v: liftFrac * minutes * SETS_PER_MIN * (st.lifts < 3 ? 1.15 : 1) * jit() });
+  // §26: a lift day is worth at most the workout set ceiling, however long the slot.
+  opts.push({ kind: 'lift', v: liftFrac * Math.min(minutes * SETS_PER_MIN, sessionSetCapOf(ctx.profile)) * (st.lifts < 3 ? 1.15 : 1) * jit() });
   // ('longer'/'balanced' styles need no boost here: without short finishers the cardio gap is larger,
   // so flex days already lean to a cardio session or a cardio-heavy class.)
   opts.push({ kind: 'cardio', v: Math.min(minutes, Math.max(0, cardioGap)) / CARDIO_MIN_PER_SET * 0.8 * jit() });
@@ -780,12 +790,17 @@ export const TARGET_WHY_TEXT = {
   nolift: () => 'no lift day scheduled this week',
   rounds: () => 'room is left: re-plan the week to fill it',
   session_other: () => 'the exercises that would add it are at another muscle\u2019s per-session cap',
+  // §26: the whole-workout working-set ceiling (x = { setCap, ceilDays, liftDays }).
+  ceiling: (pol, x = {}) => `your ${x.setCap || 30}-set workout ceiling on every lift day`,
+  ceiling_some: (pol, x = {}) => `your ${x.setCap || 30}-set workout ceiling on ${x.ceilDays && x.liftDays ? `${x.ceilDays} of ${x.liftDays}` : 'some'} lift days`,
 };
 
 function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
   const pol = ctx.volumePolicy || volumePolicyOf(ctx.profile);
   const UT = unitTargets(ctx.profile);
-  const avoid = new Set(ctx.profile?.avoidExercises || []);
+  // §26: active issues rule exercises out of every top-up add and swap, like the user's avoid list.
+  const avoid = new Set([...(ctx.profile?.avoidExercises || []), ...issueFilter(activeIssues(ctx.profile, ctx.today)).blocked]);
+  const setCap = sessionSetCapOf(ctx.profile);
   const sculptGoals = ctx.profile?.sculptGoals || [];
   const eligible = s => s.date >= ws && s.date <= we && s.date >= ctx.today && s.plan?.auto !== false && s.plan?.kind === 'lift' && (s.blocks || []).some(b => b.kind === 'lift');
   const W = out.filter(eligible).map(s => ({ orig: s, s: clone(s), slot: Number(s.plan?.slot?.minutes) || Number(s.minutes) || 45, added: {}, changed: false, raised: new Set() }));
@@ -951,11 +966,19 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
       // 'time' as the weakest reason and let any later cap overwrite it, so a day that was simply out
       // of minutes reported "per-session caps on every lift day".)
       let timeOnly = false, timeHit = false;
+      // §26: the workout set ceiling. `ceilOnly` = some candidate was legal in every other respect and
+      // only the ceiling kept it out, so raising the ceiling WOULD help (the 'time' logic, for sets).
+      const daySets = workingSets(w.s);
+      let ceilOnly = false;
       // 'time' never occupies dayWhy, so a real blocker on a later candidate is still recorded.
       const note = r => { if (r === 'time') { timeHit = true; return; } if (!dayWhy) dayWhy = r; };
       // The cheap minute check stays first (blockOf walks days and readiness); when it is the thing in
       // the way we confirm ONCE per day, with blockOf, that the set would otherwise have been legal.
       for (const x of blocks) {
+        if (daySets + 1 > setCap) {
+          if (!ceilOnly && !blockOf(w, x.ex, 1, uid, phase !== 'min' || uid === '__pull')) ceilOnly = true;
+          continue;
+        }
         const trial = w.s.blocks.map((b, i) => (i === x.i ? clone(b) : b));
         setSets(trial[x.i], setsOf(x.b) + 1);
         if (estimateMinutes(trial) > lim) {
@@ -974,6 +997,7 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
           if (have.has(e.id)) continue;
           const r = blockOf(w, e, 2, uid, phase !== 'min' || uid === '__pull');
           if (r) { note(r); continue; }
+          if (daySets + 2 > setCap) { ceilOnly = true; continue; }   // legal but for the ceiling
           const ns = addExercise(w.s, e.id, { sessions: ctx.history, now: noonOf(d) });
           const nb = ns.blocks.find(b => b.exId === e.id); if (!nb) continue;
           setSets(nb, 2);
@@ -990,7 +1014,10 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
       // The PLAIN per-session cap, not the reduced back-to-back allowance: when spacing is what holds
       // the muscle back, blockOf already reports 'recovery' and that is the honest reason.
       const atCap = uid !== '__pull' && cur + 0.5 > unitCap(uid, raise) + 0.01;
-      if (!found) reasons[d] = atCap ? 'session' : (est >= lim - 2 || timeOnly) ? 'time' : (dayWhy || (timeHit ? 'time' : 'exercise'));
+      // §26: the day is at the workout set ceiling (nothing can be added at all), or something legal was
+      // kept out only by it → 'ceiling', ahead of time: more minutes cannot help a day at its ceiling.
+      const atCeil = daySets + 1 > setCap || ceilOnly;
+      if (!found) reasons[d] = atCap ? 'session' : atCeil ? 'ceiling' : (est >= lim - 2 || timeOnly) ? 'time' : (dayWhy || (timeHit ? 'time' : 'exercise'));
       if (found && (!best || found.score < best.score)) best = found;
     }
     if (dry) { why[uid] = reasons; return !!best; }
@@ -1213,6 +1240,8 @@ function balanceVolume(ctx, out, ws, we, { convertFlex = true } = {}) {
       : rs.every(r => r === 'time') ? (fillExtend ? 'time' : 'policy')
         : Object.entries(cnt).filter(([r]) => r !== 'time').sort((x, y) => y[1] - x[1])[0][0];
     if (w0 === 'session' && !(caps === rs.length && rs.length === W.length)) w0 = 'session_other';
+    // §26: "the ceiling on every lift day" only when it is in the way on every one of them.
+    if (w0 === 'ceiling' && !((cnt.ceiling || 0) === rs.length && rs.length === W.length)) w0 = 'ceiling_some';
     targetWhy[u] = w0;
   }
   phase = 'min';
@@ -1421,9 +1450,13 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
   const liftDays = (sessions || []).filter(s => s && s.status === 'planned' && s.date >= from && s.date <= to && s.date >= today && s.plan?.kind === 'lift');
   const capLimit = s => (pol.mode === 'extend' ? Math.max(Number(s.plan?.slot?.minutes) || 0, pol.maxMinutes) : Number(s.minutes) || 0);
   const timeBound = liftDays.length > 0 && liftDays.every(s => estimateMinutes(s.blocks) >= capLimit(s) - 5);
+  // §26: a lift day within a set of the workout set ceiling cannot take another exercise.
+  const setCap = sessionSetCapOf(profile || {});
+  const ceilDays = liftDays.filter(s => workingSets(s) >= setCap - 1).length;
+  const ceilingBound = liftDays.length > 0 && ceilDays === liftDays.length;
   const short = UNIT_ORDER.filter(u => units[u].min > 0 && units[u].status === 'under' && units[u].min - units[u].total >= 0.25)
     .map(u => ({ unit: u, group: units[u].group, name: units[u].name, total: units[u].total, min: units[u].min, short: r1(units[u].min - units[u].total) }));
-  const why = !short.length ? '' : timeBound ? ` (every lift day is at your ${pol.mode === 'extend' ? pol.maxMinutes + '′ cap' : 'slot time'})` : pol.mode !== 'extend' ? ' (workouts are kept to your slot times)' : ' (recovery spacing: add a lift day)';
+  const why = !short.length ? '' : ceilingBound ? ` (every lift day is at your ${setCap}-set workout ceiling: add a lift day)` : timeBound ? ` (every lift day is at your ${pol.mode === 'extend' ? pol.maxMinutes + '′ cap' : 'slot time'})` : pol.mode !== 'extend' ? ' (workouts are kept to your slot times)' : ' (recovery spacing: add a lift day)';
   for (const x of short) warnings.push(`${x.name}${x.group !== x.unit && !/^(chest|back)/.test(x.unit) ? ` (${gName(x.group).toLowerCase()})` : ''} ${fmt(x.total)}/${fmt(x.min)} sets: short ${fmt(x.short)}${why}`);
   const tUnits = UNIT_ORDER.filter(u => units[u].target > 0 && !units[u].sub);
   const tMet = tUnits.filter(u => units[u].total >= units[u].target - 0.25);
@@ -1444,9 +1477,12 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
   const anyLift = (sessions || []).some(s => s && s.date >= from && s.date <= to && !isRestPlan(s)
     && (s.blocks || []).some(b => b.kind === 'lift' || b.kind === 'class'));
   const tShort = tUnits.filter(u => !tMet.includes(u)).map(u => {
-    let why = anyLift ? (tWhy[u] || (timeBound ? 'time' : pol.fillTargets !== 'extend' ? 'policy' : null)) : 'nolift';
+    let why = anyLift ? (tWhy[u] || (ceilingBound ? 'ceiling' : timeBound ? 'time' : pol.fillTargets !== 'extend' ? 'policy' : null)) : 'nolift';
     if (why === 'time' && !timeBound) why = null;   // only claim "time" when every lift day really is at the cap
-    return { unit: u, name: units[u].name, total: units[u].total, target: units[u].target, short: r1(units[u].target - units[u].total), why, whyText: why ? TARGET_WHY_TEXT[why](pol) : 'not yet planned' };
+    // §26: and "the ceiling on every lift day" only when every one holds within a set of it (else say how many).
+    if (why === 'ceiling' && !ceilingBound) why = ceilDays ? 'ceiling_some' : null;
+    else if (why === 'ceiling_some') why = ceilingBound ? 'ceiling' : ceilDays ? why : null;
+    return { unit: u, name: units[u].name, total: units[u].total, target: units[u].target, short: r1(units[u].target - units[u].total), why, whyText: why ? TARGET_WHY_TEXT[why](pol, { setCap, ceilDays, liftDays: liftDays.length }) : 'not yet planned' };
   });
   const targets = { met: tMet.length, total: tUnits.length, shortSets: r1(tShortSets), minutesToHit: Math.round(tShortSets * 2.2 / 5) * 5, short: tShort,
     line: tShort.length ? `Targets ${tMet.length}/${tUnits.length}: short on ${tShort.slice(0, 3).map(x => `${x.name.toLowerCase()} ${fmt(x.short)}`).join(', ')}${tShort[0].why ? ` (${tShort[0].whyText})` : ''}` : `Targets ${tMet.length}/${tUnits.length} ✓` };
@@ -1455,8 +1491,12 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
   // (per-head region warnings retired: side/rear delts and upper chest are units now)
   for (const u of UNIT_ORDER) if (units[u].status === 'over') warnings.push(`${units[u].name} ${fmt(units[u].total)} sets: over the ${fmt(units[u].max)}-set weekly max (diminishing returns, more recovery cost)`);
   const setsNeeded = Math.round(prio.reduce((a, g) => a + (T.groups[g]?.target.min || 0), 0));
+  // §26: the most working sets this week's lift days can hold under the workout set ceiling.
+  const nLiftDays = (sessions || []).filter(s => s && s.date >= from && s.date <= to && !isRestPlan(s) && (s.status !== 'planned' || s.date >= today) && (s.blocks || []).some(b => b.kind === 'lift')).length;
   if (underPrio.length >= 2) {
-    warnings.push(`Not enough lifting time to hit every priority minimum: ~${Math.round(liftMinutes)} lift min this week yields ~${Math.round(lDone + lPlan)} working sets, while the priority groups alone want ~${setsNeeded} group-sets. Add a lift day or more minutes, or accept a slower week.`);
+    warnings.push(ceilingBound
+      ? `Not enough lift days to hit every priority minimum: ${liftDays.length} planned lift day${liftDays.length === 1 ? '' : 's'} at your ${setCap}-set workout ceiling yield ~${Math.round(lDone + lPlan)} working sets, while the priority groups alone want ~${setsNeeded} group-sets. Add a lift day, or raise the ceiling in Settings (past it, extra sets mostly add fatigue).`
+      : `Not enough lifting time to hit every priority minimum: ~${Math.round(liftMinutes)} lift min this week yields ~${Math.round(lDone + lPlan)} working sets, while the priority groups alone want ~${setsNeeded} group-sets. Add a lift day or more minutes, or accept a slower week.`);
   }
   // Back-to-back heavy hits on the same (slow-recovering) group.
   const dates = Object.keys(byDay).sort();
@@ -1501,8 +1541,8 @@ export function weekPlanSummary(sessions, { weekStart, profile, now = new Date()
     .map(s => ({ date: s.date, ...s.plan.extended }));
   return {
     groups, regions, cardioMinutes, sessions: { done: sDone, planned: sPlan },
-    units, minimums: { met: !short.length, short, binding: short.length ? (timeBound ? 'time' : pol.mode !== 'extend' ? 'policy' : 'recovery') : null }, targets, pushPull, extended,
-    liftSets: { done: lDone, planned: lPlan }, capacity: { liftMinutes: Math.round(liftMinutes), setsNeeded },
+    units, minimums: { met: !short.length, short, binding: short.length ? (ceilingBound ? 'ceiling' : timeBound ? 'time' : pol.mode !== 'extend' ? 'policy' : 'recovery') : null }, targets, pushPull, extended,
+    liftSets: { done: lDone, planned: lPlan }, capacity: { liftMinutes: Math.round(liftMinutes), setsNeeded, setCap, liftDays: nLiftDays, maxSets: nLiftDays * setCap },
     warnings, score,
   };
 }

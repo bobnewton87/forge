@@ -12,7 +12,8 @@ import { sessionVolume } from '../js/engine/recovery.js';
 import { VOLUME_UNITS, GROUP_ORDER } from '../js/data/muscles.js';
 import { getEx } from '../js/data/exercises.js';
 import { SCULPT_GOALS } from '../js/data/sculpt.js';
-import { resolveTargets, applyTargetChange, volumePolicyOf, unitTargets, volumeRoomOptions, MINIMUMS_EVIDENCE } from '../js/engine/targets.js';
+import { resolveTargets, applyTargetChange, volumePolicyOf, unitTargets, volumeRoomOptions, MINIMUMS_EVIDENCE, sessionSetCapOf } from '../js/engine/targets.js';
+import { workingSets } from '../js/engine/generator.js';
 import { extendedToast, setsBand } from '../js/ui/targets.js';
 import { parseDs } from '../js/util.js';
 
@@ -27,18 +28,23 @@ const sched = (n, m) => {
   return Object.fromEntries(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(d => [d, days.includes(d) ? { kind: 'lift', minutes: m, location: 'crunch' } : { kind: 'rest', minutes: 0, location: 'home' }]));
 };
 
-// The invariant: every unit with a floor is at its min, OR every lift day is at the time cap (and the
-// shortfall says so). Plus: pull ≥ push (±10%), per-session caps, weekly max for topped-up units.
+// The invariant: every unit with a floor is at its min, OR every lift day is at the time cap, OR (§26)
+// every lift day is at the workout set ceiling (and the shortfall says which). Plus: no day past the
+// ceiling, pull ≥ push (±10%), per-session caps, weekly max for topped-up units.
 function checkWeek(name, p, out) {
   const sum = summary(out, p);
   const pol = volumePolicyOf(p);
   const lifts = out.filter(s => s.plan.kind === 'lift');
   const cap = s => (pol.mode === 'extend' ? Math.max(s.plan.slot.minutes, pol.maxMinutes) : s.minutes);
+  const setCap = sessionSetCapOf(p);
+  const atCeil = s => workingSets(s) >= setCap - 1;
+  for (const s of lifts) assert.ok(workingSets(s) <= setCap, `${name} ${s.date}: ${workingSets(s)} working sets past the ${setCap}-set ceiling`);
   for (const [u, x] of Object.entries(sum.units)) {
     if (!(x.min > 0) || x.total >= x.min - 0.25) continue;
-    assert.ok(lifts.every(s => estimateMinutes(s.blocks) >= cap(s) - 5), `${name}: ${u} ${x.total}/${x.min} short while time remains (${lifts.map(s => `${estimateMinutes(s.blocks)}/${cap(s)}`).join(' ')})`);
-    assert.equal(sum.minimums.binding, 'time', name);
-    assert.ok(sum.warnings.some(w => w.startsWith(x.name) && /cap/.test(w)), `${name}: ${sum.warnings.join(' | ')}`);
+    const timeBound = lifts.every(s => estimateMinutes(s.blocks) >= cap(s) - 5), ceilBound = lifts.every(atCeil);
+    assert.ok(timeBound || ceilBound, `${name}: ${u} ${x.total}/${x.min} short while time and sets remain (${lifts.map(s => `${estimateMinutes(s.blocks)}/${cap(s)}′ ${workingSets(s)}/${setCap}`).join(' ')})`);
+    assert.equal(sum.minimums.binding, ceilBound ? 'ceiling' : 'time', name);
+    assert.ok(sum.warnings.some(w => w.startsWith(x.name) && (ceilBound ? /ceiling/ : /cap/).test(w)), `${name}: ${sum.warnings.join(' | ')}`);
   }
   assert.ok(sum.pushPull.ok, `${name}: push ${sum.pushPull.push} vs pull ${sum.pushPull.pull}`);
   // TARGET invariant: every muscle reaches its target, or the summary names the binding constraint
@@ -46,13 +52,20 @@ function checkWeek(name, p, out) {
   // VOLUME-COHESION 2026-10-21: 'session' now means "a per-session cap on EVERY lift day, and this
   // muscle is at its own cap on at least one"; the partial case is 'session_other', a week with no lift
   // day is 'nolift', and a dry-run probe that still had room is 'rounds'.
-  const REASONS = new Set(['time', 'max', 'recovery', 'session', 'session_other', 'pushpull', 'exercise', 'policy', 'nolift', 'rounds']);
+  // §26: 'ceiling' = every lift day is within a set of the workout set ceiling; 'ceiling_some' = some are.
+  const REASONS = new Set(['time', 'max', 'recovery', 'session', 'session_other', 'pushpull', 'exercise', 'policy', 'nolift', 'rounds', 'ceiling', 'ceiling_some']);
   for (const [u, x] of Object.entries(sum.units)) {
     if (!(x.target > 0) || x.sub || x.total >= x.target - 0.25) continue;
     const sh = sum.targets.short.find(y => y.unit === u);
     assert.ok(sh && REASONS.has(sh.why), `${name}: ${u} ${x.total}/${x.target} short without a binding reason (${sh?.why})`);
     if (pol.fillTargets === 'extend' && pol.mode === 'extend') assert.notEqual(sh.why, 'policy', name);
     if (sh.why === 'time') assert.ok(lifts.every(s => estimateMinutes(s.blocks) >= cap(s) - 5), `${name}: ${u} "time" but a day has room`);
+    if (sh.why === 'ceiling') assert.ok(lifts.every(atCeil) && new RegExp(`${setCap}-set workout ceiling on every`).test(sh.whyText), `${name}: ${u} "ceiling" but a day has sets left (${lifts.map(workingSets)})`);
+    if (sh.why === 'ceiling_some') {
+      const n = lifts.filter(atCeil).length;
+      assert.ok(n > 0 && n < lifts.length, `${name}: ${u} "ceiling_some" with ${n}/${lifts.length} days at the ceiling`);
+      assert.match(sh.whyText, new RegExp(`${setCap}-set workout ceiling on ${n} of ${lifts.length} lift days`), name);
+    }
   }
   for (const s of lifts) {
     const v = sessionVolume(simulateDone(s)).groups;

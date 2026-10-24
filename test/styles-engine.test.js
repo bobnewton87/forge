@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildWorkout, estimateMinutes, restyle, swapBlock, addExercise, resolveStyle, normalizeCustomStyle, styleOptions,
-  STYLE_DEFS, BUILTIN_STYLES, PAIRINGS, STYLE_EVIDENCE, sharesLimiter, competes, TIME,
+  STYLE_DEFS, BUILTIN_STYLES, PAIRINGS, STYLE_EVIDENCE, sharesLimiter, competes, TIME, workingSets,
 } from '../js/engine/generator.js';
 import { getEx } from '../js/data/exercises.js';
 import { REGIONS } from '../js/data/muscles.js';
@@ -89,9 +89,12 @@ test('Time-saver: hypertrophy reps, ~90/60 s per muscle, rest after the pair, fi
     const e = buildWorkout({ targets: ['upper'], minutes, location: loc, profile: PROFILE, now: NOW, style: 'efficient', seed: 3 });
     const h = buildWorkout({ targets: ['upper'], minutes, location: loc, profile: PROFILE, now: NOW, style: 'hypertrophy', seed: 3 });
     assert.equal(e.style, 'efficient');
-    if (!e.poolLimited) assert.ok(Math.abs(e.estMinutes - minutes) <= minutes * 0.1, `${loc.id} ${minutes}: ${e.estMinutes}`);
+    // §26: capped at the 30-set ceiling = short on purpose (exempt from the ±10% fit)
+    if (e.capped) assert.ok(workingSets(e) <= 30 && e.estMinutes <= minutes, `${loc.id} ${minutes}: capped ${workingSets(e)} sets ${e.estMinutes}′`);
+    else if (!e.poolLimited) assert.ok(Math.abs(e.estMinutes - minutes) <= minutes * 0.1, `${loc.id} ${minutes}: ${e.estMinutes}`);
     const sets = s => lifts(s).reduce((n, b) => n + b.target.sets, 0);
-    assert.ok(sets(e) >= sets(h), `${minutes}: time-saver fits at least as many sets (${sets(e)} vs ${sets(h)})`);
+    // at least as many sets, up to the ceiling (pairs move in steps of 2, so a capped plan may sit 1-3 under it)
+    assert.ok(sets(e) >= Math.min(sets(h), 27), `${minutes}: time-saver fits at least as many sets (${sets(e)} vs ${sets(h)})`);
     for (const b of lifts(e)) {   // hypertrophy rep ranges
       const ex = getEx(b.exId);
       if (ex.unit === 'seconds') continue;
