@@ -819,6 +819,30 @@ component, `js/ui/targets.js`:
   `priority` tag; `PRIORITY_LEGEND` replaces `STAR_LEGEND`. `setsBand` stays for engine status and the Why table.
 - Guarded by `test/weekly-rows.test.js` and e2e V1 (Plan, Body and the muscle sheet print the identical row).
 
+### 18.y Text numbers are per unit and are the rows' numbers (2026-10-24)
+Bob saw "Shoulders: not trained yet, 0/25 sets this week" on a Today card while the weekly rows showed Side delts and
+Rear delts separately (18 + 7). Rule: **any weekly sets-vs-target number in text is per enforcement unit, never a
+group sum, from the same calendar week and counter as the rows, and says which number it is.**
+- `recovery.weekUnitView(sessions, { profile, now, weekStart })` is the one week view for text: per unit
+  `{ done, planned, total, min, target, max, short }`, computed from the raw store sessions exactly as the rows are.
+  `planner.weekPlanSummary().units` now reads its numbers from it (pinned equal by test).
+  `recovery.leastCoveredUnit(view, group)` names the unit a one-line text or a half-width tile quotes.
+- `targets.weekUnitPhrase(x)` is the one wording: "4 of 18 done, 6 planned". `targets.unitShort(u)` the name.
+- Today: card reasons ("Side delts: not trained yet · 0 of 18 done this week (priority)") take `recommend({ week })`;
+  builder tiles show the group's least-covered unit ("Side delts 0/18", key line under the tiles); the preview shows
+  "This week, before this workout: …" (`ui/targets.weekUnitsLineHTML`). Plan's day sheet: "Week incl. this day: …".
+  The cards' cardio reason quotes the cardio row (`targets.cardioWeek`): "0 of 120 min done this week".
+- **Stored text quotes no weekly numbers**: the generator's "Focus" line, the planner's "Added triceps …" lines and
+  any reason the planner stores. Numbers written at plan time went stale after the top-up passes and were group
+  sums; live numbers are drawn where the workout is shown.
+- `weekPlanSummary` warnings name units and say which number: "Triceps: 9 of 13 minimum (done + planned) sets: short
+  4"; the priority capacity warning lists the short units; `capacity.setsNeeded` is the priority units' minimums
+  summed (Plan: "your priority muscles' minimums add up to ~N").
+- The rolling 7-day cardio suggestion (`recovery.cardioStatus`) now says "in the last 7 days" instead of "this week".
+- `test/week-text.test.js` renders Today (cards, tiles, a draft preview) and Plan's day sheet in Node, plus the
+  generator, planner, summary and Why texts, and fails on any group name carrying a number pair, any unit pair that
+  is not that unit's own target / min / max, and the old wording; it is shown to catch Bob's exact card text.
+
 ## 16c. Segment lengths per side (2026-10-20)
 Bob: "add various elbow-to-shoulder lengths for both sides, knee-to-ankle and knee-to-hip, to capture asymmetries and make
 the 3D model more accurate, smooth and accurate in rendering, specifically head to neck but everywhere."
@@ -2120,7 +2144,7 @@ or a note edit, so logging an issue re-plans the upcoming auto days through the 
 
 Every sheet carries `issues.NOT_A_CLINICIAN`: *"Forge is not a clinician: logging this only changes which exercises
 it picks. It does not diagnose or treat anything."* No diagnosis words, no treatment advice (pinned by test).
-`side` is recorded and shown but does not change selection (a unilateral move is programmed for both sides).
+`side` changes selection for limb issues: see §26.4 (amended 2026-10-24; it used to be recorded only).
 
 **The stress map** (`js/data/stress.js`). `stressOf(ex) → { shoulder, elbow, wrist, neck, upper_back, lower_back,
 hip, knee, ankle }` each 0–3: 0 none · 1 incidental · 2 clearly loads it · 3 loads it hardest. Derived **by rule**
@@ -2153,9 +2177,7 @@ hurts** → the areas that exercise loads, hardest first (`issues.areaOptionsFor
 and swaps to the alternative that spares every active issue and loads the logged area least (logged sets stay
 with the old exercise; no safe swap here → the exercise is skipped, said in a toast).
 
-**Known gaps.** `recovery.recommend` (Today's "What should I train?") is not issue-aware; the generator
-substitutes when a recommended group is fully excluded, and says so. The tiers are not graded by side or range of
-motion.
+**Known gaps.** The tiers are not graded by range of motion. (Today's cards became issue-aware in §26.5.)
 
 ### 26.3 Tests
 `test/overload-ceiling.test.js` (resolver bounds and labels; the 60-min Time-saver case; every built-in and
@@ -2168,3 +2190,64 @@ the ceiling, binding `'ceiling'`) and checks `ceiling` / `ceiling_some` claims a
 `volume-cohesion`: the "two 30-min days run to 90′" fixture raises the ceiling to 50 to keep testing the time
 story, a new 30-set fixture checks the ceiling story, and "≥60% of targets" allows a ceiling-bound week only if
 its summary names the ceiling.
+
+### 26.4 Side: a one-sided limb issue keeps one-limb moves for the healthy side (2026-10-24)
+Bob: side (left/right) must change exercise choice. `js/engine/issues.js`:
+- **Which issues.** `isLateral(issue)`: shoulder, elbow, wrist (arm), hip, knee, ankle (leg), or a muscle issue on
+  a limb group (`LIMB_GROUPS`: shoulders, biceps, triceps, forearms → arm; quads, hamstrings, glutes, calves → leg).
+  `issueLimb(issue)` is that limb when the side is `left` or `right`. Neck, back, chest and core issues have no side
+  (`normalizeIssue` stores `both`). The side is part of `issueKey`, so changing it re-plans.
+- **Which moves.** `oneSideLimb(ex)` derives a one-limb move from the data that already exists: `unilateral: true`
+  plus its pattern. Arm: one-arm DB / cable / machine work, except where the free hand braces or bears weight
+  (`BRACED`: bench-supported rows, kroc / KB / meadows rows, a bench kickback, the archer push-up, leaning off a post
+  or the cable tower). Leg: only seated or lying one-leg machine-style work (single-leg leg press, extension, curl
+  and their seated / lying band versions). Split squats, lunges, step-ups, single-leg RDLs, single-leg hip thrusts,
+  standing single-leg calf raises and standing cable kickbacks never qualify: the other leg is the stance leg or is
+  held up under load. 36 arm and 5 leg moves qualify today.
+- **Effect** (`issueEffects` → `issueFilter().side: Map<exId, 'left'|'right'>`): a bilateral move keeps the severity
+  rules unchanged. A one-limb move on the issue's limb that the severity rules would exclude **or** penalise is kept
+  instead as **healthy side only** (no penalty). Two lateral issues that leave no healthy side (a left elbow and a
+  right shoulder on a one-arm press) block it. `effectiveTier(ex, issue)` is 0 for such a move.
+- **Blocks.** The generator writes `block.sideOnly = 'left'|'right'`; `applySides(session, issues)` sets / clears it
+  after a swap or an add (Today, the live workout, Plan's day sheet) and "This hurts" keeps the current move healthy-
+  side only when it qualifies. A side-only block takes one side's time (no ×2 unilateral time), is worth half to the
+  fitter, and is shown "Right arm only · Counts as half a set for the week: one side of the pair (a convention)"; the
+  workout shows the cross-education line once. The planner's top-up never adds or swaps in a side-only move.
+- **Weekly credit: `SIDE_ONLY_CREDIT = 0.5`** per set, applied in `recovery.sessionVolume` (the one counter) and the
+  planner's local per-session sums. **A convention**: one side of a bilateral pair, not a measurement. It is still
+  one working set toward the §26.1 ceiling.
+- **Cross-education** (`SIDE_ONLY_INFO`), checked against the PubMed records (abstracts) of both sources: Farthing,
+  Krentz & Magnus 2009 (J Appl Physiol 106:830, doi:10.1152/japplphysiol.91331.2008): a wrist in a cast for 3 weeks,
+  10 people per group; when the free arm trained, the casted arm kept its strength (13.9 → 14.2 N·m), with the cast
+  alone it fell (12.2 → 10.4). Manca et al. 2017 (Eur J Appl Physiol 117:2335, doi:10.1007/s00421-017-3720-z): 31 RCTs,
+  785 people, +11.9% strength in the untrained limb, high risk of bias. The in-app line says only that training the
+  free side **may help** the other side **hold its strength**, and that this is strength, not muscle size, tested
+  on casts, not injuries.
+- The issue sheet and "This hurts" show "Which side hurts" only for lateral issues, with what the choice does.
+
+### 26.5 Today's cards respect active issues (2026-10-24)
+`generator.groupAvailability(group, { equipment, issues, exclude })` is the ONE place that says what the issues leave
+of a group at a location: `ok` | `limited` (half or more of its moves out or one-side only) | `side` (only
+healthy-side-only moves left) | `out` | `none` (no move here at all). `availabilityLine()` is its sentence
+("Left elbow (moderate): triceps work is right-arm only", "… no triceps move here spares it, so triceps are left
+out"). `buildWorkout` and `recovery.recommend` both read it, so a card cannot promise what Build won't do:
+- `recommend` multiplies a group's value by `AVAIL_FACTOR` (ok/none 1, limited 0.8, side 0.5, out 0) and drops a card
+  whose every group is `out`; its reasons lead with the `out` / `side` lines and the card carries
+  `issueNotes: [{ group, status, side, limb, issue, line }]`.
+- `buildWorkout` drops an `out` group (as in §26.2) and repeats the `side` line in its rationale, word for word.
+- `test/recommend-issues.test.js` builds every card (8 issue cases × 2 places × 3 lengths) and checks each claim
+  against the workout: nothing excluded, every one-limb move on its healthy side, `out` groups absent and named,
+  `side` groups only healthy-side-only and the same sentence in the rationale.
+
+### 26.6 Toasts after "This hurts" (2026-10-24)
+`setTargets(ctx, patch, { lead })` (js/ui/targets.js): `lead` (a string, or a function read when the toast shows)
+leads the re-plan toast. "This hurts" shows its own message at once ("Logged. Swapped to Cable Y-Raise, right arm
+only, which spares your left elbow") and the re-plan toast then reads "<that message>. Plan updated for left elbow
+logged (moderate)…" instead of overwriting it 600 ms later.
+
+### 26.7 Tests (2026-10-24 additions)
+`test/issues-side.test.js` (which moves qualify, the left-elbow and left-knee cases, both / conflicts / mild / unsided,
+half credit and one-side time, `applySides`, availability and the planner, the cited line). `test/recommend-issues.test.js`
+(§26.5). `test/week-text.test.js` (§18.y). Amended: `issues-stress` (issueKey includes the side; a one-sided knee issue
+may keep a one-leg machine move for the other leg), `planfix-context` and `volume-cohesion` (§18.y: stored rationale
+quotes no weekly numbers; reasons with the week view quote the rows' numbers, without it none).
