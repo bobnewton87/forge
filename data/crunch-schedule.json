@@ -5,7 +5,7 @@
   "phone": "469.824.3022",
   "locationUrl": "https://www.crunch.com/locations/allen",
   "source": "occurrences",
-  "fetchedAt": "2026-10-23T14:46:28.879Z",
+  "fetchedAt": "2026-10-24T13:53:22.773Z",
   "keepBackDays": 90,
   "days": [
     {
@@ -220,140 +220,35 @@
           "time": "5:30 am",
           "start": "05:30",
           "duration": 45,
-          "instructor": "Serena G",
-          "category": "HIITZone",
-          "room": "HIITZone",
-          "description": "Strong never looked so good! This class features specially designed triple round work efforts that focus on power and strength. Challenge yourself to work harder and be stronger as the rounds progress. Focus on controlled strength based movements that will chisel your body while torching calories.",
-          "id": 7630581,
-          "classify": {
-            "type": "hiit",
-            "cardioMinutes": 31,
-            "intensity": "intervals",
-            "muscles": {
-              "chest_mid": 1.5,
-              "lats": 1,
-              "upper_back": 1,
-              "delt_front": 1,
-              "delt_side": 1,
-              "triceps_lateral": 1,
-              "triceps_long": 0.5,
-              "biceps_long": 0.5,
-              "biceps_short": 0.5,
-              "quads": 2,
-              "glutes": 2,
-              "hamstrings": 1,
-              "abs": 1.5,
-              "obliques": 0.5,
-              "forearms": 0.5
-            },
-            "label": "Strength HIIT",
-            "blurb": "Strength-based HIIT with power moves and real loading. One of the better classes for adding muscle; also brutal conditioning, so space it from heavy leg days."
-          }
+          "instructor": "Serena G"
         },
         {
           "name": "Yoga Body Sculpt",
           "time": "8:30 am",
           "start": "08:30",
           "duration": 60,
-          "instructor": "Dimple P",
-          "category": "Mind Body",
-          "room": "Group Fitness",
-          "description": "A strength-building Vinyasa flow class that focuses on sculpting your buns and thighs while flattening your belly and strengthening your core.",
-          "id": 7630579,
-          "classify": {
-            "type": "yoga",
-            "cardioMinutes": 12,
-            "intensity": "moderate",
-            "muscles": {
-              "delt_front": 0.75,
-              "delt_side": 0.5,
-              "triceps_lateral": 0.5,
-              "chest_mid": 0.5,
-              "quads": 1,
-              "glutes": 1.5,
-              "glute_med": 0.5,
-              "abs": 1.5,
-              "obliques": 0.75
-            },
-            "label": "Yoga + light weights",
-            "blurb": "Vinyasa flow with light weights, heavy on glutes, thighs and core. Good mobility plus a little core volume; too light to grow upper body."
-          }
+          "instructor": "Dimple P"
         },
         {
           "name": "So You Think You Can't Dance",
           "time": "9:30 am",
           "start": "09:30",
           "duration": 60,
-          "instructor": "Emily E",
-          "category": "Dance",
-          "room": "Group Fitness",
-          "description": "Bring the magic of dancing back with this cardio dance class which combines easy to follow moves with fun choreography. This non stop format, will have you dancing and grooving to original music while breaking a sweat and having fun! Think you CAN’T dance? Think again!",
-          "id": 7630580,
-          "classify": {
-            "type": "cardio_dance",
-            "cardioMinutes": 45,
-            "intensity": "moderate",
-            "muscles": {
-              "calves": 0.5,
-              "glutes": 0.5,
-              "quads": 0.5,
-              "obliques": 0.5
-            },
-            "label": "Dance cardio",
-            "blurb": "Fun, steady cardio that keeps you moving: a good low-stress calorie burn for staying lean, with no real muscle-building stimulus."
-          }
+          "instructor": "Emily E"
         },
         {
           "name": "The Ride",
           "time": "9:30 am",
           "start": "09:30",
           "duration": 45,
-          "instructor": "Serena G",
-          "category": "Ride",
-          "room": "Ride",
-          "description": "Put the pedals to the metal in this fast-paced workout taught on a stationary bike. You'll climb, sprint, and train to incredible music and extraordinary instruction.",
-          "id": 7630582,
-          "classify": {
-            "type": "cycle",
-            "cardioMinutes": 41,
-            "intensity": "intervals",
-            "muscles": {
-              "quads": 1,
-              "glutes": 0.5,
-              "hamstrings": 0.25,
-              "calves": 0.5
-            },
-            "label": "Indoor cycling",
-            "blurb": "Climbs and sprints on the bike: excellent low-impact cardio for staying lean without beating up your legs like running does. Essentially no upper-body work."
-          }
+          "instructor": "Serena G"
         },
         {
           "name": "P3 Pilates",
           "time": "10:30 am",
           "start": "10:30",
           "duration": 45,
-          "instructor": "Mona D",
-          "category": "Mind Body",
-          "room": "Group Fitness",
-          "description": "Power, Precision, and Progression are the focus of this one-of-a-kind Pilates workout. Grab a mat, a pair of dumbbells and get ready to work through a series of exercises designed to leave you long and lean with a rock-solid core. Take Pilates to the next level using flowing patterns that will demand power and precision while providing progressions that suit all fitness levels.",
-          "id": 7630583,
-          "classify": {
-            "type": "pilates",
-            "cardioMinutes": 5,
-            "intensity": "moderate",
-            "muscles": {
-              "abs": 3,
-              "obliques": 1.5,
-              "glutes": 1.5,
-              "glute_med": 1,
-              "adductors": 0.5,
-              "lower_back": 0.5,
-              "delt_side": 0.5,
-              "delt_rear": 0.5
-            },
-            "label": "Pilates",
-            "blurb": "Strong deep-core and glute work with control. A solid way to get abs volume, plus posture and trunk stability for heavy lifts."
-          }
+          "instructor": "Mona D"
         }
       ]
     },
@@ -1614,6 +1509,192 @@
             },
             "label": "Dance cardio",
             "blurb": "Fun, steady cardio that keeps you moving: a good low-stress calorie burn for staying lean, with no real muscle-building stimulus."
+          }
+        },
+        {
+          "name": "Yoga Body Sculpt",
+          "time": "10:30 am",
+          "start": "10:30",
+          "duration": 60,
+          "instructor": "Rita J",
+          "category": "Mind Body",
+          "room": "Group Fitness",
+          "description": "A strength-building Vinyasa flow class that focuses on sculpting your buns and thighs while flattening your belly and strengthening your core.",
+          "id": 7657161,
+          "classify": {
+            "type": "yoga",
+            "cardioMinutes": 12,
+            "intensity": "moderate",
+            "muscles": {
+              "delt_front": 0.75,
+              "delt_side": 0.5,
+              "triceps_lateral": 0.5,
+              "chest_mid": 0.5,
+              "quads": 1,
+              "glutes": 1.5,
+              "glute_med": 0.5,
+              "abs": 1.5,
+              "obliques": 0.75
+            },
+            "label": "Yoga + light weights",
+            "blurb": "Vinyasa flow with light weights, heavy on glutes, thighs and core. Good mobility plus a little core volume; too light to grow upper body."
+          }
+        },
+        {
+          "name": "Barbell 45",
+          "time": "12:00 pm",
+          "start": "12:00",
+          "duration": 45,
+          "instructor": "Lauren I",
+          "category": "Strength",
+          "room": "Group Fitness",
+          "description": "Transform your body and see results quickly in this exclusive barbell based hard core strength workout. Push, pull and lift your way to extreme results. Crush your goals in no time with a mix of both upper and lower body work mixed with challenging core segments designed to rev your metabolism and transform your body!",
+          "id": 7657165,
+          "classify": {
+            "type": "strength",
+            "cardioMinutes": 9,
+            "intensity": "moderate",
+            "muscles": {
+              "chest_mid": 2,
+              "chest_upper": 0.5,
+              "lats": 1,
+              "upper_back": 1.5,
+              "traps": 0.5,
+              "delt_front": 1,
+              "delt_side": 1,
+              "biceps_long": 0.75,
+              "biceps_short": 0.75,
+              "triceps_lateral": 1,
+              "triceps_long": 0.5,
+              "quads": 2,
+              "glutes": 2,
+              "hamstrings": 1,
+              "lower_back": 0.5,
+              "abs": 1
+            },
+            "label": "Barbell strength",
+            "blurb": "High-rep barbell work for the whole body: decent volume, though loads are light. It usually includes back squats, so swap those for goblet or split squats (your rule)."
+          }
+        },
+        {
+          "name": "P3 Pilates",
+          "time": "5:30 pm",
+          "start": "17:30",
+          "duration": 45,
+          "instructor": "Rachael C.",
+          "category": "Mind Body",
+          "room": "Group Fitness",
+          "description": "Power, Precision, and Progression are the focus of this one-of-a-kind Pilates workout. Grab a mat, a pair of dumbbells and get ready to work through a series of exercises designed to leave you long and lean with a rock-solid core. Take Pilates to the next level using flowing patterns that will demand power and precision while providing progressions that suit all fitness levels.",
+          "id": 7657170,
+          "classify": {
+            "type": "pilates",
+            "cardioMinutes": 5,
+            "intensity": "moderate",
+            "muscles": {
+              "abs": 3,
+              "obliques": 1.5,
+              "glutes": 1.5,
+              "glute_med": 1,
+              "adductors": 0.5,
+              "lower_back": 0.5,
+              "delt_side": 0.5,
+              "delt_rear": 0.5
+            },
+            "label": "Pilates",
+            "blurb": "Strong deep-core and glute work with control. A solid way to get abs volume, plus posture and trunk stability for heavy lifts."
+          }
+        },
+        {
+          "name": "ZUMBA",
+          "time": "6:30 pm",
+          "start": "18:30",
+          "duration": 60,
+          "instructor": "Rachael C.",
+          "category": "Dance",
+          "room": "Group Fitness",
+          "description": "Fuse hypnotic Latin rhythms and easy-to-follow moves to create a high energy, calorie blasting, total body dance based workout designed to tone your body from head to toe.",
+          "id": 7657163,
+          "classify": {
+            "type": "cardio_dance",
+            "cardioMinutes": 45,
+            "intensity": "moderate",
+            "muscles": {
+              "calves": 0.5,
+              "glutes": 0.5,
+              "quads": 0.5,
+              "obliques": 0.5
+            },
+            "label": "Dance cardio",
+            "blurb": "Fun, steady cardio that keeps you moving: a good low-stress calorie burn for staying lean, with no real muscle-building stimulus."
+          }
+        }
+      ]
+    },
+    {
+      "date": "2026-10-30",
+      "classes": [
+        {
+          "name": "Strong-er HIIT (HIITZone)",
+          "time": "5:30 am",
+          "start": "05:30",
+          "duration": 45,
+          "instructor": "Serena G",
+          "category": "HIITZone",
+          "room": "HIITZone",
+          "description": "Strong never looked so good! This class features specially designed triple round work efforts that focus on power and strength. Challenge yourself to work harder and be stronger as the rounds progress. Focus on controlled strength based movements that will chisel your body while torching calories.",
+          "id": 7657173,
+          "classify": {
+            "type": "hiit",
+            "cardioMinutes": 31,
+            "intensity": "intervals",
+            "muscles": {
+              "chest_mid": 1.5,
+              "lats": 1,
+              "upper_back": 1,
+              "delt_front": 1,
+              "delt_side": 1,
+              "triceps_lateral": 1,
+              "triceps_long": 0.5,
+              "biceps_long": 0.5,
+              "biceps_short": 0.5,
+              "quads": 2,
+              "glutes": 2,
+              "hamstrings": 1,
+              "abs": 1.5,
+              "obliques": 0.5,
+              "forearms": 0.5
+            },
+            "label": "Strength HIIT",
+            "blurb": "Strength-based HIIT with power moves and real loading. One of the better classes for adding muscle; also brutal conditioning, so space it from heavy leg days."
+          }
+        },
+        {
+          "name": "Yoga Body Sculpt",
+          "time": "8:30 am",
+          "start": "08:30",
+          "duration": 60,
+          "instructor": "Dimple P",
+          "category": "Mind Body",
+          "room": "Group Fitness",
+          "description": "A strength-building Vinyasa flow class that focuses on sculpting your buns and thighs while flattening your belly and strengthening your core.",
+          "id": 7657171,
+          "classify": {
+            "type": "yoga",
+            "cardioMinutes": 12,
+            "intensity": "moderate",
+            "muscles": {
+              "delt_front": 0.75,
+              "delt_side": 0.5,
+              "triceps_lateral": 0.5,
+              "chest_mid": 0.5,
+              "quads": 1,
+              "glutes": 1.5,
+              "glute_med": 0.5,
+              "abs": 1.5,
+              "obliques": 0.75
+            },
+            "label": "Yoga + light weights",
+            "blurb": "Vinyasa flow with light weights, heavy on glutes, thighs and core. Good mobility plus a little core volume; too light to grow upper body."
           }
         }
       ]
