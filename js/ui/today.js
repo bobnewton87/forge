@@ -48,7 +48,7 @@ import { canLogPast, retroFloor, startRetroLog, RETRO_DAYS } from './retro.js';
 //   to that size (easy). The header's cardio stat reads resolveTargets. A "Your targets" strip sits
 //   at the bottom of plain Today. Today's plan card shows an extended session's "+N′ for weekly minimums".
 import {
-  esc, chip, readinessColor, fmtNum, exName, targetName, unitLabel, safe, openSheet, closeSheet, toast,
+  esc, chip, readinessColor, READINESS_LEGEND, fmtNum, exName, targetName, unitLabel, safe, openSheet, closeSheet, toast,
   addExerciseSheet, swapSheet, cardioFormHtml, bindCardioForm, readCardioForm, cardioName, intensityName, exerciseInfoHtml,
 } from './components.js';
 // CONTRACT-NOTE (§26): plain Today shows the issue strip (ui/issues.js: "Something hurting?", one chip per
@@ -333,7 +333,7 @@ function builderSection(sessions, profile, loc) {
     <div class="tr-label tr-label-row"><span>Muscles <span class="muted">${B.targets.length ? '' : '· none = auto pick'}</span></span>${B.targets.length ? '<button type="button" class="tr-link" data-t="clear">Clear</button>' : ''}</div>
     <div class="tr-chiprow scroll">${PRESET_CHIPS.filter(p => PRESETS[p]).map(p => chip(PRESETS[p].name, { active: presetActive(p), attrs: `data-t="preset" data-id="${p}"`, cls: 'sm' })).join('')}</div>
     <div class="tr-tiles">${tiles}</div>
-    <div class="tr-legend"><span style="--rc:var(--good)">Needs work</span><span style="--rc:var(--accent)">Ready</span><span style="--rc:var(--warn)">Almost</span><span style="--rc:var(--bad)">Recovering</span></div>
+    <div class="tr-legend">${READINESS_LEGEND.map(([c, l]) => `<span style="--rc:${c}">${l}</span>`).join('')}</div>
     <div class="tiny muted tr-tile-key">n/target = sets done this week of the muscle's target (the least-covered muscle of the group), the same count as the weekly rows.</div>
     ${sculpt.length ? `<div class="tr-label">Sculpt focus</div><div class="tr-chiprow wrap">${sculpt.map(id => chip(`✦ ${SCULPT_GOALS[id].name}`, { active: B.targets.includes(id), attrs: `data-t="sculpt" data-id="${id}"`, cls: 'sm chip-sculpt' })).join('')}</div>` : ''}
     ${styleRow(profile)}

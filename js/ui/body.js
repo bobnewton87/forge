@@ -5,7 +5,7 @@ import { REGIONS, GROUPS, GROUP_ORDER, VOLUME_UNITS, UNIT_ORDER } from '../data/
 import { fmtSets } from '../engine/targets.js';
 import { SCULPT_GOALS } from '../data/sculpt.js';
 import { getEx } from '../data/exercises.js';
-import { esc, readinessColor, muscleBar } from './components.js';
+import { esc, readinessColor, muscleBar, READINESS_LEGEND } from './components.js';
 import { ds, fmtShort, addDays, daysBetween } from '../util.js';
 import * as bodycomp from '../engine/bodycomp.js';
 import { silhouetteSVG } from './silhouette.js';
@@ -182,7 +182,7 @@ export function render(ctx) {
     ${next.length ? `<div class="mt2"><div class="label">Ready & behind on volume</div><div class="chips mt">${next.map(g => `<button class="chip" data-group="${g.id}"><span class="dot-i" style="background:${readinessColor(g.readiness, g.need)}"></span>${esc(GROUPS[g.id].name)}</button>`).join('')}</div></div>` : ''}
   </div>`;
 
-  const legend = `<div class="legend">${[['var(--good)', 'Needs work'], ['var(--accent)', 'Ready'], ['var(--warn)', 'Almost ready'], ['var(--bad)', 'Recovering'], ['var(--muted)', 'On track']].map(([c, l]) => `<span><i class="dot-i" style="background:${c}"></i>${l}</span>`).join('')}</div>`;
+  const legend = `<div class="legend">${READINESS_LEGEND.map(([c, l]) => `<span><i class="dot-i" style="background:${c}"></i>${l}</span>`).join('')}</div>`;
   const map = `<div class="card"><div class="bodymap"><figure>${bodyMapSvg(FRONT, ms)}<figcaption>Front</figcaption></figure><figure>${bodyMapSvg(BACK, ms)}<figcaption>Back</figcaption></figure></div>${legend}<p class="tiny muted center mt">Tap a muscle for details</p></div>`;
 
   // Weekly sets vs target: the SAME rows as Plan › Week coverage (targets.weeklySetsHTML over

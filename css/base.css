@@ -13,6 +13,14 @@
   --warn: #fbbf24;
   --bad: #f87171;
   --cardio: #4cc3ff;
+  /* Readiness (muscle map, recovery tiles, builder tiles): one fixed status scale, validated for
+     colour-blind separation on the dark card (every pair ΔE ≥ 12.5 OKLab×100, normal vision ≥ 18.9).
+     Ready used to be the ember accent, too close to Recovering's red. */
+  --rd-need: #34d399;     /* needs work: ready and behind on volume (go) */
+  --rd-ready: #4f8ff7;    /* ready */
+  --rd-almost: #f59e0b;   /* almost ready */
+  --rd-recover: #dc2626;  /* recovering */
+  --rd-ontrack: #71717a;  /* on track: nothing to do */
 
   --accent-soft: rgba(255, 107, 61, .14);
   --good-soft: rgba(61, 220, 151, .13);

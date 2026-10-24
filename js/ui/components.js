@@ -25,14 +25,16 @@ export function chip(label, { active = false, attrs = '', cls = '' } = {}) {
 }
 
 // readiness 0..1 (1 = recovered), need 0..1 (1 = big weekly deficit) → CSS colour var.
+// The one readiness scale (base.css --rd-*); READINESS_LEGEND lists it in the same order everywhere.
+export const READINESS_LEGEND = [['var(--rd-need)', 'Needs work'], ['var(--rd-ready)', 'Ready'], ['var(--rd-almost)', 'Almost ready'], ['var(--rd-recover)', 'Recovering'], ['var(--rd-ontrack)', 'On track']];
 export function readinessColor(readiness = 1, need = 0) {
   if (readiness == null) readiness = 1;
   if (need == null) need = 0;
-  if (readiness < 0.5) return 'var(--bad)';
-  if (readiness < 0.8) return 'var(--warn)';
-  if (need >= 0.5) return 'var(--good)';
-  if (need >= 0.2) return 'var(--accent)';
-  return 'var(--muted)';
+  if (readiness < 0.5) return 'var(--rd-recover)';
+  if (readiness < 0.8) return 'var(--rd-almost)';
+  if (need >= 0.5) return 'var(--rd-need)';
+  if (need >= 0.2) return 'var(--rd-ready)';
+  return 'var(--rd-ontrack)';
 }
 
 export function readinessLabel(readiness = 1, need = 0) {
