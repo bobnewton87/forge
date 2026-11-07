@@ -1,0 +1,19 @@
+import{esc as d}from"./components.js";import{PACE_FIELDS as u}from"../data/cardio.js";import{runningForm as h,runningPatch as c,runningSummary as y,PACE_LABELS as v,PACE_HINT as f,EVENT_MAX as g}from"../engine/running.js";import{wLabel as b,parsePace as $}from"../units.js";const m={mi:{easy:"9:30-10:15",threshold:"8:00",marathon:"8:45",fast:"7:00"},km:{easy:"5:55-6:20",threshold:"5:00",marathon:"5:25",fast:"4:20"}};function L(n,e=null){const a=h(n),i=b(n?.units),o=y(n),s=(t,r,l)=>`<div class="field"><label for="rn-${t}">${d(r)}</label><input id="rn-${t}" data-rn="${t}" value="${d(a[t])}" ${l}>
+    <div class="tiny" style="color:var(--bad)" data-rn-err="${t}" hidden></div></div>`;return`<div class="section-title" id="sec-running">Running</div>
+  ${e&&e.runUI?e.runUI.settingsRowHTML(e):""}
+  <div class="card" data-rn-card>
+    <p class="small muted mb">Optional, for runners. Without paces, cardio notes go by effort (the talk test). With them, run and treadmill notes use your paces. A past race weight adds a projection milestone: more lean mass than you had at that weight.</p>
+    ${o?`<p class="tiny mb" data-rn-sum>Saved: ${d(o)}</p>`:""}
+    <div class="label">Paces per</div>
+    <div class="tabs mt" style="margin-top:6px;margin-bottom:12px" data-rn-units>${["mi","km"].map(t=>`<button type="button" class="${a.unit===t?"active":""}" data-rn-unit="${t}">${t==="mi"?"mile":"km"}</button>`).join("")}</div>
+    <div class="grid2">${u.map(t=>s(t,v[t],`type="text" autocomplete="off" autocapitalize="off" maxlength="11" placeholder="e.g. ${m[a.unit][t]}"`)).join("")}</div>
+    <p class="tiny muted" style="margin:-6px 0 12px">${d(f)}</p>
+    <div class="grid2">
+      ${s("raceWeight",`Race weight (${i})`,'type="number" inputmode="decimal" step="0.1"')}
+      ${s("raceBodyFat","Body fat then (%)",'type="number" inputmode="decimal" step="0.1"')}
+    </div>
+    <p class="tiny muted" style="margin:-6px 0 12px">On the DXA scale, like every body-fat number in Forge. Smart scales and calipers usually read 3-4 points lower.</p>
+    ${s("event","Race (optional)",`type="text" maxlength="${g}" autocomplete="off" placeholder="e.g. marathon"`)}
+    <div class="row" style="gap:8px"><button type="button" class="btn btn-sm btn-primary" data-rn-save>Save</button>
+      <button type="button" class="btn btn-sm btn-ghost" data-rn-clear>Clear</button></div>
+  </div>`}function p(n,e){if(!n.runUI||!n.runUI.isOn(n))return;const a=e&&e.unit==="km"?"km":"mi",i=o=>{const s=e&&typeof e[o]=="string"?e[o].split("-")[0]:null;return s?$(s,a):null};n.runUI.savePaces(n,{thr:i("threshold"),mp:i("marathon")})}function q(n,e){const a=n.querySelector("[data-rn-card]");if(!a)return;e.runUI&&e.runUI.bindSettingsRow(n,e);let i=a.querySelector("[data-rn-unit].active")?.dataset.rnUnit||"mi";a.querySelectorAll("[data-rn-unit]").forEach(t=>t.addEventListener("click",()=>{i=t.dataset.rnUnit,a.querySelectorAll("[data-rn-unit]").forEach(r=>r.classList.toggle("active",r===t)),u.forEach(r=>{const l=a.querySelector(`[data-rn="${r}"]`);l&&(l.placeholder=`e.g. ${m[i][r]}`)})}));const o=()=>({unit:i,...Object.fromEntries([...a.querySelectorAll("[data-rn]")].map(t=>[t.dataset.rn,t.value]))}),s=t=>a.querySelectorAll("[data-rn-err]").forEach(r=>{const l=t[r.dataset.rnErr];r.hidden=!l,r.textContent=l||""});a.querySelector("[data-rn-save]").addEventListener("click",()=>{const t=c(o(),e.store.getProfile());s(t.errors),t.ok&&(e.store.updateProfile(t.patch),p(e,t.patch.cardioPaces),e.toast(t.patch.cardioPaces?"Saved. Newly planned cardio uses your paces.":Object.keys(t.patch.benchmarks).length?"Saved":"Cleared"),e.rerender())}),a.querySelector("[data-rn-clear]").addEventListener("click",()=>{a.querySelectorAll("[data-rn]").forEach(t=>{t.value=""}),s({}),e.store.updateProfile(c({},e.store.getProfile()).patch),p(e,null),e.toast("Cleared"),e.rerender()})}export{q as bindRunning,L as runningHTML};

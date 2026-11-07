@@ -1,0 +1,1 @@
+let e=null;const u=n=>n?.run?.on===!0&&!!n.run.season,g=n=>{e=n},i=(n,r,t,o,s)=>e?e.runRegionFatigue(n,r,t,o,s):0,R=n=>e?e.runRegionSets(n):{regions:{},groups:{}};export{g as registerRunTerms,u as runOn,i as runRegionFatigue,R as runRegionSets};

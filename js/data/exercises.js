@@ -1,0 +1,1 @@
+import o from"./exercises-upper.js";import t from"./exercises-lower.js";const e=[...o,...t],p=Object.fromEntries(e.map(r=>[r.id,r]));function E(r){return p[r]||null}export{e as EXERCISES,p as EX_BY_ID,E as getEx};
